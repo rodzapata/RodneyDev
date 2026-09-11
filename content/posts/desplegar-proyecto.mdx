@@ -1,0 +1,88 @@
+---
+title: "Desplegar proyecto en .net 10 "
+date: "2026-09-11"
+description: "Publicar proyecto en un hostin gratis"
+slug: "desplegar-proyecto"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+Para publicar una REST API en **.NET** sin pagar, la mejor opción depende de cómo prefieras desplegarla: mediante un **servidor especializado en .NET (IIS/Windows)** o empacando tu API en un **contenedor Docker (Linux/Nube)**.
+
+Video de como publicar un proyecto en Moster.asp [publicar by Remigiusz Zalewski](https://www.youtube.com/watch?v=69x7h-qdCKE)  
+publicando proyecto con el hosting en Somee.com[webapi by CodigoEstudiante](https://www.youtube.com/watch?v=hB8jW0FaI9k&t=623s)  
+
+---
+
+### 1. MonsterASP.NET *(La opción más rápida y nativa)*
+
+Es una de las plataformas más populares para aprender y hacer pruebas con .NET. Ofrece un plan gratuito continuo ideal para APIs pequeñas.
+
+* **Soporte:** .NET Core y versiones recientes (.NET 8/9/10).
+* **Características:**
+* Permite desplegar directamente mediante **Web Deploy** desde Visual Studio o subiendo la carpeta compilada (`publish`).
+* Incluye base de datos gratuita (MS SQL Server o MySQL).
+* Certificado SSL (HTTPS) gratuito en un clic.
+* No requiere tarjeta de crédito.
+
+
+* **Desventajas:** Los dominios son subdominios de la plataforma en el plan gratis.
+
+---
+
+### 2. Render *(La mejor opción mediante Docker)*
+
+Render es una plataforma PaaS muy moderna. Aunque sus servidores corren en Linux, puedes crear un archivo `Dockerfile` en tu proyecto .NET y Render lo construirá y desplegará automáticamente desde tu repositorio de GitHub.
+
+* **Soporte:** .NET ejecutado en contenedores Docker.
+* **Características:**
+* Despliegue automático en cada `git push` a tu repositorio.
+* SSL/HTTPS automático e interfaz súper moderna.
+* Ofrece base de datos PostgreSQL gratuita (con caducidad a 30 días).
+
+
+* **Desventajas:**
+* Tras **15 minutos sin tráfico**, el servidor entra en "reposo" (*spin down*). La primera petición HTTP después de esto tardará entre 20 y 40 segundos mientras la API despierta (*cold start*).
+
+
+
+---
+
+### 3. Somee.com *(La opción clásica para pruebas rápido)*
+
+Es una plataforma veterana en el mundo de .NET que ofrece hosting gratis en Windows Server con IIS.
+
+* **Soporte:** .NET Framework y .NET Core.
+* **Características:**
+* Incluye una base de datos **MS SQL Express** de 30 MB.
+* Despliegue sencillo por FTP o publicación desde Visual Studio.
+
+
+* **Desventajas:**
+* Interfaz bastante antigua.
+* Agrega un banner o script publicitario en el HTML, aunque para un backend/REST API puro que retorna JSON no suele interferir directamente.
+
+
+
+---
+
+### 4. Koyeb / Railway *(Alternativas Docker con crédito mensual)*
+
+Si prefieres un flujo basado en Git e imágenes Linux, estas plataformas PaaS permiten desplegar tu proyecto .NET usando un `Dockerfile`:
+
+* **Koyeb:** Incluye un plan gratuito permanente con recursos suficientes para APIs ligeras.
+* **Railway:** Regala $5 USD de crédito inicial o mensual en su versión de prueba para ejecutar contenedores. No entra en reposo tan agresivamente como Render.
+
+---
+
+### Recomendación de uso
+
+| Necesidad / Escenario | Proveedor recomendado |
+| --- | --- |
+| **Integración directa con Visual Studio / MS SQL** | **MonsterASP.NET** |
+| **Práctica con GitHub + Docker + CI/CD** | **Render** |
+| **Subir archivos rápida y manualmente via FTP** | **Somee.com** |
+
+*Tip extra para la base de datos:* Si la base de datos de los proveedores de hosting se te queda corta o caduca, puedes vincular tu REST API .NET a proveedores de bases de datos relacionales gratuitos como **Neon.tech** (PostgreSQL) o **PlanetScale** (MySQL).
