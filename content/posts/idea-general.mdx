@@ -1,0 +1,2206 @@
+---
+title: "Idea General del proyecto"
+date: "2026-07-01"
+description: "Lineamiento de la tomas de decision del programa TribuSoft"
+slug: "idea-general"
+category: "Netcore"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+# 1. Nombre de la aplicacion
+
+Se llamará **TribuSoft** empesaremos con una api web hecha en net core 10
+
+# 2. Instalacion de Metcore 10
+
+Lo primero es actualizar a la utlima vesion de visual studio 2022 es la numero **17.14.35** en mi equipo tenia la **17.11.5**
+
+Despues hay que descargar el SDK 10 desde el link : https://dotnet.microsoft.com/download/dotnet/10.0
+
+Una vez instalado comprobamos que la version de SDK que tenomos intalada:
+
+```bash
+dotnet --list-sdks
+```
+
+y para comprobar cual es la version actual por defecto:
+
+```bash
+dotnet --version
+```
+
+# 3. Recomendaciones para nombrar las tablas e indices
+
+Mi recomendación para tu proyecto
+
+Como estás desarrollando un sistema de facturación, información exógena DIAN, .NET 10, Entity Framework Core y buscas aplicar mejores prácticas, yo usaría siempre la segunda forma y nombraría explícitamente todos los objetos de la base de datos.
+
+Incluso seguiría una convención consistente:
+
+Objeto Prefijo Ejemplo  
+Primary Key PK* PK_Departamento  
+Foreign Key FK* FK*Municipio_Departamento  
+Unique UQ* UQ*Tercero_NumeroDocumento  
+Check CK* CK*Tercero_TipoPersona  
+Default DF* DF*Tercero_Activo  
+Index IX* IX_Municipio_CodigoDepartamento
+
+# 4. Estructura de las tablas y entidades
+
+La tabla en sqlserver de **Departamento** seria:
+
+```sql
+CREATE TABLE departamento
+(
+    codigo CHAR(2) NOT NULL,
+    nombre VARCHAR(80) NOT NULL,
+
+    CONSTRAINT PK_departamento
+        PRIMARY KEY (codigo)
+);
+```
+
+La tabla en sqlserver de **Municipio** seria:
+
+```sql
+CREATE TABLE municipio
+(
+    codigo CHAR(5) NOT NULL,
+    nombre VARCHAR(120) NOT NULL,
+    codigo_departamento CHAR(2) NOT NULL,
+
+    CONSTRAINT PK_municipio
+        PRIMARY KEY (Codigo),
+
+    CONSTRAINT FK_municipio_departamento
+        FOREIGN KEY (codigo_departamento)
+        REFERENCES departamento(Codigo)
+);
+
+```
+
+La tabla en sqlserver de **Terceros** seria:
+
+```sql
+CREATE TABLE tercero
+(
+    id                  BIGINT IDENTITY(1,1) NOT NULL,
+    tipo_documento      CHAR(2)      NOT NULL,
+    numero_documento    VARCHAR(20)  NOT NULL,
+
+    primer_apellido     VARCHAR(60)  NULL,
+    segundo_apellido    VARCHAR(60)  NULL,
+    primer_nombre       VARCHAR(60)  NULL,
+    otros_nombres       VARCHAR(120) NULL,
+    razon_social        VARCHAR(200) NULL,
+    direccion           VARCHAR(130) NULL,
+    codigo_municipio    CHAR(5)      NOT NULL,
+
+    CONSTRAINT PK_tercero
+        PRIMARY KEY (id),
+
+    -- Evita que existan dos terceros con el mismo número de documento
+    CONSTRAINT UQ_tercero_documento
+        UNIQUE (numero_documento),
+
+    CONSTRAINT FK_tercero_municipio
+        FOREIGN KEY (codigo_municipio)
+        REFERENCES municipio(codigo)
+);
+```
+
+# 5. Entidades en Entity Framework Core 10
+
+Entidad **Municipio**:
+
+```csharp
+public class Municipio
+{
+    public string Codigo { get; set; } = null!;
+
+    public string Nombre { get; set; } = null!;
+
+    public string CodigoDepartamento { get; set; } = null!;
+
+    public Departamento Departamento { get; set; } = null!;
+}
+```
+
+Configuracion
+
+```csharp
+builder.HasKey(x => x.Codigo);
+
+builder.Property(x => x.Codigo)
+       .HasMaxLength(5)
+       .IsFixedLength();
+
+builder.Property(x => x.CodigoDepartamento)
+       .HasMaxLength(2)
+       .IsFixedLength();
+```
+
+**Nota** No es necesario crear una columna id autoincremental y tomamos los codigos que utiliza la Dian
+
+Recomendacion para campos por valores por defecto :
+forma corta:
+
+```sql
+Activo BIT DEFAULT(1)
+```
+
+Forma profesional :
+
+```sql
+CONSTRAINT DF_Empleado_Activo
+DEFAULT(1)
+FOR Activo
+```
+
+**Nota** los nombres de las tablas en postgresql deben ser en minuscula y separadao con **\_** guion abajo
+🛠️ El secreto para conectarlo con .NET 10 (Sin ensuciar tu código)
+Si usas la estructura anterior (snake_case), no tienes por qué castigar tu código de C# escribiendo propiedades en minúsculas.
+
+El proveedor oficial de Postgres para Entity Framework Core (Npgsql) incluye una solución elegante. Solo debes configurar la convención de nombres en tu DbContext para que haga la traducción automática de PascalCase (C#) a snake_case (Postgres).
+
+1. Instala el paquete NuGet de extensiones de nombres:
+
+```bash
+dotnet add package EFCore.NamingConventions
+```
+
+2. Configura tu DbContext en .NET 10:
+   Al registrar tu contexto (ya sea en el Program.cs o en el OnConfiguring), añades .UseSnakeCaseNamingConvention():
+
+```csharp
+protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+{
+    optionsBuilder
+        .UseNpgsql("TuCadenaDeConexion")
+        .UseSnakeCaseNamingConvention(); // <--- ¡Aquí está la magia!
+}
+```
+
+3. Tu Entidad en C# queda perfecta y limpia:
+   Gracias a esa línea, EF Core sabe que cuando en C# preguntas por PrimerNombre, en Postgres debe buscar primer_nombre.
+
+```csharp
+public class Tercero
+{
+    public long Id { get; private set; }
+    public string Nit { get; set; } = null!;
+    public string PrimerNombre { get; set; } = null!; // Se mapea automáticamente a primer_nombre
+    public string? SegundoNombre { get; set; }
+    public string RazonSocial { get; set; } = "";
+    // ...
+}
+```
+
+**CONCLUSION**
+manejare sqlserver con las convencion de postgresql y el codigo en csharp quedaria:
+
+```csharp
+protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+{
+    // Supongamos que lees el tipo de motor desde tu appsettings.json
+    string motor = Configuration["DatabaseProvider"];
+
+    if (motor == "PostgreSQL")
+    {
+        optionsBuilder.UseNpgsql(Configuration.GetConnectionString("PostgresConnection"));
+    }
+    else if (motor == "SqlServer")
+    {
+        optionsBuilder.UseSqlServer(Configuration.GetConnectionString("SqlServerConnection"));
+    }
+
+    // ¡La magia universal! Aplica snake_case automáticamente para CUALQUIER motor
+    optionsBuilder.UseSnakeCaseNamingConvention();
+}
+```
+
+## Estructura en postgresql 18
+
+```sql
+-- ===========================================
+-- Tabla: departamento
+-- ===========================================
+
+CREATE TABLE departamento
+(
+    codigo CHAR(2) NOT NULL,
+    nombre VARCHAR(80) NOT NULL,
+
+    CONSTRAINT pk_departamento
+        PRIMARY KEY (codigo)
+);
+
+-- ===========================================
+-- Tabla: municipio
+-- ===========================================
+
+CREATE TABLE municipio
+(
+    codigo CHAR(5) NOT NULL,
+    nombre VARCHAR(120) NOT NULL,
+    codigo_departamento CHAR(2) NOT NULL,
+
+    CONSTRAINT pk_municipio
+        PRIMARY KEY (codigo),
+
+    CONSTRAINT fk_municipio_departamento
+        FOREIGN KEY (codigo_departamento)
+        REFERENCES departamento(codigo)
+);
+
+-- ===========================================
+-- Tabla: tercero
+-- ===========================================
+
+CREATE TABLE tercero
+(
+    id                  BIGINT GENERATED ALWAYS AS IDENTITY,
+    tipo_documento      CHAR(2)      NOT NULL,
+    numero_documento    VARCHAR(20)  NOT NULL,
+
+    primer_apellido     VARCHAR(60),
+    segundo_apellido    VARCHAR(60),
+    primer_nombre       VARCHAR(60),
+    otros_nombres       VARCHAR(120),
+    razon_social        VARCHAR(200),
+    direccion           VARCHAR(130),
+    codigo_municipio    CHAR(5)      NOT NULL,
+
+    CONSTRAINT pk_tercero
+        PRIMARY KEY (id),
+
+    -- Evita que existan dos terceros con el mismo tipo y número de documento
+    CONSTRAINT uq_tercero_documento
+        UNIQUE (numero_documento),
+
+    CONSTRAINT fk_tercero_municipio
+        FOREIGN KEY (codigo_municipio)
+        REFERENCES municipio(codigo)
+);
+
+```
+
+La misma estructura pero en ingles seria
+```sql
+-- ===========================================
+-- Table: state
+-- ===========================================
+
+CREATE TABLE state
+(
+    code CHAR(2) NOT NULL,
+    name VARCHAR(80) NOT NULL,
+
+    CONSTRAINT pk_state
+        PRIMARY KEY (code)
+);
+
+-- ===========================================
+-- Table: city
+-- ===========================================
+
+CREATE TABLE city
+(
+    code CHAR(5) NOT NULL,
+    name VARCHAR(120) NOT NULL,
+    state_code CHAR(2) NOT NULL,
+
+    CONSTRAINT pk_city
+        PRIMARY KEY (code),
+
+    CONSTRAINT fk_city_state
+        FOREIGN KEY (state_code)
+        REFERENCES state(code)
+);
+
+-- ===========================================
+-- Table: party
+-- ===========================================
+CREATE TABLE party
+(
+    id BIGINT GENERATED ALWAYS AS IDENTITY,
+
+    document_type CHAR(2) NOT NULL,
+    document_number VARCHAR(20) NOT NULL,
+
+    first_last_name VARCHAR(60),
+    second_last_name VARCHAR(60),
+    first_name VARCHAR(60),
+    middle_names VARCHAR(120),
+
+    business_name VARCHAR(200),
+
+    address VARCHAR(130),
+
+    city_code CHAR(5) NOT NULL,
+
+    CONSTRAINT pk_party
+        PRIMARY KEY (id),
+
+    CONSTRAINT uq_party_document
+        UNIQUE (document_number),
+
+    CONSTRAINT fk_party_city
+        FOREIGN KEY (city_code)
+        REFERENCES city(code)
+);
+
+```
+## escrip de insercion masiva
+
+insertamos de los depatamentos
+
+```sql
+COPY departamento(
+    codigo,
+    nombre
+)
+FROM 'C:\tribusoft\excel\dptos.csv'
+DELIMITER ';'
+CSV HEADER;
+```
+
+**Nota**
+Dentro DBeaver tuve que anteponerle un **/** para que funcionara quedando asi:
+
+```sql
+\COPY departamento(
+    codigo,
+    nombre
+)
+FROM 'C:\tribusoft\excel\dptos.csv'
+DELIMITER ';'
+CSV HEADER;
+```
+
+insertamos los municipios
+
+```sql
+COPY municipio(
+    codigo,
+    nombre,
+	codigo_departamento
+)
+FROM 'C:\tribusoft\excel\municipios.csv'
+DELIMITER ';'
+CSV HEADER;
+```
+
+insertamos los Terceros
+
+```sql
+COPY tercero(
+    tipo_documento, numero_documento, primer_apellido, segundo_apellido, primer_nombre, otros_nombres,
+    razon_social, direccion,  codigo_municipio)
+FROM 'C:\tribusoft\excel\terceros.csv'
+DELIMITER ';'
+CSV HEADER;
+
+```
+
+## Carga masiva desde netcore
+
+Opción 3: Carga masiva desde .NET 10 (C#)
+Como estás usando .NET 10, puedes programar la carga masiva de manera ultra rápida usando Npgsql (el proveedor de PostgreSQL para .NET).  
+Esto evita tocar permisos del sistema de archivos del servidor y usa la infraestructura de streaming de Postgres:
+
+```sql
+using var dataSource = NpgsqlDataSource.Create("tu_cadena_conexion");
+await using var connection = await dataSource.OpenConnectionAsync();
+
+// Abre el archivo CSV desde C#
+using var reader = new StreamReader(@"C:\tribusoft\excel\dptos.csv");
+
+// Inicia la operación de copia masiva binaria o de texto
+await using var writer = await connection.BeginTextImportAsync(
+    "COPY departamento (codigo, nombre) FROM STDIN WITH DELIMITER ';' CSV HEADER"
+);
+
+// Transmite el contenido del archivo directamente a la base de datos
+string? line;
+while ((line = await reader.ReadLineAsync()) != null)
+{
+    await writer.WriteLineAsync(line);
+}
+```
+
+Con este enfoque de .NET, tu usuario de base de datos solo necesita permisos estándar de INSERT sobre la tabla departamento.  
+No requiere permisos de servidor.
+
+# 6. Creamos nuestra webapi en Netcore 10 y postgresql 18
+
+Lo primero que debemos hacer es crear nuestro proyecto **WebApi**
+el paso a pado en webapi con postgresql en ingles es:
+[por Israel Quiroz](https://www.youtube.com/watch?v=IR19SLn9A2Y&t=356s)
+
+# 6.1 Instalacion de paquetes:
+
+y agregar al proyectos los siguientes paquetes: **Nuget**
+
+- Microsoft.EntityFrameworkCore
+- Microsoft.EntityFrameworkCore.Tools
+- Microsoft.EntityFrameworkCore.Design
+- Microsoft.EntityFrameworkCore.SqlServer
+
+- Microsoft.EntityFrameworkCore.Relational
+
+- Npgsql.EntityFrameworkCore.PostgreSQL
+- Npgsql.EntityFrameworkCore.PostgreSQL.Design
+
+- paquetes JWT
+- FluentValidation.DependencyInjectionExtensions  
+  recomendado para las validaciones de los DTO
+
+- Serilog.AspNetCore
+- Serilog.Sinks.Console
+- Serilog.Sinks.File  
+  Esto 3 paquetes son muy utilizados para el **loggin**
+
+  Antes se tenia que instalar **Npgsql** por separado, pero a partir de la version 6 ya está incluido en **Npgsql.EntityFrameworkCore.PostgreSQL**.  
+
+# 6.2 Estructura del proyecto
+
+**Proyectos independientes en una misma solución (Recomendado)**
+Creas una solución (TribuSoft.sln) y dentro separas las responsabilidades en múltiples proyectos de biblioteca de clases (Class Library), dejando el proyecto Web API únicamente como el punto de entrada (la interfaz). Una estructura común basada en Clean Architecture o Arquitectura en Capas es:
+
+TribuSoft.API (Proyecto Web API: Solo controladores, middlewares y configuración).
+
+- Microsoft.EntityFrameworkCore.Design
+- Npgsql.EntityFrameworkCore.PostgreSQL.Design
+
+TribuSoft.Application (Biblioteca de clases: Lógica de negocio, interfaces, DTOs).
+
+TribuSoft.Infrastructure (Biblioteca de clases: DbContext, repositorios, migraciones, servicios externos).
+
+- Microsoft.EntityFrameworkCore.SqlServer
+- Npgsql.EntityFrameworkCore.PostgreSQL
+
+TribuSoft.Domain (Biblioteca de clases: Entidades puras y lógica del dominio).
+
+**Arquitectura Recomendada**
+
+Para un proyecto nuevo en .NET 10 con soporte para PostgreSQL 18 y SQL Server 2022, organizaría la solución así:
+
+```bash
+TribuSoft.sln
+
+TribuSoft.Api
+│
+├── Controllers
+├── Middlewares
+├── Extensions
+├── Filters              (opcional)
+├── OpenApi              (opcional)
+└── Program.cs
+
+
+TribuSoft.Application
+│
+├── DTOs
+├── Interfaces
+│   ├── Repositories
+│   ├── Services
+│   └── UnitOfWork       (si la vas a utilizar)
+├── Services
+├── Validators
+├── Commands             (si usas CQRS)
+├── Queries              (si usas CQRS)
+├── Mappings
+└── DependencyInjection
+
+
+TribuSoft.Domain
+│
+├── Entities
+├── ValueObjects
+├── Enums
+├── Events
+├── Exceptions
+├── Common
+└── Specifications       (opcional)
+
+
+TribuSoft.Infrastructure
+│
+├── Persistence
+│   ├── PostgreSqlDbContext
+│   ├── SqlServerDbContext
+│   ├── Configurations
+│   ├── Repositories
+│   ├── Migrations
+│   │   ├── PostgreSql
+│   │   └── SqlServer
+│   └── Seed
+│
+├── Logging
+├── Services             (Email, Files, Cache, etc.)
+└── DependencyInjection
+```
+
+# 7. Agregamos referencia de proyectos dentro de la solucion
+
+en el proyecto de infraestructura
+
+- agregar referencia a Domain
+- agregar referencia a Application
+
+en el proyecto de Application
+
+- agregar referemcia a Domain
+
+en el proyecto de Api
+
+- agregar referencia a Application
+
+# 8. Eliminamos archivos de ejemplo en la Api
+
+Por defecto en el proyecto api nos crea un controlador llamando **WeatherForecastController.cs**
+y una clase llamada **WeatherForecast.cs** ambas las eliminamos para limpiar el proyecto de cosas que
+no vamos a usar.
+
+# 9. creacion de DBConstext en la capa de Infraestructura
+
+Lo primero es instalar desde Nuges el componente Npgsql.EntityFrameworkCore.PostgreSQL
+Microsoft.EntityFrameworkCore.SqlServer  
+Microsoft.EntityFrameworkCore.Design  
+Microsoft.EntityFrameworkCore.Tools  
+**version 10.0.2** para ambos paquetes
+
+Antes de crear nuestras entidades en la capa de Domain, podemos realizar un **Scaffolding** que nos ayude
+mapeando la estructura de las tablas de la base de datos de postgresql con el comando :
+
+en el proyecto damos boton derecho y escogemos herramientas - administrador de paquetes Nuget - Consola administrador de paquetes -
+debe aparecer el promop PM y escribimos :
+
+La configuracion correcta fue:
+
+```bash
+Scaffold-DbContext "Host=localhost;Port=5432;Database=tribusoft_db;Username=app_user;Password=Clave01." Npgsql.EntityFrameworkCore.PostgreSQL -OutputDir Persistence\Entities -Context AppDbContext -ContextDir Persistence -DataAnnotations:$false -NoOnConfiguring  -Verbose -force
+
+```
+
+Scaffold-DbContext "Host=localhost;Port=5432;Database=tribusoft_db;Username=app_user;Password=Clave01." Npgsql.EntityFrameworkCore.PostgreSQL -OutputDir ..\TribuSoft.Domain\Entities -Context AppDbContext -ContextDir Persistence -DataAnnotations:$false -NoOnConfiguring -Verbose -force
+
+```bash
+Scaffold-DbContext "Host=localhost;Port=5432;Database=tribusoft_db;Username=app_user;Password=Clave01." Npgsql.EntityFrameworkCore.PostgreSQL -OutputDir Persistence\Entities -Context AppDbContext -ContextDir Persistence -UseDatabaseNames -NoPluralize -DataAnnotations:$false -NoOnConfiguring  -Verbose
+```
+
+# 10. EF Core Power Tools es mejor Herramientas que el Scaffold para la generacion de DBContext
+
+Esta Herramienta Open Source te permite mapear la base de datos y crea el DBContext y las Endidades aplicando mejores practicas
+
+# 11. Codigo generado por la Herramienta Scaffolding y Refactorizacion de la misma
+
+**Entidad Tercero**
+
+```sql
+public partial class Tercero
+{
+    public long Id { get; set; }
+    public string TipoDocumento { get; set; } = null!;
+    public string NumeroDocumento { get; set; } = null!;
+    public string? PrimerApellido { get; set; }
+    public string? SegundoApellido { get; set; }
+    public string? PrimerNombre { get; set; }
+    public string? OtrosNombres { get; set; }
+    public string? RazonSocial { get; set; }
+    public string? Direccion { get; set; }
+    public string CodigoMunicipio { get; set; } = null!;
+    public virtual Municipio CodigoMunicipioNavigation { get; set; } = null!;
+}
+
+```
+
+No usar **public partial class** sino simplemente **public class**  
+En .NET 10 (2026) y siguiendo las recomendaciones de Microsoft y las prácticas utilizadas en proyectos empresariales, la regla es bastante sencilla:
+
+Usa public class en prácticamente todas las clases que escribas manualmente.
+Usa public partial class únicamente cuando la clase se divide intencionalmente en varios archivos o una parte es generada automáticamente por una herramienta.
+
+No usar **virtual** este codigo se usa para carga peresosa ya no se recomienda
+
+**Principales mejoras aplicadas**
+Convenciones de C# 10/11: **record** para entidades inmutables o class **sealed** si necesitas herencia controlada.
+
+Data Annotations: validación y restricciones directamente en el modelo.
+
+Propiedades requeridas: uso de **required** en lugar de inicialización con **null!**.
+
+Nombres consistentes: claridad en nombres de propiedades.
+
+Relaciones EF Core: navegación explícita y clave foránea.
+
+Separación de capas: entidad de dominio sin lógica de persistencia.
+
+Tercero refactorizado quedaria:
+
+```sql
+namespace Tribusoft.Domain.Entities;
+
+public sealed class Tercero
+{
+    public long Id { get; private set; } // O 'init'
+
+    public required string TipoDocumento { get; set; }
+    public required string NumeroDocumento { get; set; }
+
+    public string? PrimerApellido { get; set; }
+    public string? SegundoApellido { get; set; }
+    public string? PrimerNombre { get; set; }
+    public string? OtrosNombres { get; set; }
+    public string? RazonSocial { get; set; }
+    public string? Direccion { get; set; }
+
+    public required string CodigoMunicipio { get; set; }
+
+    // Relación limpia. Es opcional (?) porque se carga bajo demanda (Eager Loading)
+    public Municipio? Municipio { get; set; }
+}
+```
+Cuando el Id es una entidad o en Aggregate Root, se recomienda usar:
+
+```csharp
+public long Id { get; private set; }
+
+```
+pero si es un DTO se recomienda,
+Request/Response, Options/Configuration.
+
+```csharp
+public long Id { get; init;}
+```
+
+el codigo completo en Dto seria:
+```csharp
+public record ProductDto
+{
+    public long Id { get; init; }
+
+    public string Name { get; init; } = default!;
+}
+```
+
+
+¿Y dónde van las restricciones de tamaño (StringLength)?
+Persistence/Configurations
+
+```sql
+public class TerceroConfiguration : IEntityTypeConfiguration<Tercero>
+{
+    public void Configure(EntityTypeBuilder<Tercero> builder)
+    {
+        builder.HasKey(t => t.Id);
+
+        builder.Property(t => t.TipoDocumento).HasMaxLength(20).IsRequired();
+        builder.Property(t => t.NumeroDocumento).HasMaxLength(50).IsRequired();
+        builder.Property(t => t.RazonSocial).HasMaxLength(200);
+        // ... el resto de configuraciones
+
+        builder.HasOne(t => t.Municipio)
+               .WithMany()
+               .HasForeignKey(t => t.CodigoMunicipio);
+    }
+}
+```
+
+**Entidad Departameto con Scaffolding**
+
+```sql
+
+namespace TribuSoft.Domain.Entities;
+
+public partial class Departamento
+{
+    public string Codigo { get; set; } = null!;
+    public string Nombre { get; set; } = null!;
+
+    public virtual ICollection<Municipio> Municipios { get; set; } = new List<Municipio>();
+}
+
+```
+
+**Refactorizamos Departamento aplicando las mejores practicas**
+
+```sql
+namespace TribuSoft.Domain.Entities;
+
+public sealed class Departamento
+{
+    // Usamos 'init' ya que el código suele ser la llave primaria natural y no cambia tras crearse.
+    public string Codigo { get; private init; }
+    public string Nombre { get; private set; }
+
+    // Respaldamos la lista en un campo privado
+    private readonly List<Municipio> _municipios = [];
+
+    // Exponemos la colección como de solo lectura para proteger la consistencia del dominio
+    public IReadOnlyCollection<Municipio> Municipios => _municipios;
+
+    // Constructor requerido por Entity Framework Core para la materialización
+    private Departamento() { }
+
+    // Constructor recomendado para crear la entidad de forma controlada
+    public Departamento(string codigo, string nombre)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(codigo);
+        ArgumentException.ThrowIfNullOrWhiteSpace(nombre);
+
+        Codigo = codigo;
+        Nombre = nombre;
+    }
+
+    // Método de negocio para encapsular cómo se añade un municipio
+    public void RegistrarMunicipio(Municipio municipio)
+    {
+        ArgumentNullException.ThrowIfNull(municipio);
+
+        // Aquí podrías agregar validaciones de negocio antes de insertar
+        _municipios.Add(municipio);
+    }
+}
+```
+En este video en el miniuto 40:56 explica la Configuracion [Configuracion](https://www.youtube.com/watch?v=rIqVDyHwmDE&t=169s)  
+
+y la configuracion seria:
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using TribuSoft.Domain.Entities;
+
+namespace TribuSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class DepartamentoConfiguration : IEntityTypeConfiguration<Departamento>
+{
+    public void Configure(EntityTypeBuilder<Departamento> builder)
+    {
+        builder.ToTable("Departamentos");
+
+        // Configuración de la Llave Primaria
+        builder.HasKey(d => d.Codigo);
+
+        builder.Property(d => d.Codigo)
+            .HasMaxLength(5) // Ajusta al tamaño de tus códigos (ej. ISO o DIVIPOLA)
+            .IsRequired();
+
+        builder.Property(d => d.Nombre)
+            .HasMaxLength(100)
+            .IsRequired();
+
+        // Configuración de la relación 1 a Muchos con acceso al campo privado (Backing Field)
+        builder.HasMany(d => d.Municipios)
+            .WithOne(m => m.Departamento) // Asumiendo que Municipio tiene la propiedad 'Departamento'
+            .HasForeignKey(m => m.CodigoDepartamento)
+            .Metadata.PrincipalToDependent?
+            .SetPropertyAccessMode(PropertyAccessMode.Field);
+    }
+}
+```
+
+
+**DBContext hecho con scallfolding**
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using TribuSoft.Infrastructure.Persistence.Entities;
+
+namespace TribuSoft.Infrastructure.Persistence;
+
+public partial class AppDbContext : DbContext
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options)
+        : base(options)
+    {
+    }
+
+    public virtual DbSet<Departamento> Departamentos { get; set; }
+
+    public virtual DbSet<Municipio> Municipios { get; set; }
+
+    public virtual DbSet<Tercero> Terceros { get; set; }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Departamento>(entity =>
+        {
+            entity.HasKey(e => e.Codigo).HasName("pk_departamento");
+
+            entity.ToTable("departamento");
+
+            entity.Property(e => e.Codigo)
+                .HasMaxLength(2)
+                .IsFixedLength()
+                .HasColumnName("codigo");
+            entity.Property(e => e.Nombre)
+                .HasMaxLength(80)
+                .HasColumnName("nombre");
+        });
+
+        modelBuilder.Entity<Municipio>(entity =>
+        {
+            entity.HasKey(e => e.Codigo).HasName("pk_municipio");
+
+            entity.ToTable("municipio");
+
+            entity.Property(e => e.Codigo)
+                .HasMaxLength(5)
+                .IsFixedLength()
+                .HasColumnName("codigo");
+            entity.Property(e => e.CodigoDepartamento)
+                .HasMaxLength(2)
+                .IsFixedLength()
+                .HasColumnName("codigo_departamento");
+            entity.Property(e => e.Nombre)
+                .HasMaxLength(120)
+                .HasColumnName("nombre");
+
+            entity.HasOne(d => d.CodigoDepartamentoNavigation).WithMany(p => p.Municipios)
+                .HasForeignKey(d => d.CodigoDepartamento)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("fk_municipio_departamento");
+        });
+
+        modelBuilder.Entity<Tercero>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("pk_tercero");
+
+            entity.ToTable("tercero");
+
+            entity.HasIndex(e => e.NumeroDocumento, "uq_tercero_documento").IsUnique();
+
+            entity.Property(e => e.Id)
+                .UseIdentityAlwaysColumn()
+                .HasColumnName("id");
+            entity.Property(e => e.CodigoMunicipio)
+                .HasMaxLength(5)
+                .IsFixedLength()
+                .HasColumnName("codigo_municipio");
+            entity.Property(e => e.Direccion)
+                .HasMaxLength(130)
+                .HasColumnName("direccion");
+            entity.Property(e => e.NumeroDocumento)
+                .HasMaxLength(20)
+                .HasColumnName("numero_documento");
+            entity.Property(e => e.OtrosNombres)
+                .HasMaxLength(120)
+                .HasColumnName("otros_nombres");
+            entity.Property(e => e.PrimerApellido)
+                .HasMaxLength(60)
+                .HasColumnName("primer_apellido");
+            entity.Property(e => e.PrimerNombre)
+                .HasMaxLength(60)
+                .HasColumnName("primer_nombre");
+            entity.Property(e => e.RazonSocial)
+                .HasMaxLength(200)
+                .HasColumnName("razon_social");
+            entity.Property(e => e.SegundoApellido)
+                .HasMaxLength(60)
+                .HasColumnName("segundo_apellido");
+            entity.Property(e => e.TipoDocumento)
+                .HasMaxLength(2)
+                .IsFixedLength()
+                .HasColumnName("tipo_documento");
+
+            entity.HasOne(d => d.CodigoMunicipioNavigation).WithMany(p => p.Terceros)
+                .HasForeignKey(d => d.CodigoMunicipio)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("fk_tercero_municipio");
+        });
+
+        OnModelCreatingPartial(modelBuilder);
+    }
+
+    partial void OnModelCreatingPartial(ModelBuilder modelBuilder);
+}
+
+
+```
+
+**DBContext Refactorizado**
+Ahora lo refactorizamos dividiendo cada entidad por su archivo de configuracion independiente que dando asi: 
+```csharp
+using Microsoft.EntityFrameworkCore;
+using TribuSoft.Domain.Entities;
+
+namespace TribuSoft.Infrastructure.Persistence;
+
+public sealed class AppDbContext : DbContext
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<Departamento> Departamentos => Set<Departamento>();
+
+    public DbSet<Municipio> Municipios => Set<Municipio>();
+
+    public  DbSet<Tercero> Terceros => Set<Tercero>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.ApplyConfigurationsFromAssembly(
+            typeof(AppDbContext).Assembly);
+
+        base.OnModelCreating(modelBuilder);
+    }
+}
+
+```
+
+**Analisis de la refactorizacion de DBContext**
+
+1. Quitamos las clases partial
+2. Eliminamos los virtual
+cambiamos esto 
+```csharp
+public virtual DbSet<Departamento> Departamentos { get; set; }
+```
+y lo correcto es 
+```csharp
+public DbSet<Departamento> Departamentos => Set<Departamento>();
+```
+**Configuracion de Tercero**
+```csharp
+using TribuSoft.Domain.Entities;
+using TribuSoft.Domain.ValueObjects;
+
+namespace TribuSoft.Infrastructure.Persistence.Configurations
+{
+    public sealed class TerceroConfiguration : IEntityTypeConfiguration<Tercero>
+    {
+        public void Configure(EntityTypeBuilder<Tercero> builder)
+        {
+            builder.ToTable("tercero");
+
+            builder.HasKey(t => t.Id)
+                .HasName("pk_tercero");
+
+            builder.Property(t => t.Id)
+                .UseIdentityAlwaysColumn()
+                .HasColumnName("id");
+
+            builder.Property(t => t.NumeroDocumento)
+                .HasColumnName("numero_documento")
+                .HasMaxLength(20);
+
+            builder.HasIndex(t => t.NumeroDocumento)
+                .IsUnique()
+                .HasDatabaseName("uq_tercero_documento");
+
+            builder.Property(t => t.Direccion)
+                .HasColumnName("direccion")
+                .HasMaxLength(130);
+
+            builder.Property(t => t.CodigoMunicipio)
+                .HasColumnName("codigo_municipio")
+                .HasMaxLength(5)
+                .IsFixedLength();
+
+            builder.Property(t => t.TipoDocumento)
+                .HasConversion(
+                    td => td.Codigo,
+                    codigo => TipoDocumento.FromCodigo(codigo))
+                .HasColumnName("tipo_documento")
+                .HasMaxLength(2)
+                .IsFixedLength();
+
+            builder.HasOne(t => t.Municipio)
+                .WithMany(m => m.Terceros)
+                .HasForeignKey(t => t.CodigoMunicipio)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            builder.HasDiscriminator<string>("tipo_persona")
+                .HasValue<PersonaNatural>("N")
+                .HasValue<PersonaJuridica>("J");
+
+
+        }
+    }
+}
+
+```
+**Configuracion de la Persona Natural**
+```csharp
+using TribuSoft.Domain.Entities;
+
+namespace TribuSoft.Infrastructure.Persistence.Configurations
+{
+    internal sealed class PersonaNaturalConfiguration : IEntityTypeConfiguration<PersonaNatural>
+    {
+        public void Configure(EntityTypeBuilder<PersonaNatural> builder)
+        {
+            builder.Property(p => p.PrimerNombre)
+                .HasColumnName("primer_nombre")
+                .HasMaxLength(60);
+
+            builder.Property(p => p.OtrosNombres)
+                .HasColumnName("otros_nombres")
+                .HasMaxLength(120);
+
+            builder.Property(p => p.PrimerApellido)
+                .HasColumnName("primer_apellido")
+                .HasMaxLength(60);
+
+            builder.Property(p => p.SegundoApellido)
+                .HasColumnName("segundo_apellido")
+                .HasMaxLength(60);
+        }
+    }
+}
+
+```
+**Configuracion de la Persona Juridica**
+```csharp
+using TribuSoft.Domain.Entities;
+
+namespace TribuSoft.Infrastructure.Persistence.Configurations
+{
+    internal sealed class PersonaJuridicaConfiguration : IEntityTypeConfiguration<PersonaJuridica>
+    {
+        public void Configure(EntityTypeBuilder<PersonaJuridica> builder)
+        {
+            builder.Property(p => p.RazonSocial)
+                .HasColumnName("razon_social")
+                .HasMaxLength(200);
+        }
+    }
+}
+
+```
+**Mejorias aplicadas**
+
+```sql
+¿Qué mejoras y convenciones se aplicaron?
+Movimiento al Dominio (Domain.Entities):
+La entidad ahora vive en el corazón de la aplicación. No depende de bases de datos, ORMs ni librerías externas.
+
+Uso de expresiones de colección [] (C# 12+):
+Se reemplazó el tradicional new List<Municipio>() por la sintaxis moderna y eficiente de inicialización de colecciones [].
+
+Encapsulamiento de Colecciones (IReadOnlyCollection):
+Si dejas public ICollection<Municipio> Municipios { get; set; },
+cualquier parte de tu código (como un controlador o servicio) podría hacer departamento.Municipios.Clear()
+o reasignar la lista directamente, rompiendo las reglas del negocio.
+Exponerla como IReadOnlyCollection obliga a usar métodos controlados (como RegistrarMunicipio).
+
+ArgumentException.ThrowIfNullOrWhiteSpace (C# 12/13):
+Validaciones nativas y optimizadas de rendimiento en los constructores para asegurar
+que un Departamento nunca nazca con datos corruptos o vacíos.
+
+Configuración segregada:
+La infraestructura ahora se limita puramente a mapear la entidad mediante IEntityTypeConfiguration<T>,
+logrando un desacoplamiento total y un código sumamente limpio.
+
+```
+
+**Recomendaciones en program.cs**
+
+aprovechando el paquete Microsoft.EntityFrameworkCore.Relational como capa común:
+
+```sql
+using Microsoft.EntityFrameworkCore;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Lee el proveedor desde appsettings.json
+var provider = builder.Configuration["DatabaseProvider"];
+var connectionString = builder.Configuration.GetConnectionString(provider);
+
+builder.Services.AddDbContext<AppDbContext>(options =>
+{
+    if (provider == "Postgres")
+    {
+        options.UseNpgsql(connectionString); // PostgreSQL
+    }
+    else if (provider == "SqlServer")
+    {
+        options.UseSqlServer(connectionString); // SQL Server
+    }
+});
+
+var app = builder.Build();
+
+app.MapGet("/", () => "API funcionando correctamente");
+
+app.Run();
+
+```
+
+Ejemplo de appsettings.json
+
+```json
+{
+  "ConnectionStrings": {
+    "Postgres": "Host=localhost;Database=MiDb;Username=usuario;Password=clave",
+    "SqlServer": "Server=localhost;Database=MiDb;User Id=usuario;Password=clave;"
+  },
+  "DatabaseProvider": "Postgres"
+}
+```
+
+Si mañana decides migrar a SQL Server, solo cambias el valor de DatabaseProvider a "SqlServer" y tu código seguirá funcionando sin tocar el dominio ni los repositorios.
+
+# 12. Tips que se deben tener en cuenta al momento de crear las entidades:
+
+Si hablamos de **.NET 10 en 2026**, hay varias prácticas que hace unos años eran muy populares pero que hoy han perdido protagonismo o ya no se consideran la mejor opción.  
+Te resumo las recomendaciones actuales centrándome en **entidades de dominio (DDD + Clean Architecture)**.
+
+---
+
+# 12.1. La entidad representa el negocio, no la base de datos ⭐⭐⭐⭐⭐
+
+Este es el principio más importante.
+
+Una entidad debe modelar el dominio, no la tabla de la base de datos.
+
+**Correcto**
+
+```csharp
+public sealed class Departamento
+{
+    public required string Codigo { get; init; }
+
+    public required string Nombre { get; private set; }
+
+    public void CambiarNombre(string nombre)
+    {
+        Nombre = nombre;
+    }
+}
+```
+
+No pienses:
+
+> "Tengo una tabla Departamento"
+
+Piensa:
+
+> "Tengo un Departamento del negocio."
+
+---
+
+# 12.2. No usar DataAnnotations en las entidades ⭐⭐⭐⭐⭐
+
+En 2026 prácticamente todos los proyectos nuevos usan **Fluent API**.
+
+Evita:
+
+```csharp
+[Table("Departamento")]
+[Key]
+[Required]
+[StringLength(100)]
+```
+
+Todo eso pertenece a Infrastructure.
+
+---
+
+# 12.3. Configurar EF Core mediante IEntityTypeConfiguration ⭐⭐⭐⭐⭐
+
+```text
+Infrastructure
+    Persistence
+        Configurations
+            DepartamentoConfiguration.cs
+```
+
+```csharp
+public sealed class DepartamentoConfiguration
+    : IEntityTypeConfiguration<Departamento>
+{
+    public void Configure(EntityTypeBuilder<Departamento> builder)
+    {
+        builder.HasKey(x => x.Codigo);
+
+        builder.Property(x => x.Nombre)
+               .HasMaxLength(100);
+    }
+}
+```
+
+Esta es la forma recomendada actualmente.
+
+---
+
+# 12.4. Usar `required` cuando el dato es obligatorio ⭐⭐⭐⭐⭐
+
+Desde C# 11 y .NET 10 es completamente válido.
+
+```csharp
+public required string Codigo { get; init; }
+
+public required string Nombre { get; private set; }
+```
+
+No hace falta escribir constructores solo para evitar `null`.
+
+---
+
+# 12.5. Preferir `init` para propiedades inmutables ⭐⭐⭐⭐⭐
+
+Si el dato nunca cambia:
+
+```csharp
+public required string Codigo { get; init; }
+```
+
+Ejemplos:
+
+- Código
+- Número de documento
+- Fecha de creación (si no cambia)
+
+---
+
+# 12.6. `private set` para propiedades modificables ⭐⭐⭐⭐⭐
+
+```csharp
+public required string Nombre { get; private set; }
+
+public void CambiarNombre(string nombre)
+{
+    Nombre = nombre;
+}
+```
+
+No permitir:
+
+```csharp
+departamento.Nombre = "...";
+```
+
+---
+
+# 12.7. No exponer `List<T>` ⭐⭐⭐⭐⭐
+
+En lugar de:
+
+```csharp
+public List<Ciudad> Ciudades { get; set; }
+```
+
+usar:
+
+```csharp
+private readonly List<Ciudad> _ciudades = [];
+
+public IReadOnlyCollection<Ciudad> Ciudades
+    => _ciudades;
+```
+
+---
+
+# 12.8. Encapsular el comportamiento ⭐⭐⭐⭐⭐
+
+Evita entidades "anémicas" con solo propiedades.
+
+Mal:
+
+```csharp
+public string Nombre { get; set; }
+```
+
+Mejor:
+
+```csharp
+public void CambiarNombre(string nombre)
+{
+    // Validaciones
+    Nombre = nombre;
+}
+```
+
+---
+
+# 12.9. Validar invariantes en la entidad ⭐⭐⭐⭐⭐
+
+```csharp
+public void CambiarNombre(string nombre)
+{
+    ArgumentException.ThrowIfNullOrWhiteSpace(nombre);
+
+    if (nombre.Length > 100)
+        throw new DomainException("Nombre inválido.");
+
+    Nombre = nombre;
+}
+```
+
+La entidad protege sus propias reglas de negocio.
+
+---
+
+# 12.10. No crear DTOs dentro del dominio ⭐⭐⭐⭐⭐
+
+Incorrecto:
+
+```text
+Domain
+    DTOs
+```
+
+Los DTO pertenecen a Application o a la API.
+
+---
+
+# 12.11. Evitar repositorios genéricos ⭐⭐⭐⭐⭐
+
+Hace algunos años era muy común:
+
+```csharp
+IGenericRepository<T>
+```
+
+Hoy suele considerarse una abstracción demasiado genérica para dominios ricos. Es preferible definir repositorios orientados al negocio cuando realmente se necesitan.
+
+Ejemplo:
+
+```csharp
+IDepartamentoRepository
+```
+
+---
+
+# 12.12. No agregar constructores innecesarios ⭐⭐⭐⭐⭐
+
+Hace años era habitual:
+
+```csharp
+private Departamento()
+{
+}
+```
+
+Hoy EF Core puede trabajar perfectamente con constructores parametrizados y propiedades `init` o con un constructor sin parámetros cuando sea necesario.  
+No agregues un constructor vacío solo "porque EF lo necesita"; añádelo únicamente si realmente tu diseño lo requiere.
+
+---
+
+# 12.13. Evitar clases `partial` ⭐⭐⭐⭐⭐
+
+No uses:
+
+```csharp
+public partial class Departamento
+```
+
+Salvo cuando:
+
+- el código es generado automáticamente;
+- trabajas con WinForms, Razor u otra herramienta que lo requiera.
+
+Para entidades de dominio:
+
+```csharp
+public sealed class Departamento
+```
+
+es lo habitual.
+
+---
+
+# 12.14. Preferir `sealed` ⭐⭐⭐⭐⭐
+
+```csharp
+public sealed class Departamento
+```
+
+Si nadie va a heredar de la entidad, declara la clase `sealed`. Esto expresa claramente la intención del diseño.
+
+---
+
+# 12.15. No incluir lógica de acceso a datos ⭐⭐⭐⭐⭐
+
+Incorrecto:
+
+```csharp
+public async Task Guardar()
+```
+
+o
+
+```csharp
+public async Task Eliminar()
+```
+
+La entidad no conoce EF Core, SQL ni Dapper.
+
+---
+
+# 12.16. Usar Value Objects cuando corresponda ⭐⭐⭐⭐⭐
+
+En lugar de:
+
+```csharp
+public string Correo { get; set; }
+```
+
+preferir:
+
+```csharp
+public Email Email { get; private set; }
+```
+
+cuando el concepto tenga reglas propias.
+
+---
+
+# 12.17. No usar Lazy Loading ⭐⭐⭐⭐⭐
+
+Actualmente se suele evitar porque:
+
+- produce consultas inesperadas (N+1);
+- dificulta medir el rendimiento;
+- hace menos evidente cuándo se accede a la base de datos.
+
+Se prefieren consultas explícitas (`Include`, proyecciones o CQRS).
+
+---
+
+# 12.18. Separar claramente Domain de Infrastructure ⭐⭐⭐⭐⭐
+
+El proyecto Domain no debería referenciar:
+
+- EF Core
+- Dapper
+- Npgsql
+- SQL Server
+- AutoMapper
+
+Debe poder compilar sin ninguna dependencia de infraestructura.
+
+---
+
+# 12.19. Mantener las entidades pequeñas ⭐⭐⭐⭐⭐
+
+Una entidad con cientos de líneas suele indicar que conviene extraer Value Objects o servicios de dominio.
+
+---
+
+# 12.20. Evitar código generado dentro del dominio ⭐⭐⭐⭐⭐
+
+Si utilizas `Scaffold-DbContext`, no coloques las clases generadas dentro de `Domain`. Lo habitual es mantenerlas en `Infrastructure/Persistence`  
+o usarlas solo como apoyo para el mapeo, dejando el dominio libre de código generado.
+
+---
+
+# Lo que hoy se considera desactualizado o menos recomendable
+
+```
+
+| Práctica                                    | Estado en 2026 | Alternativa recomendada                       |
+| ------------------------------------------- | -------------- | --------------------------------------------- |
+| DataAnnotations para mapear EF Core         | ❌             | Fluent API                                    |
+| Repositorio genérico para todo              | ⚠️             | Repositorios específicos cuando aporten valor |
+| Entidades anémicas (solo propiedades)       | ❌             | Entidades con comportamiento                  |
+| `List<T>` públicas                          | ❌             | `IReadOnlyCollection<T>` con respaldo privado |
+| `public set` en todas las propiedades       | ❌             | `private set` o `init`                        |
+| Constructores vacíos añadidos por costumbre | ⚠️             | Solo cuando el diseño lo requiera             |
+| Lógica SQL dentro de entidades              | ❌             | Infrastructure                                |
+| DTOs en Domain                              | ❌             | Application/API                               |
+| Lazy Loading como estrategia por defecto    | ❌             | Carga explícita                               |
+```
+
+## Para TribuSoft
+
+Por las preguntas que hemos venido trabajando, la arquitectura que considero más alineada con las prácticas actuales sería:
+
+- **Domain**: entidades ricas, `sealed`, `required`, `init` y `private set`, comportamiento encapsulado y Value Objects cuando aporten valor.
+- **Application**: casos de uso, DTOs, validaciones de entrada y orquestación.
+- **Infrastructure**: EF Core 10, `DbContext`, configuraciones con Fluent API, repositorios y migraciones.
+- **API**: endpoints, autenticación, serialización y composición de dependencias.
+
+Esa combinación refleja el enfoque que hoy es más habitual en proyectos profesionales modernos con **.NET 10**, evitando patrones que han quedado obsoletos o que ya no aportan beneficios claros.
+
+# 13. Refactorizacion de Tercero usando Object ValueObjects
+
+Hasta el momento nuesta entidad Tercero no tiene ninguna logica de Negocio, pero hoy en el 2026  
+al contrario de hace años se recomienda ciertas validaciones basicas en el contructor de la entidad,  
+anteriormente se consideraba que la entidad debia ser lo mas limpia posible, pero eso a cambiado.
+
+Como no se permite codigo HardCoding crearemos una clase dentro de Object para tipo de documento  
+donde nos permite escoger entre Cedula de ciudania o Nit.  
+por ahora para esto crearemos una clase tipo record muy utilizado en Dtos, y despues lo modificaremos  
+por un ValuesObject con logina mas compleja.
+
+```csharp
+namespace TribuSoft.Domain.ValueObjects;
+
+public sealed record TipoDocumento
+{
+    public static readonly TipoDocumento CedulaCiudadania = new("13");
+
+    public static readonly TipoDocumento Nit = new("31");
+
+    public string Codigo { get; }
+
+    private TipoDocumento(string codigo)
+    {
+        Codigo = codigo;
+    }
+
+    public static TipoDocumento From(string codigo)
+        => codigo switch
+        {
+            "13" => CedulaCiudadania,
+            "31" => Nit,
+            _ => throw new ArgumentException("Tipo de documento inválido.")
+        };
+}
+```
+
+y nuesta entidad quedaria de la siguiente forma:
+
+```csharp
+using TribuSoft.Domain.ValueObjects;
+
+namespace TribuSoft.Domain.Entities;
+
+public sealed class Tercero
+{
+    // Id autoincremental manejado por EF Core
+    public long Id { get; private set; }
+
+    // Propiedades de Solo Lectura tras la creación (Inmutabilidad de Identidad)
+    public TipoDocumento TipoDocumento { get; private set; }
+    public string NumeroDocumento { get; private set; }
+
+    // Propiedades de Estado (Encapsuladas)
+    public string? PrimerApellido { get; private set; }
+    public string? SegundoApellido { get; private set; }
+    public string? PrimerNombre { get; private set; }
+    public string? OtrosNombres { get; private set; }
+    public string? RazonSocial { get; private set; }
+    public string Direccion { get; private set; } = null!;
+    public string CodigoMunicipio { get; private set; } = null!;
+
+    // Relaciones EF Core
+    public Municipio Municipio { get; private set; } = null!;
+
+    // Constructor vacío para persistencia / ORM (EF Core)
+    [Obsolete("Usar solo para EF Core", error: false)]
+    private Tercero() { }
+
+    // Único Constructor Público: Fuerza un estado inicial válido según reglas de negocio
+    public Tercero(
+        TipoDocumento tipoDocumento,
+        string numeroDocumento,
+        string direccion,
+        string codigoMunicipio,
+        string? primerNombre = null,
+        string? primerApellido = null,
+        string? segundoApellido = null,
+        string? otrosNombres = null,
+        string? razonSocial = null)
+    {
+        // Validaciones transversales
+        ArgumentNullException.ThrowIfNull(tipoDocumento);
+        ArgumentException.ThrowIfNullOrWhiteSpace(numeroDocumento);
+        ArgumentException.ThrowIfNullOrWhiteSpace(direccion);
+        ArgumentException.ThrowIfNullOrWhiteSpace(codigoMunicipio);
+
+        // Validación de Reglas de Negocio Específicas
+        if (tipoDocumento == TipoDocumento.CedulaCiudadania) // Persona Natural (Cédula de Ciudadanía)
+        {
+            if (string.IsNullOrWhiteSpace(primerNombre) || string.IsNullOrWhiteSpace(primerApellido))
+            {
+                throw new ArgumentException("Para personas naturales (Tipo '13'), el Primer Nombre y Primer Apellido son obligatorios.");
+            }
+
+            PrimerNombre = primerNombre;
+            PrimerApellido = primerApellido;
+            SegundoApellido = segundoApellido;
+            OtrosNombres = otrosNombres;
+            RazonSocial = null; // No aplica
+        }
+        else if (tipoDocumento == TipoDocumento.Nit) // Persona Jurídica (NIT)
+        {
+            if (string.IsNullOrWhiteSpace(razonSocial))
+            {
+                throw new ArgumentException("Para personas jurídicas (Tipo '31'), la Razón Social es obligatoria.");
+            }
+
+            RazonSocial = razonSocial;
+            // Limpieza explícita de campos de persona natural
+            PrimerNombre = null;
+            PrimerApellido = null;
+            SegundoApellido = null;
+            OtrosNombres = null;
+        }
+        else
+        {
+            // Opcional: Manejo de otros tipos de documento intermedios o lanzar excepción
+            throw new ArgumentException($"Tipo de documento '{tipoDocumento}' no soportado.");
+        }
+
+        TipoDocumento = tipoDocumento;
+        NumeroDocumento = numeroDocumento;
+        Direccion = direccion;
+        CodigoMunicipio = codigoMunicipio;
+    }
+
+    // Métodos de Comportamiento (Cambio de estado seguro)
+
+    public void ActualizarUbicacion(string nuevaDireccion, string nuevoCodigoMunicipio)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(nuevaDireccion);
+        ArgumentException.ThrowIfNullOrWhiteSpace(nuevoCodigoMunicipio);
+
+        Direccion = nuevaDireccion;
+        CodigoMunicipio = nuevoCodigoMunicipio;
+    }
+
+    // Si el tercero es Persona Natural, permitimos mutar sus nombres bajo validación
+    public void ModificarNombres(string primerNombre, string? otrosNombres, string primerApellido, string? segundoApellido)
+    {
+        if (TipoDocumento != TipoDocumento.CedulaCiudadania)
+        {
+            throw new InvalidOperationException("No se pueden modificar nombres individuales en una persona jurídica.");
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(primerNombre);
+        ArgumentException.ThrowIfNullOrWhiteSpace(primerApellido);
+
+        PrimerNombre = primerNombre;
+        OtrosNombres = otrosNombres;
+        PrimerApellido = primerApellido;
+        SegundoApellido = segundoApellido;
+    }
+
+    // Si el tercero es Persona Jurídica, permitimos mutar la Razón Social bajo validación
+    public void ModificarRazonSocial(string nuevaRazonSocial)
+    {
+        if (TipoDocumento != TipoDocumento.Nit)
+        {
+            throw new InvalidOperationException("No se puede asignar una razón social a una persona natural.");
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(nuevaRazonSocial);
+
+        RazonSocial = nuevaRazonSocial;
+    }
+
+
+}
+
+```
+
+# 13.1 Refactorizacion de Tercero Clases demasiado grandes
+
+Nuestro codigo esta bastante bien, pero ahun podemos mejorarlo mas.
+en nuestra codigo comparamos en varias partes si TipoDocumento==CedulaCiudaddania haga algo y si es nit haga otra coasa.  
+pero si no solomente hay estos dos tpos y luegos nos dicen que si es tarjeta de identidad y cedula extrangera aplica lo  
+mismo que cedula de ciudadania , se va complicando las condiciones.
+
+Lo que hay que identificar es si la persona es natura o juridica y segun el caso haga algo.  
+por otro lado el contructor tiene muchas propiedades es mejor separarlas y creamos 2 clases PersonaNatural y PersonaJuridica  
+que deriban una clase Abstracta base llamada Tercero, entonces el codigo quedaria:
+
+```csharp
+
+
+```
+
+# 14 Tips para el manejo de Excepciones
+
+Si estás desarrollando una **API con .NET 10** usando **Clean Architecture + DDD + EF Core 10** (como tu proyecto TribuSoft), hoy en 2026 la forma recomendada de manejar excepciones ha cambiado bastante respecto a los proyectos de .NET Core 3.1 o .NET 6.
+
+La recomendación actual de Microsoft es:
+
+- **`IExceptionHandler`** para manejo global de excepciones.
+- **`ProblemDetails` (RFC 9457/RFC 7807)** como formato estándar de respuesta.
+- **Excepciones personalizadas únicamente para errores excepcionales.**
+- **No usar excepciones para controlar el flujo normal del negocio.** ([Microsoft Learn][1])
+
+---
+
+# 14.1. No llenar el código de try/catch
+
+❌ Incorrecto
+
+```csharp
+public async Task CrearCliente(...)
+{
+    try
+    {
+        ...
+    }
+    catch(Exception ex)
+    {
+        throw;
+    }
+}
+```
+
+No aporta absolutamente nada.
+
+Solo agrega ruido.
+
+---
+
+# 14.2. Tener un único Global Exception Handler
+
+Hoy ya no se recomienda crear un Middleware personalizado si no es necesario.
+
+Se recomienda implementar
+
+```text
+IExceptionHandler
+```
+
+y registrarlo en Program.cs.
+
+Microsoft lo recomienda desde .NET 8 y continúa siendo el enfoque recomendado en .NET 10. ([Microsoft Learn][1])
+
+---
+
+# 14.3. Registrar ProblemDetails
+
+```csharp
+builder.Services.AddProblemDetails();
+
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+```
+
+y
+
+```csharp
+app.UseExceptionHandler();
+```
+
+Nada más.
+
+---
+
+# 14.4. Usar ProblemDetails
+
+No devolver esto
+
+```json
+{
+  "error": "Error inesperado"
+}
+```
+
+Ni esto
+
+```json
+{
+  "message": "..."
+}
+```
+
+La recomendación actual es
+
+```json
+{
+  "type": "...",
+  "title": "...",
+  "status": 404,
+  "detail": "...",
+  "instance": "/api/clientes/5"
+}
+```
+
+Ese formato lo entienden Swagger, OpenAPI y prácticamente cualquier cliente HTTP. ([Microsoft Learn][1])
+
+---
+
+# 14.5. Tener excepciones específicas
+
+Nunca hacer
+
+```csharp
+throw new Exception("...");
+```
+
+Mejor
+
+```csharp
+NotFoundException
+
+BusinessException
+
+ValidationException
+
+ConflictException
+
+UnauthorizedException
+
+ForbiddenException
+```
+
+Ejemplo
+
+```csharp
+public sealed class NotFoundException : Exception
+{
+    public NotFoundException(string message)
+        : base(message)
+    {
+    }
+}
+```
+
+---
+
+# 14.6. No usar excepciones para reglas de negocio comunes
+
+Esto es un error muy común.
+
+Incorrecto
+
+```csharp
+if(cliente == null)
+    throw new Exception();
+```
+
+o
+
+```csharp
+if(clienteExiste)
+    throw new Exception();
+```
+
+Si una situación puede ocurrir normalmente (por ejemplo, un cliente no existe o un correo ya está registrado), considera devolver un resultado de negocio (`Result<T>`, `ErrorOr`, `OneOf`, etc.) desde la capa de aplicación y reservar las excepciones para fallos realmente excepcionales. Muchos equipos siguen este enfoque para evitar usar excepciones como flujo de control. ([Reddit][2])
+
+---
+
+# 14.7. Lanzar excepciones únicamente cuando algo realmente falló
+
+Buenos ejemplos
+
+```text
+SQL Server no responde
+
+Timeout
+
+Archivo corrupto
+
+No existe la configuración
+
+Error al conectarse con DIAN
+
+Error de autenticación
+
+Error de infraestructura
+```
+
+---
+
+# 14.8. Registrar el Log una sola vez
+
+Nunca hacer
+
+```csharp
+catch(Exception ex)
+{
+    _logger.LogError(ex,...);
+
+    throw;
+}
+```
+
+y luego
+
+```csharp
+GlobalExceptionHandler
+```
+
+vuelve a registrar el mismo error.
+
+Terminas con
+
+```
+ERROR
+
+ERROR
+
+ERROR
+```
+
+en Serilog.
+
+Lo recomendado es registrar el error únicamente en el manejador global, salvo que necesites agregar contexto específico.
+
+---
+
+# 14.9. No mostrar detalles internos
+
+Nunca devolver
+
+```json
+{
+  "stackTrace": "..."
+}
+```
+
+ni
+
+```json
+{
+  "innerException": "..."
+}
+```
+
+ni
+
+```json
+{
+  "source": "Microsoft.Data.SqlClient"
+}
+```
+
+Eso queda únicamente en los logs.
+
+---
+
+# 14.10. Separar errores por capas
+
+Una arquitectura limpia normalmente queda así
+
+```
+API
+   ↓
+Application
+   ↓
+Domain
+   ↓
+Infrastructure
+```
+
+Cada capa lanza únicamente las excepciones que le corresponden.
+
+Por ejemplo
+
+Domain
+
+```
+BusinessRuleException
+```
+
+Application
+
+```
+ValidationException
+```
+
+Infrastructure
+
+```
+DatabaseException
+
+ExternalServiceException
+
+StorageException
+```
+
+La API convierte todas esas excepciones a códigos HTTP mediante el `GlobalExceptionHandler`.
+
+---
+
+# 14.11. No capturar Exception en todos lados
+
+Incorrecto
+
+```csharp
+catch(Exception)
+{
+}
+```
+
+Correcto
+
+```csharp
+catch(SqlException)
+```
+
+o
+
+```csharp
+catch(TimeoutException)
+```
+
+o simplemente dejar que el `GlobalExceptionHandler` haga su trabajo.
+
+---
+
+# 14.12. Mapear las excepciones a códigos HTTP
+
+| Excepción             | HTTP |
+| --------------------- | ---- |
+| ValidationException   | 400  |
+| UnauthorizedException | 401  |
+| ForbiddenException    | 403  |
+| NotFoundException     | 404  |
+| ConflictException     | 409  |
+| BusinessException     | 422  |
+| Exception             | 500  |
+
+---
+
+# 14.13. Mantener un catálogo pequeño
+
+No crear una excepción para cada entidad.
+
+❌
+
+```
+ClienteNoExisteException
+
+ProductoNoExisteException
+
+FacturaNoExisteException
+
+EmpleadoNoExisteException
+```
+
+Mejor
+
+```
+NotFoundException
+```
+
+con un mensaje descriptivo
+
+```csharp
+throw new NotFoundException(
+    $"Cliente {id} no existe");
+```
+
+---
+
+# 14.14. Registrar un CorrelationId o TraceId
+
+En cada error incluir
+
+```
+TraceId
+```
+
+o
+
+```
+CorrelationId
+```
+
+Así es posible encontrar rápidamente el error en los logs.
+
+---
+
+# 14.15. No usar excepciones para validar datos
+
+Incorrecto
+
+```csharp
+if(nombre.Length > 100)
+    throw new Exception();
+```
+
+Lo correcto es validar antes de ejecutar la lógica (por ejemplo, con validadores en la capa de aplicación) y devolver un error de validación cuando corresponda. Las excepciones deberían quedar para situaciones inesperadas o irrecuperables.
+
+---
+
+# Arquitectura recomendada para tu proyecto TribuSoft
+
+```text
+API
+│
+├── GlobalExceptionHandler
+│
+├── ProblemDetails
+│
+└── Logging
+
+Application
+│
+├── ValidationException
+├── Result<T> (opcional)
+└── Casos de uso
+
+Domain
+│
+├── BusinessRuleException
+└── Entidades
+
+Infrastructure
+│
+├── SqlException
+├── TimeoutException
+├── HttpRequestException
+└── etc.
+```
+
+## Recomendación
+
+Para una aplicación moderna en **.NET 10 + Clean Architecture + DDD + EF Core 10**, implementaría:
+
+- `IExceptionHandler` para el manejo global de excepciones.
+- `AddProblemDetails()` para respuestas HTTP estandarizadas.
+- Excepciones personalizadas solo para errores excepcionales.
+- Validaciones de negocio mediante validadores o un patrón `Result<T>` cuando el fallo es esperado.
+- Un único punto centralizado para registrar logs y mapear excepciones a respuestas HTTP. ([Microsoft Learn][1])
+
+Con ese enfoque obtienes un código más limpio, consistente y alineado con las recomendaciones actuales de Microsoft y las prácticas más adoptadas por la comunidad .NET.
+
+[1]: https://learn.microsoft.com/en-us/aspnet/core/fundamentals/error-handling-api?view=aspnetcore-10.0&utm_source=chatgpt.com "Handle errors in ASP.NET Core APIs | Microsoft Learn"
+[2]: https://www.reddit.com/r/dotnet/comments/1dr866c/what_is_your_favorite_way_of_returning_errors/?utm_source=chatgpt.com "What is your favorite way of returning errors from handlers/services in ASP.NET Core?"
+
+
+## ¿Qué hacen proyectos como eShop, Clean Architecture, Ardalis, etc.?
+
+La mayoría **ni siquiera tienen `BusinessException`**.
+
+Usan una de estas alternativas:
+
+* `DomainException` para reglas del dominio.
+* Result Pattern (`Result<T>`, `ErrorOr<T>`, `FluentResults`, `OneOf`).
+* ValidationException (FluentValidation).
+* UnauthorizedException.
+* NotFoundException.
+* ConflictException.
+
+Es decir, cada error representa una situación específica.
+
+---
+
+# Mi recomendación para un proyecto nuevo en .NET 10 (2026)
+
+Si estás construyendo una arquitectura DDD como la de **TribuSoft**, utilizaría:
+
+```
+Domain
+ └── DomainException
+```
+
+```
+Application
+ ├── ValidationException
+ ├── NotFoundException
+ ├── ConflictException
+ ├── UnauthorizedException
+ └── ForbiddenException
+```
+
+**No crearía `BusinessException`**, porque suele ser demasiado genérica y termina mezclando errores de dominio, validación y aplicación. Es más mantenible expresar cada tipo de error con una excepción específica o, mejor aún, utilizar un patrón de resultados (`Result<T>` o `ErrorOr<T>`) para los errores esperados y reservar las excepciones para situaciones realmente excepcionales.
+
+Para el proyecto que has venido diseñando (DDD + Clean Architecture + .NET 10), esa separación hace que cada capa tenga responsabilidades claras y que el manejo global de errores sea más sencillo y consistente.
+
+
+# 15. validaciones usando FluetValidation
+
+Segun las mejores practicas en una arquitectura de software se recomiendas que las validaciones deben ir en la capa **Aplication**,  
+ya no se recomienda usar **anotation** en cambio se usa la libreria FlueValidation.  
+
+Lo primero que debemos hacer es instalar los paquetes **FluentValidation** y **FluentValidation.DependencyInjectionExtensions** en mi caso   
+uso la version 12.1.1 para ambos.
+
