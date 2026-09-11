@@ -11,6 +11,10 @@ featured: false
 
 Sí. Te voy a dejar un **ejemplo completo y paso a paso de un blog con Next.js + MDX**, pensado para que lo puedas **entender desde cero** y luego crecerlo.
 
+Tomamos como referencias en video[AprendiendoDev](https://www.youtube.com/watch?v=g0D6VCh_fvA)  
+tambien tuve en cuenta este video en ingles[blog por Traversy Media](https://www.youtube.com/watch?v=MrjeefD8sac)  
+
+
 La idea será construir esto:
 
 * **Next.js**
@@ -313,7 +317,7 @@ export function getPostBySlug(slug) {
 }
 ```
 
----
+
 
 # 10. Qué hace este archivo `posts.js`
 
@@ -877,13 +881,13 @@ Después te puedo dar la **versión profesional** con:
 
 ## Flujo del proyecto
 
-### 1. Guardas posts en:
+### 25.1. Guardas posts en:
 
 ```bash id="q5m9t2"
 content/posts/*.mdx
 ```
 
-### 2. `lib/posts.js`
+### 25.2. `lib/posts.js`
 
 lee esos archivos y extrae:
 
@@ -892,11 +896,11 @@ lee esos archivos y extrae:
 * descripción
 * slug
 
-### 3. `app/blog/page.jsx`
+### 25.3. `app/blog/page.jsx`
 
 muestra la lista de artículos
 
-### 4. `app/blog/[slug]/page.jsx`
+### 25.4. `app/blog/[slug]/page.jsx`
 
 abre un artículo específico según la URL
 
@@ -1459,3 +1463,348 @@ Podemos crear componentes como:
 * `Terminal.jsx`
 
 Con eso tu blog quedará muy similar a la documentación de **Next.js**, **Vercel**, **Shadcn UI** o **Microsoft Learn**, pero adaptado a tus tutoriales de **.NET**, **Next.js**, **PostgreSQL** y **DDD**. Creo que es un objetivo muy alcanzable con la base que ya has construido.
+
+> Deploy con Vercel
+
+# 32. Deploy con Vercel
+
+# 32.1. Entrar a Vercel
+
+Una vez creada la cuenta:
+
+[Vercel Dashboard](https://vercel.com/dashboard?utm_source=chatgpt.com)
+
+Busca:
+
+**Add New → Project**
+
+La documentación actual de Vercel indica precisamente este flujo: **Add New → Project → elegir proveedor Git → importar repositorio**. ([Vercel][3])
+
+---
+
+# 32.2. Importar tu repositorio
+
+Vercel debería mostrar tus repositorios de GitHub.
+
+Busca:
+
+```text
+mi-blog-nextjs-mdx-v5
+```
+
+y pulsa:
+
+**Import**
+
+---
+
+# 32.3. Configurar el proyecto
+
+Aquí viene una parte importante.
+
+Vercel debería detectar automáticamente que es:
+
+```text
+Next.js
+```
+
+Y normalmente verás algo parecido a:
+
+```text
+Project Name
+mi-blog-nextjs-mdx-v5
+
+Framework Preset
+Next.js
+
+Root Directory
+./
+
+Build Command
+next build
+
+Output Directory
+.next
+```
+
+### No cambies nada inicialmente.
+
+Para un proyecto Next.js normal, Vercel detecta automáticamente la configuración apropiada. ([Vercel][4])
+
+---
+
+# 32.4. Environment Variables
+
+Si tu blog **no utiliza variables de entorno**, puedes dejar esto vacío.
+
+Por ejemplo, si tienes:
+
+```text
+.env.local
+```
+
+pero solamente contiene configuraciones locales, no necesariamente tienes que subirlas.
+
+⚠️ **Nunca subas `.env.local` a GitHub** si contiene secretos.
+
+Tu `.gitignore` debería tener:
+
+```text
+.env
+.env.local
+.env.*.local
+```
+
+Si posteriormente tienes algo como:
+
+```text
+DATABASE_URL=...
+API_KEY=...
+```
+
+esas variables se configuran directamente en Vercel.
+
+---
+
+# 32.5. Presiona Deploy 🚀
+
+Ahora simplemente:
+
+**Deploy**
+
+Vercel hará aproximadamente esto:
+
+```text
+GitHub
+   │
+   ▼
+Vercel
+   │
+   ├── npm/pnpm install
+   │
+   ├── next build
+   │
+   ├── procesa MDX
+   │
+   ├── genera las páginas
+   │
+   └── publica
+          │
+          ▼
+   Internet 🌎
+```
+
+Vercel tiene soporte específico para las capacidades de Next.js, incluyendo generación estática, SSR y otras características del framework. ([Vercel][1])
+
+---
+
+# 32.6. Obtendrás una URL
+
+Después del despliegue Vercel te dará una dirección parecida a:
+
+```text
+https://rodneydev.vercel.app/
+```
+
+Entonces tu blog estará disponible públicamente.
+
+---
+
+# 32.7. Lo mejor: despliegue automático
+
+Aquí es donde Vercel resulta especialmente cómodo.
+
+Supongamos que tienes:
+
+```text
+content/posts/value-objects.mdx
+```
+
+y escribes un nuevo artículo:
+
+```text
+content/posts/generics-csharp-14.mdx
+```
+
+Haces:
+
+```bash
+git add .
+
+git commit -m "Add article about generics"
+
+git push
+```
+
+Y Vercel detecta el cambio y crea un nuevo deployment automáticamente. Vercel documenta este flujo de integración con Git y despliegues automáticos. ([Vercel][1])
+
+Quedaría:
+
+```text
+                    ┌──────────────┐
+                    │   GitHub     │
+                    └──────┬───────┘
+                           │
+                        git push
+                           │
+                           ▼
+                    ┌──────────────┐
+                    │    Vercel    │
+                    └──────┬───────┘
+                           │
+                       next build
+                           │
+                           ▼
+                    ┌──────────────┐
+                    │  Tu Blog     │
+                    │  Next.js     │
+                    │     + MDX    │
+                    └──────────────┘
+```
+
+## 32.8. Y después podemos poner tu dominio
+
+Como estuvimos hablando de **RodneyDev**, podrías terminar teniendo algo como:
+
+```text
+rodneydev.com
+```
+
+y:
+
+```text
+rodneydev.com/blog
+```
+
+o simplemente:
+
+```text
+rodneydev.com
+```
+
+como tu blog completo.
+
+También puedes empezar gratuitamente con:
+
+```text
+mi-blog-nextjs-mdx-v5.vercel.app
+```
+
+y posteriormente conectar un dominio propio.
+
+---
+
+### Una cosa importante para tu proyecto
+
+Como ya tienes tu blog **Next.js + MDX funcionando localmente**, **yo no utilizaría Vercel Drop como primera opción**, aunque actualmente existe y permite incluso arrastrar una carpeta directamente al navegador. ([Vercel][5])
+
+Para ti es mucho mejor:
+
+**GitHub → Vercel**
+
+porque vas a seguir desarrollando el blog y tendrás:
+
+* historial de cambios
+* backups en GitHub
+* deployments automáticos
+* previews
+* posibilidad de trabajar con ramas
+* posibilidad de volver a una versión anterior
+
+**Si quieres, podemos hacerlo juntos ahora mismo: primero revisamos tu proyecto `mi-blog-nextjs-mdx-v5`, verificamos que esté listo para producción y después hacemos el primer deploy en Vercel paso a paso.**
+
+[1]: https://vercel.com/frameworks/nextjs?utm_source=chatgpt.com "Next.js on Vercel"
+[2]: https://vercel.com/signup/v0?next=%2Fapi%2Fvercel-auth%3FredirectUrl%3Dhttps%253A%252F%252Fv0.app%252Fapi%252Fauth%252Fcallback%26qs%3D%26clientId%3Dv0%26state%3DOSk2RE0mzwiPn1uHNndbri.Jv39pg.ktF8UprNqqWfO%26signup%3D1%26next%3D%252Fapi%252Fvercel-auth%26utm_medium%3Dreferral%26utm_campaign%3Dinvite_and_earn%26utm_source%3Drolfvanroot&utm_source=chatgpt.com "Vercel"
+[3]: https://vercel.com/academy/vercel-foundations/vercel-account-setup?utm_source=chatgpt.com "Account Setup | Vercel Academy"
+[4]: https://vercel.com/academy/ai-summary-app-with-nextjs/deploy-the-app?utm_source=chatgpt.com "Deploy the App | Vercel Academy"
+[5]: https://vercel.com/changelog/vercel-drop?utm_source=chatgpt.com "Introducing Vercel Drop - Vercel"
+
+
+> Nota: el nombre del proyecto en vercel debe ser todo en minuscula **rondeydev**
+
+si combina minusculas y mayuscula vercel no despliega el proyecto
+
+despues me salio el error:
+
+```json
+Vulnerable version of next-mdx-remote detected (5.0.0). Please update to version 6.0.0 or later.  
+```
+
+tuve que actualizar la libreria de la siguiente forma:
+## 33 Actualizacion de la libreria **next-mdx-remote**
+
+### 33.1. En tu proyecto ejecuta**###
+
+Si utilizas npm:
+
+```bash
+npm install next-mdx-remote@latest
+```
+
+Esto actualizará `package.json` y `package-lock.json`.
+
+Puedes comprobarlo con:
+
+```bash
+npm list next-mdx-remote
+```
+
+Deberías obtener algo parecido a:
+
+```text
+next-mdx-remote@6.x.x
+```
+
+### 33.2. Luego prueba localmente
+
+Antes de volver a Vercel:
+
+```bash
+npm run build
+```
+
+Esto es importante en tu caso porque estás usando:
+
+* Next.js
+* `next-mdx-remote`
+* MDX
+* `gray-matter`
+* `rehype-pretty-code`
+* componentes MDX personalizados
+
+La versión 6 puede introducir cambios respecto a la 5, así que conviene comprobar que todos tus `.mdx` siguen compilando correctamente.
+
+### 33.3. Guarda el cambio en Git
+
+```bash
+git add package.json package-lock.json
+git commit -m "Update next-mdx-remote"
+git push
+```
+
+Como tu proyecto está conectado a Vercel, el `push` debería provocar automáticamente un nuevo deployment.
+
+---
+
+### ⚠️ Pero hay algo que quiero revisar en tu proyecto
+
+Como anteriormente estuvimos trabajando precisamente con tu proyecto **`mi-blog-nextjs-mdx-remote-v5`**, y recuerdo que tienes código relacionado con `next-mdx-remote/rsc`, **no te recomiendo simplemente actualizar y asumir que todo funcionará igual**.
+
+En particular, revisaría:
+
+```javascript
+import { MDXRemote } from "next-mdx-remote/rsc";
+```
+
+y tu configuración de:
+
+```text
+rehype-pretty-code
+gray-matter
+mdxComponents
+```
+
+porque queremos que el blog siga funcionando correctamente después de la actualización.
+
+Si quieres, **puedes subir tu `package.json`** y lo reviso para decirte exactamente qué debes cambiar y si hay otras dependencias que convenga actualizar antes de volver a hacer el deploy.
+
