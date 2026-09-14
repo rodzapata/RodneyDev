@@ -13,6 +13,8 @@ Para publicar una REST API en **.NET** sin pagar, la mejor opción depende de c�
 
 Video de como publicar un proyecto en Moster.asp [publicar by Remigiusz Zalewski](https://www.youtube.com/watch?v=69x7h-qdCKE)  
 publicando proyecto con el hosting en Somee.com[webapi by CodigoEstudiante](https://www.youtube.com/watch?v=hB8jW0FaI9k&t=623s)  
+usar hostin para la api rest Render.com [Render by David Araya](https://www.youtube.com/watch?v=dGok1dioUrA)  
+
 
 ---
 
@@ -86,3 +88,459 @@ Si prefieres un flujo basado en Git e imágenes Linux, estas plataformas PaaS pe
 | **Subir archivos rápida y manualmente via FTP** | **Somee.com** |
 
 *Tip extra para la base de datos:* Si la base de datos de los proveedores de hosting se te queda corta o caduca, puedes vincular tu REST API .NET a proveedores de bases de datos relacionales gratuitos como **Neon.tech** (PostgreSQL) o **PlanetScale** (MySQL).
+
+
+> si tengo una db en neon y quiero hacer una rest api que se conecte a neon cual hosting gratis me recomientas si voy utilizar .net 10 ?
+
+Sí. Para tu caso concreto —**REST API en .NET 10 + C# 14 + PostgreSQL en Neon**— mi primera recomendación actualmente sería **Render**, especialmente si tu objetivo es **$0 para un proyecto personal, de aprendizaje o portafolio**.
+
+### 🥇 Mi recomendación: Render + Neon
+
+La arquitectura quedaría así:
+
+```text
+                    INTERNET
+                       │
+                       ▼
+              ┌─────────────────┐
+              │     Render      │
+              │                 │
+              │ ASP.NET Core    │
+              │   .NET 10 API   │
+              └────────┬────────┘
+                       │
+                       │ PostgreSQL
+                       ▼
+              ┌─────────────────┐
+              │      Neon       │
+              │   PostgreSQL    │
+              └─────────────────┘
+```
+
+Render actualmente ofrece **Web Services gratuitos**, por lo que puedes desplegar tu API sin pagar mientras permanezcas dentro de las limitaciones del plan gratuito. ([Render][1])
+
+Y lo importante para ti: **no necesitas utilizar el PostgreSQL de Render**. Puedes mantener perfectamente tu base de datos en **Neon** y hacer que tu API se conecte mediante `ConnectionStrings`.
+
+---
+
+## ¿Por qué escogería Render?
+
+Para tu escenario:
+
+| Característica          | Render Free |                          Railway |         Fly.io |
+| ----------------------- | ----------: | -------------------------------: | -------------: |
+| API .NET 10             |           ✅ |                                ✅ |              ✅ |
+| PostgreSQL externo Neon |           ✅ |                                ✅ |              ✅ |
+| GitHub → Deploy         |           ✅ |                                ✅ |             ⚠️ |
+| HTTPS                   |           ✅ |                                ✅ |              ✅ |
+| URL pública             |           ✅ |                                ✅ |              ✅ |
+| Gratis permanentemente* |           ✅ |                       ❌/limitado |              ❌ |
+| Fácil para comenzar     |       ⭐⭐⭐⭐⭐ |                            ⭐⭐⭐⭐⭐ |            ⭐⭐⭐ |
+| Docker necesario        |    Opcional | Actualmente sí para ASP.NET Core | Normalmente sí |
+| Cold start              |       ⚠️ Sí |                                — |              — |
+
+* Siempre sujeto a las condiciones y límites vigentes del proveedor.
+
+Un punto importante: **Railway ya no es mi primera opción si el requisito es estrictamente "gratis"**. Su modelo actual es más apropiado si aceptas pagar después del crédito/prueba inicial. ([Bex][2])
+
+Fly.io tampoco lo recomendaría para este objetivo porque ya no ofrece un free tier general para nuevas cuentas. ([Render][3])
+
+---
+
+# ⚠️ La principal desventaja de Render Free
+
+El servicio gratuito puede **entrar en suspensión cuando permanece inactivo**.
+
+Eso significa algo como:
+
+```text
+Usuario
+   │
+   ▼
+GET /api/equipos
+   │
+   ▼
+Render está dormido
+   │
+   ├── despierta
+   │
+   └── responde
+```
+
+La primera petición después de estar inactivo puede tardar bastante más que una petición normal. ([Render][3])
+
+Para:
+
+* aprender .NET 10
+* desarrollar tu proyecto HVAC
+* hacer pruebas
+* tener una API para tu aplicación Android
+* mostrar tu proyecto en GitHub
+* portafolio
+* pruebas con React/Next.js
+
+**no me parece un problema grave.**
+
+Para una API comercial que necesita responder inmediatamente 24/7, ya buscaría una opción de pago.
+
+---
+
+# 🔥 Y Neon encaja muy bien
+
+Yo mantendría:
+
+```text
+Render
+   │
+   │ HTTPS
+   ▼
+.NET 10 REST API
+   │
+   │ Npgsql / EF Core
+   ▼
+Neon PostgreSQL
+```
+
+En Render configurarías una variable de entorno:
+
+```text
+ConnectionStrings__DefaultConnection
+```
+
+con tu cadena de conexión de Neon.
+
+Por ejemplo:
+
+```text
+Host=ep-xxxxx.us-east-2.aws.neon.tech;
+Database=neondb;
+Username=xxxxx;
+Password=xxxxx;
+SSL Mode=Require;
+```
+
+Y en tu `Program.cs`:
+
+```csharp
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseNpgsql(
+        builder.Configuration.GetConnectionString("DefaultConnection")));
+```
+
+De esta manera **tu contraseña de Neon nunca queda dentro de GitHub**.
+
+---
+
+# 🏗️ Para tu proyecto HVAC
+
+De hecho, para el proyecto que estás construyendo yo utilizaría inicialmente:
+
+```text
+                    ┌───────────────────┐
+                    │    GitHub         │
+                    │                   │
+                    │ HVAC API          │
+                    └─────────┬─────────┘
+                              │
+                              │ CI/CD
+                              ▼
+                    ┌───────────────────┐
+                    │     Render        │
+                    │                   │
+                    │ .NET 10           │
+                    │ ASP.NET Core      │
+                    │ REST API          │
+                    └─────────┬─────────┘
+                              │
+                              │ Npgsql
+                              ▼
+                    ┌───────────────────┐
+                    │       Neon        │
+                    │                   │
+                    │ PostgreSQL        │
+                    └───────────────────┘
+```
+
+Y tu arquitectura:
+
+```text
+HVAC.Api
+     │
+     ▼
+HVAC.Application
+     │
+     ▼
+HVAC.Domain
+     ▲
+     │
+HVAC.Infrastructure
+     │
+     ▼
+PostgreSQL / Neon
+```
+
+Esto además te sirve como **proyecto real de portafolio para .NET**, porque puedes mostrar:
+
+* .NET 10
+* C# 14
+* ASP.NET Core
+* REST API
+* DDD
+* Clean Architecture
+* EF Core
+* PostgreSQL
+* Neon
+* Docker
+* GitHub
+* CI/CD
+* autenticación
+* Swagger/OpenAPI
+
+---
+
+## ¿Y Azure?
+
+Si tu objetivo fuera **aprender el ecosistema Microsoft profesional**, entonces sí consideraría Azure.
+
+Pero si la pregunta es:
+
+> **"Tengo Neon y quiero alojar gratis una API .NET 10"**
+
+yo empezaría con:
+
+### 🥇 Render + Neon
+
+y dejaría:
+
+### 🥈 Railway + Neon
+
+para cuando aceptes un pequeño costo.
+
+### 🥉 Azure
+
+para cuando quieras aprender despliegue empresarial en el ecosistema Microsoft.
+
+---
+
+### Una precisión importante
+
+Hay información antigua en Internet que todavía recomienda **Railway, Fly.io o Azure Free** como si fueran opciones permanentemente gratuitas. Las condiciones de estos servicios han cambiado bastante durante 2026. Por ejemplo, Railway actualmente documenta despliegue de ASP.NET Core mediante Dockerfile, mientras que Render mantiene un servicio web gratuito. ([docs.railway.com][4])
+
+**Para tu caso, yo montaría Render + Neon y te puedo guiar paso a paso desde tu solución .NET 10 hasta tener `https://...onrender.com/swagger` funcionando**, incluyendo el `Dockerfile`, variables de entorno, EF Core/Neon y configuración de CORS.
+
+[1]: https://render.com/docs/free?utm_source=chatgpt.com "Deploy for Free – Render Docs"
+[2]: https://bex.co/blog/2026/09/11/railway-vs-render-vs-flyio-benchmarks?utm_source=chatgpt.com "Railway vs Render vs Fly.io 2026 Benchmarks: The Spend Threshold Where Self-Hosting Wins | bex.co"
+[3]: https://render.com/articles/platforms-with-a-real-free-tier-for-developers-in-2026?utm_source=chatgpt.com "Platforms with a real free tier for developers in 2026"
+[4]: https://docs.railway.com/guides/aspnet-core?utm_source=chatgpt.com "Deploy an ASP.NET Core App | Railway Guides"
+
+> si tengo un proyecto en vercel gratuito de pagina estatica hecho con next.js , puedo conectarme a una api rest externa o estoy limitado ?
+
+Sí, **puedes conectarte a una API REST externa desde un proyecto gratuito de Vercel**. No estás limitado a consumir únicamente servicios de Vercel.
+
+En tu caso, podrías tener perfectamente:
+
+```text
+┌─────────────────────────┐
+│        Vercel           │
+│                         │
+│ Next.js 15/16           │
+│ Página estática         │
+└────────────┬────────────┘
+             │
+             │ HTTPS / fetch()
+             ▼
+┌─────────────────────────┐
+│        Render           │
+│                         │
+│ ASP.NET Core .NET 10    │
+│ REST API                │
+└────────────┬────────────┘
+             │
+             │ PostgreSQL
+             ▼
+┌─────────────────────────┐
+│         Neon            │
+│      PostgreSQL         │
+└─────────────────────────┘
+```
+
+### Por ejemplo, desde Next.js
+
+Puedes hacer:
+
+```javascript
+const response = await fetch(
+  "https://mi-api.onrender.com/api/equipos"
+);
+
+const equipos = await response.json();
+```
+
+Y tu API .NET 10 respondería:
+
+```http
+GET /api/equipos
+```
+
+---
+
+## ⚠️ Lo importante: CORS
+
+El principal punto que debes configurar es **CORS en tu API .NET**, no en Vercel.
+
+Por ejemplo:
+
+```csharp
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("NextJs", policy =>
+    {
+        policy
+            .WithOrigins("https://mi-proyecto.vercel.app")
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+    });
+});
+```
+
+Y posteriormente:
+
+```csharp
+app.UseCors("NextJs");
+```
+
+Entonces:
+
+```text
+Next.js en Vercel
+https://mi-proyecto.vercel.app
+             │
+             │ GET
+             ▼
+.NET 10 API
+https://mi-api.onrender.com
+             │
+             ▼
+          Neon
+```
+
+---
+
+## ¿Y si tu Next.js es realmente estático?
+
+Incluso mejor.
+
+Si haces:
+
+```bash
+npm run build
+```
+
+y generas un sitio estático, Vercel simplemente sirve los archivos de tu aplicación.
+
+El navegador del usuario puede hacer:
+
+```javascript
+fetch("https://mi-api.onrender.com/api/clientes")
+```
+
+directamente contra tu API.
+
+No necesitas que Vercel aloje la API.
+
+---
+
+## Hay una diferencia importante
+
+Tienes dos posibilidades:
+
+### Opción A — navegador → API
+
+```text
+Usuario
+   │
+   ▼
+Vercel / Next.js
+   │
+   │ fetch()
+   ▼
+Render / .NET 10
+   │
+   ▼
+Neon
+```
+
+Aquí **CORS es importante**.
+
+---
+
+### Opción B — Next.js Server → API
+
+Si utilizas funcionalidades server-side de Next.js:
+
+```text
+Usuario
+   │
+   ▼
+Vercel
+   │
+   │ server-side fetch()
+   ▼
+Render / .NET 10
+   │
+   ▼
+Neon
+```
+
+Aquí CORS normalmente **no es un problema**, porque la petición se realiza servidor a servidor.
+
+---
+
+# Para tu proyecto
+
+Incluso podrías tener **tres aplicaciones separadas y gratuitas**:
+
+```text
+              ┌──────────────────┐
+              │      Vercel      │
+              │                  │
+              │ Next.js          │
+              │ Frontend Web     │
+              └────────┬─────────┘
+                       │
+                       │ REST
+                       ▼
+              ┌──────────────────┐
+              │     Render       │
+              │                  │
+              │ .NET 10 API      │
+              │                  │
+              │ DDD              │
+              │ Clean Architecture
+              └────────┬─────────┘
+                       │
+                       │ EF Core
+                       ▼
+              ┌──────────────────┐
+              │      Neon        │
+              │                  │
+              │ PostgreSQL       │
+              └──────────────────┘
+```
+
+Y además tu aplicación Android podría consumir **la misma API**:
+
+```text
+                  ┌── Next.js / Vercel
+                  │
+                  ▼
+              .NET 10 API
+                  ▲
+                  │
+                  │
+              Android
+```
+
+Eso, para tu proyecto HVAC, es una arquitectura bastante buena: **un único backend .NET 10 que sirve tanto al frontend web como a la aplicación Android**, mientras Neon se encarga de PostgreSQL.
+
+Si quieres, también puedo explicarte **cómo configurar exactamente Next.js + Vercel + Render + Neon**, incluyendo **CORS, variables de entorno, HTTPS y `appsettings.json` para .NET 10**.

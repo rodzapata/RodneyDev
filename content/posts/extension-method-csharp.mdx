@@ -1,0 +1,1048 @@
+---
+title: "extension method"
+date: "2026-09-14"
+description: "como extender methodos en .net 10 y csharp 14"
+slug: "extension-method-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+Claro. Vamos a estudiar **Extension Methods (métodos de extensión)** en **.NET 10 + C# 14**, pero no como una simple característica de C#, sino viendo **dónde tienen sentido dentro de DDD y Clean Architecture** y dónde conviene evitarlos.
+
+---
+
+# 1. ¿Qué es un Extension Method?
+
+Un método de extensión permite **agregar un método a un tipo existente sin modificar ese tipo ni crear una clase heredada**.
+
+Por ejemplo, supongamos que tenemos:
+
+```csharp
+string nombre = "Rodney";
+
+bool resultado = nombre.EsNombreValido();
+```
+
+`EsNombreValido()` no pertenece originalmente a `string`. Lo hemos agregado mediante un **método de extensión**.
+
+La sintaxis tradicional es:
+
+```csharp
+public static class StringExtensions
+{
+    public static bool EsNombreValido(this string valor)
+    {
+        return !string.IsNullOrWhiteSpace(valor);
+    }
+}
+```
+
+La palabra importante es:
+
+```csharp
+this string valor
+```
+
+Ese `this` indica:
+
+> "Este método puede utilizarse como si perteneciera a `string`."
+
+---
+
+# 2. ¿Qué problema resuelve?
+
+Sin Extension Methods tendríamos:
+
+```csharp
+bool resultado = StringExtensions.EsNombreValido(nombre);
+```
+
+Con el método de extensión:
+
+```csharp
+bool resultado = nombre.EsNombreValido();
+```
+
+Esto hace que el código sea mucho más expresivo.
+
+---
+
+# 3. Reglas básicas
+
+Un Extension Method debe:
+
+1. Estar dentro de una clase `static`.
+2. Ser un método `static`.
+3. El primer parámetro debe tener `this`.
+4. Ese primer parámetro determina el tipo al que extendemos.
+
+Ejemplo:
+
+```csharp
+public static class StringExtensions
+{
+    public static bool EsNombreValido(this string value)
+    {
+        return !string.IsNullOrWhiteSpace(value);
+    }
+}
+```
+
+Uso:
+
+```csharp
+string nombre = "Rodney";
+
+if (nombre.EsNombreValido())
+{
+    Console.WriteLine("Nombre válido");
+}
+```
+
+---
+
+# 4. Extension Methods con nuestros objetos de dominio
+
+Aquí es donde empieza a ponerse interesante para **DDD**.
+
+Supongamos que tenemos:
+
+```csharp
+public class Equipment
+{
+    public string Name { get; private set; }
+
+    public Equipment(string name)
+    {
+        Name = name;
+    }
+}
+```
+
+Podríamos crear:
+
+```csharp
+public static class EquipmentExtensions
+{
+    public static bool IsAirConditioning(
+        this Equipment equipment)
+    {
+        return equipment.Name.Contains("Aire");
+    }
+}
+```
+
+Y utilizar:
+
+```csharp
+Equipment equipment = ...;
+
+if (equipment.IsAirConditioning())
+{
+    // ...
+}
+```
+
+Pero aquí debemos hacer una pausa.
+
+**Que podamos hacerlo no significa que debamos hacerlo.**
+
+---
+
+# 5. Extension Methods y DDD
+
+En DDD debemos preguntarnos:
+
+> ¿Este comportamiento pertenece realmente al dominio?
+
+Si la respuesta es **sí**, normalmente es mejor colocarlo dentro de la entidad, aggregate o Value Object.
+
+Por ejemplo:
+
+```csharp
+public class Equipment
+{
+    public EquipmentType Type { get; private set; }
+
+    public bool RequiresMaintenance()
+    {
+        return Type.RequiresMaintenance();
+    }
+}
+```
+
+Esto es preferible a:
+
+```csharp
+equipment.RequiresMaintenance();
+```
+
+implementado como:
+
+```csharp
+public static class EquipmentExtensions
+{
+    public static bool RequiresMaintenance(
+        this Equipment equipment)
+    {
+        ...
+    }
+}
+```
+
+### ¿Por qué?
+
+Porque en DDD queremos que el **comportamiento del dominio esté encapsulado en el modelo de dominio**.
+
+La entidad debe proteger sus propias reglas.
+
+---
+
+# 6. Entonces, ¿para qué usamos Extension Methods en DDD?
+
+Son excelentes para comportamientos que son:
+
+* auxiliares
+* transformaciones
+* conversiones
+* composición
+* infraestructura
+* configuración
+* mapeos
+* consultas
+* operaciones sobre colecciones
+
+Por ejemplo:
+
+```text
+Domain
+ ├── Entities
+ ├── ValueObjects
+ ├── Aggregates
+ └── Exceptions
+
+Application
+ ├── DTOs
+ ├── Services
+ └── Extensions
+
+Infrastructure
+ ├── Persistence
+ ├── Configurations
+ └── Extensions
+
+Api
+ ├── Controllers
+ ├── Middleware
+ └── Extensions
+```
+
+---
+
+# 7. Un caso muy común en Clean Architecture
+
+Uno de los usos más importantes de Extension Methods en .NET es configurar servicios.
+
+Por ejemplo, en `Program.cs` podríamos tener:
+
+```csharp
+builder.Services.AddApplication();
+builder.Services.AddInfrastructure();
+builder.Services.AddApi();
+```
+
+Estas funciones pueden ser Extension Methods.
+
+Por ejemplo:
+
+```csharp
+public static class ApplicationExtensions
+{
+    public static IServiceCollection AddApplication(
+        this IServiceCollection services)
+    {
+        services.AddValidatorsFromAssembly(...);
+
+        return services;
+    }
+}
+```
+
+Entonces:
+
+```csharp
+builder.Services.AddApplication();
+```
+
+es realmente una llamada a:
+
+```csharp
+ApplicationExtensions.AddApplication(
+    builder.Services);
+```
+
+Esto es **muy común y recomendable en Clean Architecture**.
+
+---
+
+# 8. Ejemplo aplicado a nuestro proyecto HVAC
+
+Supongamos nuestra solución:
+
+```text
+HVAC
+│
+├── HVAC.Api
+├── HVAC.Application
+├── HVAC.Domain
+└── HVAC.Infrastructure
+```
+
+Podemos tener:
+
+```text
+HVAC.Api
+│
+└── Extensions
+    └── ServiceCollectionExtensions.cs
+```
+
+Por ejemplo:
+
+```csharp
+public static class ServiceCollectionExtensions
+{
+    public static IServiceCollection AddApiServices(
+        this IServiceCollection services)
+    {
+        services.AddControllers();
+
+        return services;
+    }
+}
+```
+
+En `Program.cs`:
+
+```csharp
+builder.Services.AddApiServices();
+```
+
+Esto hace que `Program.cs` quede limpio.
+
+---
+
+# 9. Otro uso excelente: conversión de DTO → Value Object
+
+Supongamos nuestro Value Object:
+
+```csharp
+public sealed record Email
+{
+    public string Value { get; }
+
+    private Email(string value)
+    {
+        Value = value;
+    }
+
+    public static Email Create(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            throw new ArgumentException("Email inválido.");
+
+        return new Email(value);
+    }
+}
+```
+
+Podríamos crear:
+
+```csharp
+public static class EmailExtensions
+{
+    public static Email ToEmail(this string value)
+    {
+        return Email.Create(value);
+    }
+}
+```
+
+Entonces:
+
+```csharp
+string email = "rodney@example.com";
+
+Email emailValueObject = email.ToEmail();
+```
+
+Esto puede ser muy expresivo.
+
+---
+
+# 10. Extension Methods sobre `IEnumerable<T>`
+
+Este es uno de los usos más importantes.
+
+.NET ya utiliza muchísimo este concepto.
+
+Por ejemplo:
+
+```csharp
+var activos = equipos.Where(e => e.IsActive);
+```
+
+`Where()` es un **Extension Method**.
+
+No existe:
+
+```csharp
+IEnumerable<Equipment>.Where()
+```
+
+como método normal de la interfaz.
+
+LINQ utiliza Extension Methods para proporcionar:
+
+```csharp
+Where()
+Select()
+OrderBy()
+FirstOrDefault()
+Any()
+All()
+Count()
+```
+
+etc.
+
+---
+
+# 11. Podemos crear nuestros propios métodos LINQ
+
+Por ejemplo, en nuestro HVAC podríamos tener:
+
+```csharp
+public static class EquipmentExtensions
+{
+    public static IEnumerable<Equipment> Active(
+        this IEnumerable<Equipment> equipments)
+    {
+        return equipments.Where(e => e.IsActive);
+    }
+}
+```
+
+Ahora:
+
+```csharp
+var activeEquipment = equipments.Active();
+```
+
+Y podemos encadenarlo:
+
+```csharp
+var activeEquipment = equipments
+    .Active()
+    .Where(e => e.Type == EquipmentType.AirConditioning);
+```
+
+Esto es muy potente.
+
+---
+
+# 12. Extension Methods para especificaciones simples
+
+Imaginemos:
+
+```csharp
+public static class EquipmentExtensions
+{
+    public static IEnumerable<Equipment> DueForMaintenance(
+        this IEnumerable<Equipment> equipments,
+        DateOnly today)
+    {
+        return equipments.Where(
+            equipment => equipment.NextMaintenanceDate <= today);
+    }
+}
+```
+
+Uso:
+
+```csharp
+var equipmentDue =
+    equipments.DueForMaintenance(DateOnly.FromDateTime(DateTime.Today));
+```
+
+Esto puede ser útil para consultas.
+
+Pero nuevamente hay que diferenciar:
+
+### Consulta sobre una colección
+
+Puede ser excelente como Extension Method:
+
+```csharp
+equipments.DueForMaintenance(today);
+```
+
+### Regla fundamental del Equipment
+
+Mejor dentro de `Equipment`:
+
+```csharp
+equipment.IsMaintenanceDue(today);
+```
+
+Esta distinción es muy importante en DDD.
+
+---
+
+# 13. Una regla práctica para DDD
+
+Puedes pensar así:
+
+### Pregunta 1
+
+> ¿La operación representa una regla propia de la entidad?
+
+Entonces:
+
+```csharp
+Entity
+```
+
+Ejemplo:
+
+```csharp
+equipment.IsMaintenanceDue(today);
+```
+
+---
+
+### Pregunta 2
+
+> ¿La operación transforma o consulta una colección?
+
+Entonces un Extension Method puede ser excelente:
+
+```csharp
+equipments.DueForMaintenance(today);
+```
+
+---
+
+### Pregunta 3
+
+> ¿Es configuración de .NET?
+
+Extension Method.
+
+```csharp
+services.AddInfrastructure();
+```
+
+---
+
+### Pregunta 4
+
+> ¿Es conversión entre objetos?
+
+Puede ser Extension Method.
+
+```csharp
+dto.ToDomain();
+```
+
+---
+
+# 14. Extension Methods para Mapping
+
+Este es otro patrón muy común.
+
+Tenemos:
+
+```csharp
+public sealed record EquipmentDto(
+    Guid Id,
+    string Name,
+    string SerialNumber);
+```
+
+Y nuestra entidad:
+
+```csharp
+public class Equipment
+{
+    public Guid Id { get; private set; }
+
+    public string Name { get; private set; }
+
+    public string SerialNumber { get; private set; }
+}
+```
+
+Podemos crear:
+
+```csharp
+public static class EquipmentMappingExtensions
+{
+    public static EquipmentDto ToDto(
+        this Equipment equipment)
+    {
+        return new EquipmentDto(
+            equipment.Id,
+            equipment.Name,
+            equipment.SerialNumber);
+    }
+}
+```
+
+Entonces:
+
+```csharp
+Equipment equipment = ...;
+
+EquipmentDto dto = equipment.ToDto();
+```
+
+Esto queda muy limpio.
+
+---
+
+# 15. También podemos hacer DTO → Domain
+
+Por ejemplo:
+
+```csharp
+public static class EquipmentMappingExtensions
+{
+    public static Equipment ToDomain(
+        this CreateEquipmentRequest request)
+    {
+        return Equipment.Create(
+            request.Name,
+            request.SerialNumber);
+    }
+}
+```
+
+Y en Application:
+
+```csharp
+var equipment = request.ToDomain();
+```
+
+Sin embargo, debemos tener cuidado.
+
+El mapping no debe saltarse las reglas del dominio.
+
+Por ejemplo, **no debemos hacer esto**:
+
+```csharp
+var equipment = new Equipment
+{
+    Name = request.Name
+};
+```
+
+si la entidad tiene invariantes que deben respetarse.
+
+Es mejor:
+
+```csharp
+Equipment.Create(...)
+```
+
+---
+
+# 16. Extension Methods y Value Objects
+
+Aquí también pueden ser bastante útiles.
+
+Tenemos:
+
+```csharp
+public sealed record Pressure
+{
+    public decimal Value { get; }
+
+    public Pressure(decimal value)
+    {
+        if (value < 0)
+            throw new ArgumentOutOfRangeException(nameof(value));
+
+        Value = value;
+    }
+}
+```
+
+Extension:
+
+```csharp
+public static class PressureExtensions
+{
+    public static Pressure ToPressure(this decimal value)
+    {
+        return new Pressure(value);
+    }
+}
+```
+
+Uso:
+
+```csharp
+decimal psi = 120;
+
+Pressure pressure = psi.ToPressure();
+```
+
+La ventaja es que el código expresa intención:
+
+```csharp
+120m.ToPressure();
+```
+
+en lugar de:
+
+```csharp
+new Pressure(120m);
+```
+
+Aunque aquí personalmente usaría el Extension Method solo si aporta claridad real.
+
+---
+
+# 17. Un ejemplo más interesante de nuestro HVAC
+
+Supongamos que tenemos:
+
+```csharp
+public enum MaintenanceAnswerType
+{
+    Boolean,
+    Numeric,
+    Text,
+    Correctness
+}
+```
+
+Y:
+
+```csharp
+public sealed record MaintenanceAnswer
+{
+    public MaintenanceAnswerType Type { get; init; }
+
+    public decimal? NumericValue { get; init; }
+
+    public string? TextValue { get; init; }
+
+    public CorrectnessAnswer? CorrectnessValue { get; init; }
+}
+```
+
+Podríamos crear:
+
+```csharp
+public static class MaintenanceAnswerExtensions
+{
+    public static bool IsNumeric(
+        this MaintenanceAnswer answer)
+    {
+        return answer.Type == MaintenanceAnswerType.Numeric;
+    }
+
+    public static bool IsCorrectness(
+        this MaintenanceAnswer answer)
+    {
+        return answer.Type == MaintenanceAnswerType.Correctness;
+    }
+}
+```
+
+Uso:
+
+```csharp
+if (answer.IsNumeric())
+{
+    // Procesar medición
+}
+```
+
+Esto puede ser razonable porque estamos creando **funciones de consulta** sobre el objeto.
+
+---
+
+# 18. Pero cuidado con este error
+
+No debemos utilizar Extension Methods para intentar crear un dominio anémico.
+
+Por ejemplo, esto:
+
+```csharp
+public static class EquipmentExtensions
+{
+    public static void PerformMaintenance(
+        this Equipment equipment)
+    {
+        // reglas complejas
+    }
+}
+```
+
+y luego:
+
+```csharp
+equipment.PerformMaintenance();
+```
+
+puede parecer bonito.
+
+Pero estamos sacando comportamiento importante fuera de `Equipment`.
+
+En DDD sería mejor:
+
+```csharp
+public class Equipment
+{
+    public void PerformMaintenance()
+    {
+        // reglas del Equipment
+    }
+}
+```
+
+---
+
+# 19. Extension Method vs método normal
+
+Esta comparación es fundamental.
+
+### Método normal
+
+```csharp
+public class Equipment
+{
+    public void PerformMaintenance()
+    {
+    }
+}
+```
+
+El comportamiento pertenece a `Equipment`.
+
+---
+
+### Extension Method
+
+```csharp
+public static class EquipmentExtensions
+{
+    public static bool IsActive(
+        this Equipment equipment)
+    {
+        return equipment.Status == EquipmentStatus.Active;
+    }
+}
+```
+
+El comportamiento está fuera de `Equipment`.
+
+---
+
+# 20. Una regla que te recomiendo para nuestro proyecto
+
+Para el proyecto HVAC:
+
+### Domain
+
+Usar Extension Methods con moderación.
+
+Preferir:
+
+```csharp
+Entity
+Aggregate
+ValueObject
+Domain Service
+```
+
+para reglas de negocio.
+
+---
+
+### Application
+
+Muy buen lugar para:
+
+```csharp
+DTO → Domain
+Domain → DTO
+IEnumerable<T>
+resultados de consultas
+helpers de aplicación
+```
+
+---
+
+### Infrastructure
+
+Excelente lugar para:
+
+```csharp
+IServiceCollection
+DbContext
+EF Core
+logging
+configuration
+dependency injection
+```
+
+---
+
+### API
+
+Excelente lugar para:
+
+```csharp
+IServiceCollection
+IApplicationBuilder
+WebApplication
+endpoint configuration
+middleware registration
+```
+
+---
+
+# 21. Un ejemplo completo de Clean Architecture
+
+Podríamos tener:
+
+```text
+HVAC.Api
+│
+├── Extensions
+│   └── ServiceCollectionExtensions.cs
+│
+HVAC.Application
+│
+├── Extensions
+│   └── MappingExtensions.cs
+│
+HVAC.Domain
+│
+├── Entities
+├── ValueObjects
+└── Extensions
+    └── CollectionExtensions.cs
+│
+HVAC.Infrastructure
+│
+└── Extensions
+    └── ServiceCollectionExtensions.cs
+```
+
+Y nuestro `Program.cs`:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services
+    .AddApiServices()
+    .AddApplication()
+    .AddInfrastructure(builder.Configuration);
+
+var app = builder.Build();
+
+app.UseApiConfiguration();
+
+app.Run();
+```
+
+Este código queda muy limpio.
+
+---
+
+# 22. Algo importante de C# 14
+
+En **C# 14** existen mejoras alrededor de los Extension Members que amplían este concepto, permitiendo extender tipos de una forma más flexible que el patrón clásico de `static class` + `this`.
+
+Pero para un proyecto **.NET 10 + DDD + Clean Architecture**, mi recomendación de aprendizaje es:
+
+1. Domina primero los **Extension Methods clásicos**.
+2. Entiende dónde encajan arquitectónicamente.
+3. Después aprende **Extension Members de C# 14**.
+
+No conviene introducir una característica nueva solamente porque existe.
+
+---
+
+# 23. Resumen mental
+
+Quédate con esta regla:
+
+```text
+┌────────────────────────────────────┐
+│ ¿El comportamiento es del dominio? │
+└──────────────────┬─────────────────┘
+                   │
+             ┌─────┴─────┐
+            Sí           No
+             │            │
+             ▼            ▼
+       Entity/VO/       ¿Es una
+       Aggregate        extensión útil?
+                            │
+                      ┌─────┴─────┐
+                     Sí           No
+                      │            │
+                      ▼            ▼
+                  Extension      método
+                    Method       normal
+```
+
+Y para tu proyecto HVAC:
+
+```csharp
+equipment.PerformMaintenance();
+```
+
+➡️ **Método de dominio**
+
+Mientras que:
+
+```csharp
+equipments.DueForMaintenance(today);
+```
+
+➡️ **Buen candidato para Extension Method**
+
+Y:
+
+```csharp
+builder.Services.AddInfrastructure(...);
+```
+
+➡️ **Excelente candidato para Extension Method**
+
+Y:
+
+```csharp
+equipment.ToDto();
+```
+
+➡️ **Buen candidato para Extension Method de mapping**
+
+---
+
+## Regla de oro en DDD
+
+> **No uses Extension Methods para esconder lógica de negocio que debería pertenecer a una entidad, Value Object o Aggregate.**
+
+Los Extension Methods son principalmente una herramienta de **expresividad y organización**, no un mecanismo para sacar la lógica del dominio fuera de las entidades.
+
+Para nuestro proyecto HVAC, el siguiente paso lógico sería estudiar **Extension Methods clásicos vs los nuevos Extension Members de C# 14**, y después aplicarlos directamente a nuestras clases `Equipment`, `MaintenanceActivity`, `MaintenanceAnswer`, DTOs y configuraciones de DI.
