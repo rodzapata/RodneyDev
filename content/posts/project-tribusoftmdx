@@ -1,10 +1,10 @@
 ---
-title: "Idea General del proyecto"
+title: "Idea General del proyecto TribuSoft"
 date: "2026-07-01"
 description: "Lineamiento de la tomas de decision del programa TribuSoft"
-slug: "idea-general"
+slug: "project-tribusoft"
 category: "Netcore"
-tags: ["netcore", "csharp", "backend"]
+tags: ["netcore", "csharp", "backend","tribusoft"]
 published: true
 featured: true
 ---

@@ -9,6 +9,9 @@ published: true
 featured: true
 ---
 
+[supabase curso](https://www.youtube.com/watch?v=0xmybxQEIPI)  
+
+
 despues de revisar consultas comparando Neon vs Supabase, pude concluir que Neon es 36% mas rapido que 
 supabase, el comando para estable comparaciones de resultados es :
 
@@ -544,3 +547,155 @@ Por eso, **si tu preocupación principal es "quiero que PostgreSQL esté disponi
 Pero si quieres, puedo hacer una comparación mucho más interesante: **"¿Cuánto tiempo puedo mantener funcionando 24/7 un ERP pequeño en Neon Free vs Supabase Free?"** Ahí podemos calcularlo con ejemplos reales de uso.
 
 [1]: https://supabase.com/pricing?utm_source=chatgpt.com "Pricing & Fees"
+
+> para la base de datos recomendarias Supabase  o Neon ?
+
+Para **tu proyecto HVAC con .NET 10 + PostgreSQL + DDD + Clean Architecture**, yo elegiría **Supabase** antes que Neon, pero con una condición: **si vas a aprovechar Storage y/o Auth**.
+
+### Mi comparación
+
+| Característica             | Supabase         | Neon                  |
+| -------------------------- | ---------------- | --------------------- |
+| PostgreSQL                 | ⭐⭐⭐⭐⭐            | ⭐⭐⭐⭐⭐                 |
+| .NET + EF Core             | ✅ Excelente      | ✅ Excelente           |
+| DDD / Clean Architecture   | ✅                | ✅                     |
+| PostgreSQL puro            | ✅                | ✅                     |
+| Storage para fotos         | ✅ **Sí**         | ❌ No                  |
+| Autenticación              | ✅ **Sí**         | ❌ No                  |
+| Realtime                   | ✅ Sí             | Limitado              |
+| Backups/infraestructura    | Muy buena        | Muy buena             |
+| Branching de BD            | Bueno            | ⭐⭐⭐⭐⭐                 |
+| Enfoque principal          | Backend platform | PostgreSQL serverless |
+| Facilidad para tu app HVAC | ⭐⭐⭐⭐⭐            | ⭐⭐⭐⭐                  |
+
+### Para tu aplicación HVAC
+
+Tu aplicación tendrá probablemente:
+
+```text
+Cliente
+   │
+   ├── Equipos
+   ├── Contratos
+   ├── Mantenimientos
+   └── Órdenes de trabajo
+          │
+          ├── Actividades
+          ├── Respuestas
+          ├── Fotografías
+          ├── Firma del cliente
+          └── GPS
+```
+
+Aquí **Supabase tiene una ventaja importante**.
+
+Puedes almacenar:
+
+```text
+Supabase
+│
+├── PostgreSQL
+│   ├── clientes
+│   ├── equipos
+│   ├── contratos
+│   ├── ordenes_trabajo
+│   ├── actividades
+│   └── respuestas
+│
+└── Storage
+    ├── fotos/
+    ├── firmas/
+    └── documentos/
+```
+
+Mientras que con Neon tendrías principalmente:
+
+```text
+Neon
+└── PostgreSQL
+```
+
+y tendrías que agregar otro servicio para las fotografías y archivos.
+
+### Pero hay algo importante para tu arquitectura
+
+Yo **no utilizaría Supabase directamente desde React para acceder a las tablas** si tu objetivo es aprender y construir correctamente tu backend **.NET 10 + DDD + Clean Architecture**.
+
+Preferiría:
+
+```text
+React
+   │
+   │ HTTPS / JSON
+   ▼
+.NET 10 Web API
+   │
+   │ EF Core 10 + Npgsql
+   ▼
+Supabase PostgreSQL
+```
+
+De esta manera:
+
+* React no conoce la estructura interna de PostgreSQL.
+* Las reglas de negocio están en tu dominio.
+* .NET controla autorización y validaciones.
+* EF Core maneja persistencia.
+* PostgreSQL se encarga de los datos.
+* Supabase Storage puede manejar fotos y firmas.
+
+### ¿Cuándo elegiría Neon?
+
+Elegiría **Neon** si tu objetivo fuera principalmente:
+
+> "Quiero un PostgreSQL serverless muy bueno para mi API .NET y no necesito los servicios adicionales de Supabase."
+
+Por ejemplo:
+
+```text
+Next.js / React
+       │
+       ▼
+.NET 10 API
+       │
+       ▼
+     Neon
+ PostgreSQL
+```
+
+Es una arquitectura perfectamente válida.
+
+### 🏆 Mi elección para tu proyecto
+
+Para **ACSoft**, que es el nombre que estabas considerando para tu aplicación internacional de mantenimiento HVAC, yo haría:
+
+```text
+                 ACSoft
+                    │
+       ┌────────────┴────────────┐
+       │                         │
+   React/Next.js             Android
+       │                         │
+       └────────────┬────────────┘
+                    │
+                  HTTPS
+                    │
+                    ▼
+              .NET 10 API
+                    │
+          DDD + Clean Architecture
+                    │
+          ┌─────────┴─────────┐
+          ▼                   ▼
+      PostgreSQL          Supabase
+      (Supabase)           Storage
+          │                   │
+          │              Fotos/Firmas
+          ▼
+       Datos HVAC
+```
+
+**Supabase me parece más conveniente que Neon para ACSoft**, no porque PostgreSQL sea necesariamente mejor allí, sino porque **tu aplicación necesita algo más que una base de datos**: fotografías de mantenimientos, firmas, posiblemente documentos y eventualmente autenticación.
+
+Si inicialmente quieres mantener los costos en **$0**, también puedo compararte **Supabase Free vs Neon Free + Render Free + Vercel Free** para ver cuál combinación te conviene más para ACSoft.
+

@@ -1,0 +1,253 @@
+---
+title: "proyecto ACSoftware"
+date: "2026-09-15"
+description: "Software de Mantenimiento de Aires Acondicionado"
+slug: "project-acsoft"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","acsoft"]
+published: true
+featured: true
+---
+
+# 1. Nombre de la aplicacion
+
+Se llamará **ACSoft** empesaremos con una api web hecha en net core 10 csharp 14  
+La base de datos será en postgresql, que esta en el hosting gratuito de **Neon.com**  
+EL Back End que contiene la API esta en el hosting gratuiro de **Render.com** 
+y Front End hecho en React 18 + Next.js puede esta hostin de **vercel.com** o **Moster.asp**  
+
+
+# 2. Base de Datos
+Comparamos los 2 hosting que podriamos usar **Postgres** ellos son **Neon vs supabase**  
+[Cuadro comparativo](/blog/neon-vs-supabase)
+
+> cuando trato de conectarme a supabase desde DBeaver me sale el siguiente error:
+Connection attempt timed out. 
+
+Sí. Ese error en DBeaver **no necesariamente significa que la contraseña esté mal**. En Supabase, una causa muy común es que DBeaver esté intentando conectarse mediante la conexión **Directa**, que actualmente usa IPv6 por defecto, mientras que tu red puede estar funcionando solamente con IPv4. Supabase recomienda usar el **Session Pooler** para herramientas como DBeaver cuando necesitas una conexión IPv4. ([Supabase][1])
+
+### Te recomiendo hacer esto
+
+En tu proyecto de Supabase:
+
+**Connect → Session pooler**
+
+Supabase te mostrará algo parecido a:
+
+```text
+Host: aws-0-xxxxx.pooler.supabase.com
+Port: 5432
+Database: postgres
+User: postgres.xxxxxxxxx
+Password: tu_password
+```
+
+En DBeaver:
+
+```text
+Database: PostgreSQL
+
+Host:     aws-...pooler.supabase.com
+Port:     5432
+Database: postgres
+Username: postgres.<PROJECT-REF>
+Password: ********
+```
+
+El punto importante es que **no debes usar `db.<project-ref>.supabase.co` si tu red no soporta IPv6**. El Session Pooler está disponible por IPv4. ([Supabase][1])
+
+### En DBeaver activa SSL
+
+En la configuración de la conexión:
+
+**SSL → SSL mode → require**
+
+Supabase recomienda utilizar SSL para las conexiones a PostgreSQL. ([Supabase][1])
+
+---
+
+### ⚠️ Un detalle importante
+
+No escribas manualmente el `Host`.
+
+Supabase indica que el host del pooler **debe copiarse directamente desde `Connect`**, porque no siempre puedes deducirlo a partir de la región. ([Supabase][2])
+
+Por ejemplo, **no hagas esto**:
+
+```text
+aws-0-us-east-1.pooler.supabase.com
+```
+
+simplemente porque viste un ejemplo.
+
+Haz:
+
+```text
+Supabase
+   ↓
+Connect
+   ↓
+Session pooler
+   ↓
+Copy connection string
+   ↓
+DBeaver
+```
+
+### Si quieres, lo hacemos juntos
+
+Si me muestras una **captura de la ventana de conexión de DBeaver** donde tienes `Host`, `Port`, `Database`, `Username` y la pestaña **SSL** (puedes ocultar la contraseña), te digo exactamente **qué campo está causando el timeout** y cómo configurarlo.
+
+[1]: https://supabase.com/docs/guides/database/connecting-to-postgres?utm_source=chatgpt.com "Connect to your database | Supabase Docs"
+[2]: https://supabase.com/docs/guides/troubleshooting/tenant-or-user-not-found?utm_source=chatgpt.com "Supabase Docs | Troubleshooting | Tenant or user not found when connecting through the shared pooler"
+
+
+> que hostin me recomiendas que sea gratis para guardar imagenes o documentos ?
+
+Sí. Para **ACSoft**, donde vas a guardar fotos de órdenes de trabajo, firmas, posiblemente documentos y evidencias de mantenimiento, tienes varias opciones. Pero **no elegiría simplemente el que dé más GB gratis**; importa también cómo se integra con tu .NET 10 API.
+
+### 🥇 Mi primera opción: Supabase Storage
+
+Como ya estás considerando Supabase para PostgreSQL, **yo usaría el Storage de Supabase**.
+
+Actualmente el plan gratuito incluye **1 GB de almacenamiento**, hasta **50 MB por archivo**, y 5 GB de transferencia de salida. También permite controles de acceso. ([Supabase][1])
+
+Tu arquitectura quedaría muy limpia:
+
+```text
+                 ACSoft
+                   │
+        ┌──────────┴──────────┐
+        │                     │
+     React                 Android
+        │                     │
+        └──────────┬──────────┘
+                   │
+                   ▼
+              .NET 10 API
+                   │
+          ┌────────┴────────┐
+          │                 │
+          ▼                 ▼
+    PostgreSQL        Supabase Storage
+    (Supabase)          │
+                        ├── fotos
+                        ├── firmas
+                        └── documentos
+```
+
+Por ejemplo:
+
+```text
+storage/
+└── ordenes-trabajo/
+    ├── OT-000001/
+    │   ├── antes/
+    │   ├── durante/
+    │   ├── despues/
+    │   └── firma/
+    │
+    └── OT-000002/
+        ├── antes/
+        └── despues/
+```
+
+Esto encaja **muy bien con tu proyecto** porque no tienes que incorporar otro proveedor.
+
+---
+
+### 🥈 Cloudflare R2
+
+Si posteriormente ACSoft comienza a almacenar muchas fotografías, **Cloudflare R2 me parece una alternativa excelente**.
+
+Actualmente ofrece **10 GB/mes de almacenamiento gratuito**, 1 millón de operaciones de escritura/listado y 10 millones de operaciones de lectura, además de **egress gratuito**. ([Cloudflare Docs][2])
+
+Eso es especialmente interesante para una aplicación como ACSoft, porque una orden de mantenimiento puede tener varias fotografías.
+
+La arquitectura sería:
+
+```text
+.NET 10
+   │
+   ├── Supabase PostgreSQL
+   │
+   └── Cloudflare R2
+          │
+          ├── fotos
+          ├── firmas
+          └── documentos
+```
+
+Pero introduces otro proveedor y otra configuración.
+
+---
+
+### 🥉 Cloudinary
+
+También es muy bueno si el proyecto está especialmente orientado a **imágenes**.
+
+Tiene optimización, transformaciones, CDN y gestión de imágenes/videos. Su plan gratuito funciona mediante **25 créditos mensuales**. ([Cloudinary][3])
+
+Para ACSoft no sería mi primera opción porque probablemente no necesitas inicialmente todas esas funcionalidades.
+
+---
+
+## ¿Cuál elegiría para ACSoft?
+
+Mi recomendación sería:
+
+| Servicio                              | Recomendación |
+| ------------------------------------- | ------------- |
+| **Supabase Storage**                  | ⭐⭐⭐⭐⭐         |
+| **Cloudflare R2**                     | ⭐⭐⭐⭐½         |
+| **Cloudinary**                        | ⭐⭐⭐⭐          |
+| Guardar archivos dentro de PostgreSQL | ❌ No          |
+
+Y empezaría así:
+
+```text
+                    ACSoft
+                       │
+                       ▼
+                  .NET 10 API
+                       │
+             ┌─────────┴─────────┐
+             ▼                   ▼
+      Supabase PostgreSQL   Supabase Storage
+             │                   │
+             │                   ├── Fotos
+             │                   ├── Firmas
+             │                   └── Documentos
+             │
+             └── Datos de archivos
+```
+
+### Un detalle de arquitectura importante
+
+**No guardaría la imagen directamente en PostgreSQL.**
+
+En la tabla `fotos_orden_trabajo`, por ejemplo, guardaríamos información como:
+
+```text
+id
+orden_trabajo_id
+nombre_archivo
+ruta_storage
+tipo_archivo
+tamano
+fecha_captura
+```
+
+Mientras que el archivo físico estaría en Supabase Storage:
+
+```text
+ordenes-trabajo/OT-000123/antes/equipo-01.jpg
+```
+
+Así PostgreSQL guarda **metadatos**, y Storage guarda **el archivo**.
+
+Para tu proyecto, además, esto nos permitirá diseñar después correctamente la subida desde **Android/Kotlin offline-first → .NET 10 → Supabase Storage**, incluyendo fotografías y firma del cliente.
+
+[1]: https://supabase.com/pricing?utm_source=chatgpt.com "Pricing & Fees | Supabase"
+[2]: https://developers.cloudflare.com/r2/pricing/?utm_source=chatgpt.com "Pricing · Cloudflare R2 docs"
+[3]: https://cloudinary.com/pricing?utm_source=chatgpt.com "Cloudinary - Pricing and Plans"
