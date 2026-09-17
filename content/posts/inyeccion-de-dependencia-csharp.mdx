@@ -1,0 +1,1246 @@
+---
+title: "Inyeccion de Dependencia "
+date: "2026-09-17"
+description: "Inyeccion de Dependencia con Clean Arquitecture AcSoft"
+slug: "inyeccion-de-dependencia-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft", "webapi"]
+published: true
+featured: true
+---
+
+Claro. Vamos a verlo **desde cero, pero con una arquitectura profesional para .NET 10 + C# 14 + Clean Architecture + DDD**, usando ejemplos de tu proyecto de mantenimiento HVAC.
+
+La idea fundamental que debes quedarte es esta:
+
+> **La inyección de dependencias (DI) permite que una clase reciba sus colaboradores desde afuera, en lugar de crearlos directamente con `new`.**
+
+Y en Clean Architecture hay una regla especialmente importante:
+
+> **Las capas internas definen abstracciones; las capas externas proporcionan las implementaciones.**
+
+---
+
+# 1. ¿Qué problema resuelve la inyección de dependencias?
+
+Imagina que tienes un servicio para crear órdenes de mantenimiento.
+
+Una implementación inicial podría ser:
+
+```csharp
+public class OrdenMantenimientoService
+{
+    private readonly OrdenMantenimientoRepository _repository;
+
+    public OrdenMantenimientoService()
+    {
+        _repository = new OrdenMantenimientoRepository();
+    }
+}
+```
+
+Aquí `OrdenMantenimientoService` **crea directamente** su dependencia.
+
+Tenemos un acoplamiento:
+
+```text
+OrdenMantenimientoService
+        │
+        ▼
+OrdenMantenimientoRepository
+```
+
+Esto genera varios problemas:
+
+* Es difícil cambiar la implementación.
+* Es difícil hacer pruebas unitarias.
+* La clase conoce detalles de infraestructura.
+* Viola el principio de inversión de dependencias.
+* Clean Architecture queda comprometida.
+
+---
+
+# 2. La solución: depender de una abstracción
+
+En lugar de esto:
+
+```csharp
+private readonly OrdenMantenimientoRepository _repository;
+```
+
+utilizamos una interfaz:
+
+```csharp
+private readonly IOrdenMantenimientoRepository _repository;
+```
+
+Y la recibimos por constructor:
+
+```csharp
+public class OrdenMantenimientoService
+{
+    private readonly IOrdenMantenimientoRepository _repository;
+
+    public OrdenMantenimientoService(
+        IOrdenMantenimientoRepository repository)
+    {
+        _repository = repository;
+    }
+}
+```
+
+Ahora:
+
+```text
+OrdenMantenimientoService
+        │
+        ▼
+IOrdenMantenimientoRepository
+        ▲
+        │
+OrdenMantenimientoRepository
+```
+
+La clase `OrdenMantenimientoService` ya no necesita saber cuál es la implementación concreta.
+
+Eso es **Dependency Injection**.
+
+---
+
+# 3. ¿Quién crea el objeto entonces?
+
+Aquí aparece una pregunta fundamental:
+
+> Si `OrdenMantenimientoService` no hace `new OrdenMantenimientoRepository()`, ¿quién lo hace?
+
+Lo hace el **contenedor de inyección de dependencias de .NET**.
+
+Por ejemplo:
+
+```csharp
+builder.Services.AddScoped<
+    IOrdenMantenimientoRepository,
+    OrdenMantenimientoRepository>();
+```
+
+Estamos diciendo:
+
+> "Cuando alguien solicite `IOrdenMantenimientoRepository`, entrégale una instancia de `OrdenMantenimientoRepository`."
+
+---
+
+# 4. ¿Dónde está el contenedor DI en .NET 10?
+
+En una Web API moderna tienes:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+```
+
+`builder.Services` es donde registramos los servicios:
+
+```csharp
+builder.Services.AddScoped<...>();
+builder.Services.AddTransient<...>();
+builder.Services.AddSingleton<...>();
+```
+
+Por ejemplo:
+
+```csharp
+builder.Services.AddScoped<IOrdenMantenimientoRepository,
+                           OrdenMantenimientoRepository>();
+```
+
+Después:
+
+```csharp
+var app = builder.Build();
+```
+
+y .NET construye el contenedor de dependencias.
+
+---
+
+# 5. Ahora llevémoslo a Clean Architecture
+
+Para tu proyecto podemos tener:
+
+```text
+HVAC.Api
+HVAC.Application
+HVAC.Domain
+HVAC.Infrastructure
+```
+
+Dependencias:
+
+```text
+             ┌──────────────┐
+             │     Api      │
+             └──────┬───────┘
+                    │
+                    ▼
+             ┌──────────────┐
+             │ Application  │
+             └──────┬───────┘
+                    │
+                    ▼
+             ┌──────────────┐
+             │    Domain    │
+             └──────────────┘
+
+             ┌──────────────┐
+             │Infrastructure│
+             └──────┬───────┘
+                    │
+              ┌─────┴──────┐
+              ▼            ▼
+         Application    Domain
+```
+
+Esto coincide con lo que hemos venido trabajando:
+
+```text
+Domain
+   ↑
+Application
+   ↑
+Api
+
+Infrastructure → Application
+Infrastructure → Domain
+```
+
+---
+
+# 6. ¿Dónde debe estar la interfaz?
+
+Esta es una de las cosas más importantes.
+
+Supongamos que necesitamos un repositorio:
+
+```csharp
+IOrdenMantenimientoRepository
+```
+
+¿Dónde lo colocamos?
+
+Normalmente en:
+
+```text
+Application
+└── Interfaces
+    └── Persistence
+        └── IOrdenMantenimientoRepository.cs
+```
+
+Por ejemplo:
+
+```csharp
+namespace HVAC.Application.Interfaces.Persistence;
+
+public interface IOrdenMantenimientoRepository
+{
+    Task<OrdenMantenimiento?> ObtenerPorIdAsync(
+        Guid id,
+        CancellationToken cancellationToken);
+
+    Task AgregarAsync(
+        OrdenMantenimiento orden,
+        CancellationToken cancellationToken);
+}
+```
+
+La interfaz es una **abstracción**.
+
+Application dice:
+
+> "Necesito alguien que pueda guardar y consultar órdenes."
+
+Pero no dice cómo.
+
+---
+
+# 7. ¿Dónde está la implementación?
+
+La implementación concreta pertenece a Infrastructure:
+
+```text
+HVAC.Infrastructure
+└── Persistence
+    └── Repositories
+        └── OrdenMantenimientoRepository.cs
+```
+
+Por ejemplo:
+
+```csharp
+public sealed class OrdenMantenimientoRepository
+    : IOrdenMantenimientoRepository
+{
+    private readonly AppDbContext _context;
+
+    public OrdenMantenimientoRepository(AppDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task<OrdenMantenimiento?> ObtenerPorIdAsync(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        return await _context.OrdenesMantenimiento
+            .FirstOrDefaultAsync(
+                x => x.Id == id,
+                cancellationToken);
+    }
+
+    public async Task AgregarAsync(
+        OrdenMantenimiento orden,
+        CancellationToken cancellationToken)
+    {
+        await _context.OrdenesMantenimiento.AddAsync(
+            orden,
+            cancellationToken);
+    }
+}
+```
+
+Observa la dependencia:
+
+```text
+Infrastructure
+      │
+      ├── implementa
+      ▼
+IOrdenMantenimientoRepository
+```
+
+---
+
+# 8. ¿Dónde registramos la implementación?
+
+Aquí tenemos una decisión arquitectónica importante.
+
+No queremos llenar `Program.cs` con cientos de registros:
+
+```csharp
+builder.Services.AddScoped<IClienteRepository, ClienteRepository>();
+builder.Services.AddScoped<IEquipoRepository, EquipoRepository>();
+builder.Services.AddScoped<IOrdenMantenimientoRepository, OrdenMantenimientoRepository>();
+builder.Services.AddScoped<IMantenimientoService, MantenimientoService>();
+builder.Services.AddScoped<IActividadRepository, ActividadRepository>();
+// ...
+```
+
+Funciona, pero podemos organizarlo mejor.
+
+En Infrastructure:
+
+```text
+Infrastructure
+├── DependencyInjection.cs
+├── Persistence
+├── Repositories
+└── ...
+```
+
+Creamos:
+
+```csharp
+public static class DependencyInjection
+{
+    public static IServiceCollection AddInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddScoped<
+            IOrdenMantenimientoRepository,
+            OrdenMantenimientoRepository>();
+
+        return services;
+    }
+}
+```
+
+Y en API:
+
+```csharp
+builder.Services.AddInfrastructure(
+    builder.Configuration);
+```
+
+Mucho más limpio.
+
+---
+
+# 9. ¿Por qué esto encaja con Clean Architecture?
+
+Porque `Api` solamente dice:
+
+```csharp
+builder.Services.AddInfrastructure(
+    builder.Configuration);
+```
+
+No necesita conocer todos los repositorios.
+
+La estructura queda:
+
+```text
+API
+ │
+ │ AddInfrastructure()
+ ▼
+Infrastructure
+ │
+ ├── Repository
+ ├── EF Core
+ ├── DbContext
+ └── PostgreSQL
+```
+
+---
+
+# 10. ¿Y Application?
+
+Application también puede tener su propio registro:
+
+```text
+Application
+└── DependencyInjection.cs
+```
+
+Por ejemplo:
+
+```csharp
+public static class DependencyInjection
+{
+    public static IServiceCollection AddApplication(
+        this IServiceCollection services)
+    {
+        services.AddScoped<
+            CrearOrdenMantenimientoHandler>();
+
+        return services;
+    }
+}
+```
+
+Y en `Program.cs`:
+
+```csharp
+builder.Services.AddApplication();
+builder.Services.AddInfrastructure(
+    builder.Configuration);
+```
+
+Entonces:
+
+```text
+Program.cs
+    │
+    ├── AddApplication()
+    │
+    └── AddInfrastructure()
+```
+
+---
+
+# 11. ¿Qué pasa con Domain?
+
+Aquí hay una diferencia importante.
+
+Generalmente **Domain no necesita registrar servicios en DI**.
+
+Por ejemplo:
+
+```text
+Domain
+├── Entities
+├── ValueObjects
+├── Enums
+├── Exceptions
+└── Events
+```
+
+El dominio debe mantenerse independiente de:
+
+* ASP.NET Core
+* Entity Framework
+* PostgreSQL
+* SQL Server
+* MediatR
+* Controllers
+* HTTP
+
+Por ejemplo:
+
+```csharp
+public sealed class Equipo
+{
+    public Guid Id { get; private set; }
+
+    public string Marca { get; private set; }
+
+    public string Modelo { get; private set; }
+
+    private Equipo()
+    {
+    }
+
+    public Equipo(
+        string marca,
+        string modelo)
+    {
+        Marca = marca;
+        Modelo = modelo;
+    }
+}
+```
+
+No necesitamos:
+
+```csharp
+builder.Services.AddScoped<Equipo>();
+```
+
+El dominio no debería depender del contenedor DI.
+
+---
+
+# 12. Constructor Injection
+
+La forma que más vas a utilizar es **constructor injection**.
+
+Ejemplo:
+
+```csharp
+public sealed class OrdenMantenimientoService
+{
+    private readonly IOrdenMantenimientoRepository _repository;
+
+    public OrdenMantenimientoService(
+        IOrdenMantenimientoRepository repository)
+    {
+        _repository = repository;
+    }
+}
+```
+
+.NET ve:
+
+```text
+OrdenMantenimientoService
+       │
+       │ necesita
+       ▼
+IOrdenMantenimientoRepository
+```
+
+Busca el registro:
+
+```csharp
+AddScoped<
+    IOrdenMantenimientoRepository,
+    OrdenMantenimientoRepository>();
+```
+
+y construye:
+
+```text
+OrdenMantenimientoRepository
+          │
+          ▼
+       DbContext
+```
+
+Y aquí aparece algo interesante.
+
+---
+
+# 13. DI resuelve toda la cadena
+
+Supongamos:
+
+```csharp
+public class OrdenMantenimientoService
+{
+    public OrdenMantenimientoService(
+        IOrdenMantenimientoRepository repository)
+    {
+    }
+}
+```
+
+El repositorio:
+
+```csharp
+public class OrdenMantenimientoRepository
+{
+    public OrdenMantenimientoRepository(
+        AppDbContext context)
+    {
+    }
+}
+```
+
+Y `AppDbContext`:
+
+```csharp
+public class AppDbContext : DbContext
+{
+    public AppDbContext(
+        DbContextOptions<AppDbContext> options)
+        : base(options)
+    {
+    }
+}
+```
+
+Registramos:
+
+```csharp
+builder.Services.AddDbContext<AppDbContext>(
+    options =>
+    {
+        options.UseNpgsql(connectionString);
+    });
+```
+
+Y:
+
+```csharp
+builder.Services.AddScoped<
+    IOrdenMantenimientoRepository,
+    OrdenMantenimientoRepository>();
+```
+
+Entonces .NET construye automáticamente:
+
+```text
+OrdenMantenimientoService
+          │
+          ▼
+IOrdenMantenimientoRepository
+          │
+          ▼
+OrdenMantenimientoRepository
+          │
+          ▼
+AppDbContext
+          │
+          ▼
+PostgreSQL
+```
+
+Tú no haces:
+
+```csharp
+new OrdenMantenimientoRepository(...)
+```
+
+ni:
+
+```csharp
+new AppDbContext(...)
+```
+
+---
+
+# 14. Transient, Scoped y Singleton
+
+Estos tres conceptos son fundamentales.
+
+## `Transient`
+
+```csharp
+services.AddTransient<IMiServicio, MiServicio>();
+```
+
+Se crea una instancia cada vez que se solicita.
+
+```text
+Solicitud A → instancia 1
+Solicitud B → instancia 2
+Solicitud C → instancia 3
+```
+
+Útil para servicios pequeños y sin estado.
+
+---
+
+# 15. Scoped
+
+```csharp
+services.AddScoped<IMiServicio, MiServicio>();
+```
+
+En una Web API, normalmente significa:
+
+> Una instancia por solicitud HTTP.
+
+Por ejemplo:
+
+```text
+HTTP Request #1
+ ├── Service A
+ ├── Repository
+ └── DbContext
+      ↓
+   misma instancia dentro del scope
+
+
+HTTP Request #2
+ ├── Service A
+ ├── Repository
+ └── DbContext
+      ↓
+   nuevas instancias
+```
+
+Para EF Core:
+
+```csharp
+AddDbContext
+```
+
+normalmente utiliza `Scoped`.
+
+Por eso tus repositorios y servicios de aplicación suelen ser:
+
+```csharp
+AddScoped
+```
+
+---
+
+# 16. Singleton
+
+```csharp
+services.AddSingleton<IMiServicio, MiServicio>();
+```
+
+Una instancia durante toda la vida de la aplicación.
+
+```text
+Aplicación
+   │
+   └── instancia única
+```
+
+Hay que utilizarlo con cuidado.
+
+Por ejemplo, **no debes inyectar directamente un `DbContext` scoped dentro de un singleton**.
+
+Esto:
+
+```text
+Singleton
+   │
+   ▼
+DbContext Scoped
+```
+
+puede generar problemas de lifetime.
+
+---
+
+# 17. Ejemplo completo de tu proyecto HVAC
+
+Supongamos:
+
+```text
+HVAC.Api
+HVAC.Application
+HVAC.Domain
+HVAC.Infrastructure
+```
+
+### Domain
+
+```csharp
+public sealed class OrdenMantenimiento
+{
+    public Guid Id { get; private set; }
+
+    public Guid EquipoId { get; private set; }
+
+    private OrdenMantenimiento()
+    {
+    }
+
+    public OrdenMantenimiento(Guid equipoId)
+    {
+        Id = Guid.NewGuid();
+        EquipoId = equipoId;
+    }
+}
+```
+
+---
+
+# 18. Application
+
+Interfaz:
+
+```csharp
+public interface IOrdenMantenimientoRepository
+{
+    Task AgregarAsync(
+        OrdenMantenimiento orden,
+        CancellationToken cancellationToken);
+}
+```
+
+Servicio:
+
+```csharp
+public sealed class CrearOrdenMantenimientoService
+{
+    private readonly IOrdenMantenimientoRepository _repository;
+
+    public CrearOrdenMantenimientoService(
+        IOrdenMantenimientoRepository repository)
+    {
+        _repository = repository;
+    }
+
+    public async Task CrearAsync(
+        Guid equipoId,
+        CancellationToken cancellationToken)
+    {
+        var orden = new OrdenMantenimiento(equipoId);
+
+        await _repository.AgregarAsync(
+            orden,
+            cancellationToken);
+    }
+}
+```
+
+Observa algo importante:
+
+Application **no sabe** que utilizamos:
+
+```text
+PostgreSQL
+EF Core
+SQL Server
+Dapper
+```
+
+Nada de eso importa.
+
+---
+
+# 19. Infrastructure
+
+Implementación:
+
+```csharp
+public sealed class OrdenMantenimientoRepository
+    : IOrdenMantenimientoRepository
+{
+    private readonly AppDbContext _context;
+
+    public OrdenMantenimientoRepository(
+        AppDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task AgregarAsync(
+        OrdenMantenimiento orden,
+        CancellationToken cancellationToken)
+    {
+        await _context.OrdenesMantenimiento.AddAsync(
+            orden,
+            cancellationToken);
+
+        await _context.SaveChangesAsync(
+            cancellationToken);
+    }
+}
+```
+
+---
+
+# 20. Registro de Infrastructure
+
+```csharp
+public static class DependencyInjection
+{
+    public static IServiceCollection AddInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddDbContext<AppDbContext>(
+            options =>
+            {
+                options.UseNpgsql(
+                    configuration.GetConnectionString(
+                        "DefaultConnection"));
+            });
+
+        services.AddScoped<
+            IOrdenMantenimientoRepository,
+            OrdenMantenimientoRepository>();
+
+        return services;
+    }
+}
+```
+
+---
+
+# 21. Registro de Application
+
+```csharp
+public static class DependencyInjection
+{
+    public static IServiceCollection AddApplication(
+        this IServiceCollection services)
+    {
+        services.AddScoped<
+            CrearOrdenMantenimientoService>();
+
+        return services;
+    }
+}
+```
+
+---
+
+# 22. Program.cs
+
+Finalmente:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddApplication();
+
+builder.Services.AddInfrastructure(
+    builder.Configuration);
+
+builder.Services.AddControllers();
+
+var app = builder.Build();
+
+app.MapControllers();
+
+app.Run();
+```
+
+Esto es exactamente lo que queremos:
+
+```text
+                 Program.cs
+                     │
+          ┌──────────┴──────────┐
+          ▼                     ▼
+   AddApplication()     AddInfrastructure()
+          │                     │
+          ▼                     ▼
+     Application          Infrastructure
+          │                     │
+          ▼                     ▼
+      interfaces          implementations
+```
+
+---
+
+# 23. ¿Qué pasa cuando llega una petición HTTP?
+
+Supongamos:
+
+```http
+POST /api/ordenes-mantenimiento
+```
+
+El flujo puede ser:
+
+```text
+HTTP
+ │
+ ▼
+Controller
+ │
+ ▼
+CrearOrdenMantenimientoService
+ │
+ ▼
+IOrdenMantenimientoRepository
+ │
+ ▼
+OrdenMantenimientoRepository
+ │
+ ▼
+AppDbContext
+ │
+ ▼
+PostgreSQL
+```
+
+Y el contenedor DI construye automáticamente todos esos objetos.
+
+---
+
+# 24. ¿Por qué esto es importante en DDD?
+
+Porque DDD intenta mantener el dominio protegido de detalles técnicos.
+
+Por ejemplo, tu entidad:
+
+```csharp
+public sealed class OrdenMantenimiento
+{
+    ...
+}
+```
+
+no debería saber:
+
+```csharp
+NpgsqlConnection
+DbContext
+HttpClient
+ILogger
+IConfiguration
+```
+
+El dominio expresa reglas de negocio.
+
+Infrastructure expresa detalles técnicos.
+
+Application coordina casos de uso.
+
+API maneja HTTP.
+
+DI conecta todas esas piezas.
+
+---
+
+# 25. Un punto MUY importante: DI ≠ Clean Architecture
+
+Es común confundirlos.
+
+Son conceptos diferentes.
+
+**Dependency Injection**:
+
+> Técnica para proporcionar dependencias a una clase.
+
+**Dependency Inversion Principle**:
+
+> Las capas de alto nivel no deben depender de implementaciones concretas; deben depender de abstracciones.
+
+**Clean Architecture**:
+
+> Organización de la aplicación alrededor de reglas de dependencia que protegen el dominio y separan responsabilidades.
+
+DI ayuda muchísimo a implementar Clean Architecture, pero **DI por sí sola no crea una Clean Architecture**.
+
+---
+
+# 26. Una comparación que te ayudará mucho
+
+### Sin DI
+
+```csharp
+public class CrearOrdenService
+{
+    public void Ejecutar()
+    {
+        var repository =
+            new OrdenMantenimientoRepository();
+
+        ...
+    }
+}
+```
+
+Dependencia fuerte:
+
+```text
+Application
+     │
+     ▼
+OrdenMantenimientoRepository
+```
+
+---
+
+### Con DI
+
+```csharp
+public class CrearOrdenService
+{
+    private readonly IOrdenMantenimientoRepository _repository;
+
+    public CrearOrdenService(
+        IOrdenMantenimientoRepository repository)
+    {
+        _repository = repository;
+    }
+}
+```
+
+Ahora:
+
+```text
+Application
+     │
+     ▼
+IOrdenMantenimientoRepository
+     ▲
+     │
+Infrastructure
+```
+
+Eso es muchísimo más flexible.
+
+---
+
+# 27. ¿Y las pruebas unitarias?
+
+Aquí DI demuestra todo su valor.
+
+Puedes crear un repositorio falso:
+
+```csharp
+public sealed class FakeOrdenRepository
+    : IOrdenMantenimientoRepository
+{
+    public Task AgregarAsync(
+        OrdenMantenimiento orden,
+        CancellationToken cancellationToken)
+    {
+        return Task.CompletedTask;
+    }
+}
+```
+
+Y probar:
+
+```csharp
+var repository =
+    new FakeOrdenRepository();
+
+var service =
+    new CrearOrdenMantenimientoService(repository);
+```
+
+No necesitas:
+
+```text
+PostgreSQL
+EF Core
+DbContext
+Docker
+Internet
+```
+
+para probar la lógica de Application.
+
+---
+
+# 28. Regla práctica para tu proyecto
+
+Para el proyecto HVAC que estás construyendo, puedes pensar así:
+
+| Capa           | DI                                 |
+| -------------- | ---------------------------------- |
+| Domain         | Generalmente no                    |
+| Application    | Registra servicios/use cases       |
+| Infrastructure | Registra implementaciones técnicas |
+| API            | Compone todo                       |
+
+Y `Program.cs` debería actuar principalmente como **composition root**:
+
+```text
+Program.cs
+     │
+     ├── Application
+     │
+     ├── Infrastructure
+     │
+     └── API
+```
+
+---
+
+# 29. La regla que quiero que memorices
+
+Cuando estés trabajando en tu proyecto y tengas dudas sobre DI, piensa:
+
+```text
+¿Quién necesita algo?
+        │
+        ▼
+   Application
+        │
+        ▼
+¿Qué necesita?
+        │
+        ▼
+   INTERFAZ
+        │
+        ▼
+¿Quién sabe cómo hacerlo?
+        │
+        ▼
+ Infrastructure
+        │
+        ▼
+ IMPLEMENTACIÓN
+        │
+        ▼
+¿Quién conecta ambos?
+        │
+        ▼
+      DI
+```
+
+Por ejemplo:
+
+```text
+Application
+     │
+     │ necesita
+     ▼
+IOrdenMantenimientoRepository
+     ▲
+     │ implementa
+     │
+Infrastructure
+     │
+     │ registrado mediante
+     ▼
+DependencyInjection.cs
+     │
+     │ invocado desde
+     ▼
+Program.cs
+```
+
+Ese es el patrón que vas a repetir para:
+
+```text
+IClienteRepository
+IEquipoRepository
+ITecnicoRepository
+IOrdenMantenimientoRepository
+IActividadRepository
+IContratoRepository
+IFileStorage
+IEmailSender
+ICurrentUser
+IDateTimeProvider
+```
+
+y sus respectivas implementaciones.
+
+**Siguiente paso recomendado:** construir juntos la estructura real de `DependencyInjection.cs` para **Domain + Application + Infrastructure + API** en .NET 10, incluyendo `DbContext`, repositorios, servicios, FluentValidation y MediatR, y viendo **qué proyecto referencia a cuál**.
