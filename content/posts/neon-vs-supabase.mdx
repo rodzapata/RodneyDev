@@ -1,5 +1,5 @@
 ---
-title: "copmarando hostin de Neon vs supabase"
+title: "comparando hostin de Neon vs supabase"
 date: "2026-08-08"
 description: "Comparacion de que hostin es mas recomendable de forma gratis"
 slug: "neon-vs-supabase"
@@ -10,6 +10,7 @@ featured: true
 ---
 
 [supabase curso](https://www.youtube.com/watch?v=0xmybxQEIPI)  
+Video de seguridad [variables de entorno by Felipe Gavilan](https://www.youtube.com/watch?v=c23IixPtHcc)
 
 
 despues de revisar consultas comparando Neon vs Supabase, pude concluir que Neon es 36% mas rapido que 
@@ -699,3 +700,414 @@ Para **ACSoft**, que es el nombre que estabas considerando para tu aplicación i
 
 Si inicialmente quieres mantener los costos en **$0**, también puedo compararte **Supabase Free vs Neon Free + Render Free + Vercel Free** para ver cuál combinación te conviene más para ACSoft.
 
+
+> como creo variables de ambiente en .net de forma gratuita ?
+
+Sí. Si te refieres a **variables de entorno para una API .NET 10**, puedes hacerlo completamente gratis. Lo importante es distinguir entre **desarrollo local** y **producción/hosting**.
+
+### 1. En desarrollo local: `appsettings.json` + User Secrets
+
+Para datos sensibles como contraseñas, connection strings o API keys, en .NET es recomendable usar **User Secrets** en lugar de ponerlos directamente en `appsettings.json`.
+
+Por ejemplo:
+
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Host=localhost;Database=hvac_db;Username=postgres;Password=..."
+  }
+}
+```
+
+Puedes mover la información sensible a User Secrets:
+
+```bash
+dotnet user-secrets init
+```
+
+Luego:
+
+```bash
+dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Host=localhost;Database=hvac_db;Username=postgres;Password=123456"
+```
+
+Y en tu aplicación:
+
+```csharp
+var connectionString =
+    builder.Configuration.GetConnectionString("DefaultConnection");
+```
+
+.NET combina automáticamente las diferentes fuentes de configuración.
+
+---
+
+### 2. Variables de entorno del sistema
+
+También puedes crear variables directamente en Windows.
+
+**PowerShell:**
+
+```powershell
+$env:ConnectionStrings__DefaultConnection="Host=localhost;Database=hvac_db"
+```
+
+El doble guion bajo `__` representa `:` en la configuración de .NET.
+
+Por ejemplo:
+
+```text
+ConnectionStrings__DefaultConnection
+```
+
+equivale a:
+
+```text
+ConnectionStrings:DefaultConnection
+```
+
+Y puedes leerla con:
+
+```csharp
+builder.Configuration["ConnectionStrings:DefaultConnection"]
+```
+
+---
+
+### 3. En producción/hosting gratuito
+
+Si estás pensando en algo como tu proyecto:
+
+```text
+Next.js
+   ↓
+.NET 10 Web API
+   ↓
+Neon PostgreSQL
+```
+
+puedes tener las variables de entorno configuradas **gratuitamente en el hosting**, sin subirlas a GitHub.
+
+Por ejemplo:
+
+```text
+DATABASE_URL=postgresql://...
+JWT_SECRET=...
+```
+
+y en C#:
+
+```csharp
+var databaseUrl = builder.Configuration["DATABASE_URL"];
+var jwtSecret = builder.Configuration["JWT_SECRET"];
+```
+
+La mayoría de plataformas modernas de hosting tienen una sección tipo:
+
+```text
+Environment Variables
+        ↓
+Key                 Value
+DATABASE_URL        ********
+JWT_SECRET          ********
+```
+
+Así que **no necesitas pagar por un servicio independiente de variables de entorno**.
+
+---
+
+### Para tu proyecto HVAC
+
+Yo usaría esta separación:
+
+```text
+Desarrollo
+│
+├── appsettings.json
+│   └── configuración no sensible
+│
+├── appsettings.Development.json
+│   └── configuración específica de desarrollo
+│
+└── User Secrets
+    └── passwords
+    └── connection strings
+    └── JWT secrets
+    └── API keys
+
+
+Producción
+│
+└── Hosting
+    └── Environment Variables
+        ├── DATABASE_URL
+        ├── JWT_SECRET
+        ├── ...
+```
+
+Y **nunca** subiría esto a Git:
+
+```text
+.env
+appsettings.Production.json
+```
+
+Si quieres, también puedo mostrarte **cómo configurar exactamente las variables de entorno de tu .NET 10 API cuando la publiques gratis en Render + Neon**, incluyendo `DATABASE_URL`, JWT y CORS para tu Next.js.
+
+Perfecto. Para tu arquitectura **Next.js + .NET 10 Web API + Neon PostgreSQL**, te recomiendo esta configuración gratuita y sencilla:
+
+```text
+Next.js
+   │
+   │ HTTPS
+   ▼
+Render
+.NET 10 Web API
+   │
+   │ DATABASE_URL
+   ▼
+Neon
+PostgreSQL
+```
+
+### 1. En tu proyecto .NET 10
+
+En `Program.cs` puedes obtener las variables así:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+var databaseUrl = builder.Configuration["DATABASE_URL"];
+
+if (string.IsNullOrWhiteSpace(databaseUrl))
+{
+    throw new InvalidOperationException(
+        "La variable de entorno DATABASE_URL no está configurada.");
+}
+```
+
+Pero hay un detalle importante: **EF Core/Npgsql normalmente espera una connection string**, así que puedes configurar:
+
+```csharp
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseNpgsql(databaseUrl));
+```
+
+Tu código no necesita conocer si la aplicación está en local o en Render.
+
+---
+
+## 2. Desarrollo local
+
+Puedes usar **User Secrets**:
+
+```powershell
+dotnet user-secrets init
+```
+
+Después:
+
+```powershell
+dotnet user-secrets set "DATABASE_URL" "Host=...;Database=...;Username=...;Password=...;SSL Mode=Require"
+```
+
+Y comprobarlo:
+
+```powershell
+dotnet user-secrets list
+```
+
+No necesitas crear un `.env` para .NET.
+
+---
+
+## 3. En Render
+
+Cuando publiques tu Web API en Render, busca:
+
+**Service → Environment → Environment Variables**
+
+Y agrega:
+
+```text
+DATABASE_URL = Host=ep-xxxxx.neon.tech;Database=neondb;Username=usuario;Password=xxxxx;SSL Mode=Require
+```
+
+También puedes agregar:
+
+```text
+JWT_SECRET = una-clave-larga-y-segura
+```
+
+y, por ejemplo:
+
+```text
+FRONTEND_URL = https://tu-app.vercel.app
+```
+
+Quedaría conceptualmente:
+
+```text
+DATABASE_URL     **************
+JWT_SECRET       **************
+FRONTEND_URL     **************
+```
+
+Render inyectará esas variables cuando ejecute tu aplicación.
+
+---
+
+## 4. CORS para tu Next.js
+
+En producción tu API podría estar en:
+
+```text
+https://hvac-api.onrender.com
+```
+
+y tu frontend en:
+
+```text
+https://hvac.vercel.app
+```
+
+Puedes configurar CORS mediante:
+
+```csharp
+var frontendUrl = builder.Configuration["FRONTEND_URL"];
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("Frontend", policy =>
+    {
+        policy
+            .WithOrigins(frontendUrl!)
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+    });
+});
+```
+
+Y posteriormente:
+
+```csharp
+var app = builder.Build();
+
+app.UseCors("Frontend");
+
+app.MapControllers();
+
+app.Run();
+```
+
+---
+
+## 5. Una mejora para tu arquitectura Clean Architecture
+
+Como estás trabajando con **Clean Architecture + DDD**, yo evitaría que tus entidades de dominio conozcan variables de entorno.
+
+La configuración debe quedarse en infraestructura/composición:
+
+```text
+HVAC
+│
+├── Domain
+│   ├── Entities
+│   ├── ValueObjects
+│   ├── Enums
+│   └── Exceptions
+│
+├── Application
+│   ├── Services
+│   ├── DTOs
+│   └── Interfaces
+│
+├── Infrastructure
+│   ├── Persistence
+│   ├── Configurations
+│   └── Services
+│
+└── Api
+    ├── Controllers
+    ├── Middleware
+    └── Program.cs
+```
+
+La variable:
+
+```text
+DATABASE_URL
+```
+
+entra por la configuración de la aplicación y termina siendo utilizada por:
+
+```text
+Program.cs
+    ↓
+Infrastructure
+    ↓
+AppDbContext
+    ↓
+Neon PostgreSQL
+```
+
+El **Domain no debería saber absolutamente nada de `DATABASE_URL`**.
+
+---
+
+### 6. ¿Y el frontend Next.js?
+
+Aquí sí puedes utilizar variables `.env`.
+
+Por ejemplo:
+
+```text
+.env.local
+```
+
+```env
+NEXT_PUBLIC_API_URL=https://hvac-api.onrender.com
+```
+
+Y en Next.js:
+
+```javascript
+const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+```
+
+Importante:
+
+```text
+NEXT_PUBLIC_*
+```
+
+significa que esa variable **puede terminar expuesta al navegador**.
+
+Por eso **NO** debes poner aquí:
+
+```env
+NEXT_PUBLIC_DATABASE_PASSWORD=...
+NEXT_PUBLIC_JWT_SECRET=...
+```
+
+Eso sería un problema de seguridad.
+
+La separación quedaría:
+
+```text
+Next.js / Vercel
+│
+└── NEXT_PUBLIC_API_URL
+         │
+         ▼
+.NET 10 / Render
+│
+├── DATABASE_URL
+├── JWT_SECRET
+└── FRONTEND_URL
+         │
+         ▼
+Neon PostgreSQL
+```
+
+Esta estructura encaja muy bien con tu proyecto HVAC y te permite mantener **código y secretos separados**, incluso usando los planes gratuitos.

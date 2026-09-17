@@ -1,0 +1,1175 @@
+---
+title: "Crear webapi Parte 1 con Clean Arquitecture "
+date: "2026-09-16"
+description: "Crear WebApi parte 1 con Clean Arquitecture AcSoft"
+slug: "webapi-1-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft", "webapi"]
+published: true
+featured: true
+---
+
+Perfecto. Vamos a hacerlo como si estuviéramos construyendo una **Web API profesional en .NET 10**, aplicando **Clean Architecture + DDD**, pero sin caer en sobrearquitectura.
+
+Para que realmente aprendas, lo construiremos **paso a paso**, explicando primero el *por qué* y después el código.
+
+## Proyecto que construiremos
+
+Vamos a usar un ejemplo cercano a tu proyecto HVAC:
+
+> **API de Órdenes de Trabajo para mantenimiento de equipos de aire acondicionado.**
+
+La API tendrá inicialmente:
+
+* Clientes
+* Equipos
+* Órdenes de trabajo
+* Técnicos
+* Actividades de mantenimiento
+* Respuestas de actividades
+
+Pero empezaremos con algo pequeño: **crear y consultar órdenes de trabajo**.
+
+---
+
+# 1. Arquitectura que vamos a utilizar
+
+La solución tendrá cuatro proyectos:
+
+```text
+HVAC.Api
+HVAC.Application
+HVAC.Domain
+HVAC.Infrastructure
+```
+
+Visualmente:
+
+```text
+                    ┌──────────────────────┐
+                    │       HVAC.Api       │
+                    │ Controllers          │
+                    │ Middleware           │
+                    │ DI / Program.cs      │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │  HVAC.Application    │
+                    │ Use Cases            │
+                    │ DTOs                 │
+                    │ Interfaces           │
+                    │ Validators           │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │     HVAC.Domain      │
+                    │ Entities             │
+                    │ Value Objects        │
+                    │ Enums                │
+                    │ Domain Exceptions    │
+                    │ Domain Rules         │
+                    └──────────────────────┘
+                               ▲
+                               │
+                    ┌──────────┴───────────┐
+                    │  HVAC.Infrastructure │
+                    │ EF Core              │
+                    │ PostgreSQL           │
+                    │ Repositories         │
+                    │ External services    │
+                    └──────────────────────┘
+```
+
+La regla fundamental será:
+
+```text
+Api
+ ↓
+Application
+ ↓
+Domain
+
+Infrastructure
+ ↓
+Application
+ ↓
+Domain
+```
+
+Es decir:
+
+**Domain**
+
+**No conoce a nadie.**
+
+```text
+Domain
+  └── ninguna dependencia externa
+```
+
+**Application**
+
+Conoce únicamente:
+
+```text
+Application → Domain
+```
+
+**Infrastructure**
+
+Puede conocer:
+
+```text
+Infrastructure → Application
+Infrastructure → Domain
+```
+
+**Api**
+
+Conoce:
+
+```text
+Api → Application
+```
+
+Y normalmente evitaremos que `Api` dependa directamente de `Infrastructure` en el código de negocio, aunque `Program.cs` tendrá que registrar las implementaciones de infraestructura mediante DI.
+
+---
+
+# 2. ¿Por qué cuatro proyectos?
+
+Porque cada capa tiene una responsabilidad diferente.
+
+## Domain
+
+Representa el **negocio**.
+
+Por ejemplo:
+
+```text
+Una orden de trabajo no puede cerrarse
+si todavía tiene actividades pendientes.
+```
+
+Eso es una regla de negocio.
+
+No debería estar en:
+
+```text
+Controller
+DbContext
+SQL
+DTO
+```
+
+Debe vivir en el dominio.
+
+---
+
+## Application
+
+Representa los **casos de uso**.
+
+Por ejemplo:
+
+```text
+Crear orden de trabajo
+Consultar orden
+Asignar técnico
+Iniciar mantenimiento
+Finalizar mantenimiento
+Cerrar orden
+```
+
+Application coordina el caso de uso.
+
+---
+
+## Infrastructure
+
+Se ocupa de detalles técnicos:
+
+```text
+PostgreSQL
+EF Core
+Email
+Storage
+GPS
+archivos
+etc.
+```
+
+---
+
+## Api
+
+Es la entrada HTTP:
+
+```http
+POST /api/work-orders
+GET /api/work-orders/123
+```
+
+El controller no debería contener lógica de negocio.
+
+---
+
+# 3. Crear la solución
+
+Desde Visual Studio 2026 podemos crear:
+
+```text
+Blank Solution
+```
+
+Nombre:
+
+```text
+HVAC
+```
+
+Después agregamos:
+
+```text
+HVAC.Api
+HVAC.Application
+HVAC.Domain
+HVAC.Infrastructure
+```
+
+También podemos hacerlo desde CLI:
+
+```bash
+dotnet new sln -n HVAC
+```
+
+Luego:
+
+```bash
+dotnet new webapi -n HVAC.Api
+dotnet new classlib -n HVAC.Application
+dotnet new classlib -n HVAC.Domain
+dotnet new classlib -n HVAC.Infrastructure
+```
+
+Y agregamos los proyectos:
+
+```bash
+dotnet sln HVAC.sln add HVAC.Api
+dotnet sln HVAC.sln add HVAC.Application
+dotnet sln HVAC.sln add HVAC.Domain
+dotnet sln HVAC.sln add HVAC.Infrastructure
+```
+
+---
+
+# 4. Agregar referencias
+
+Ahora viene algo **muy importante para entender Clean Architecture**.
+
+### Application → Domain
+
+```bash
+dotnet add HVAC.Application reference HVAC.Domain
+```
+
+### Infrastructure → Application
+
+```bash
+dotnet add HVAC.Infrastructure reference HVAC.Application
+```
+
+### Infrastructure → Domain
+
+```bash
+dotnet add HVAC.Infrastructure reference HVAC.Domain
+```
+
+### Api → Application
+
+```bash
+dotnet add HVAC.Api reference HVAC.Application
+```
+
+Y para permitir que `Program.cs` registre Infrastructure:
+
+```bash
+dotnet add HVAC.Api reference HVAC.Infrastructure
+```
+
+Por lo tanto:
+
+```text
+HVAC.Domain
+      ↑
+      │
+HVAC.Application
+      ↑
+      │
+   HVAC.Api
+
+HVAC.Domain
+      ↑
+      │
+HVAC.Infrastructure
+      ↑
+      │
+   HVAC.Api
+```
+
+Esto último es importante:
+
+> Que `Api` tenga referencia a `Infrastructure` para composición/DI **no significa que Api deba conocer los detalles de EF Core o PostgreSQL en sus controllers**.
+
+---
+
+# 5. Estructura inicial
+
+Quiero que lleguemos a una estructura aproximadamente así:
+
+```text
+HVAC
+│
+├── HVAC.Api
+│   ├── Controllers
+│   ├── Middleware
+│   ├── Extensions
+│   └── Program.cs
+│
+├── HVAC.Application
+│   ├── Abstractions
+│   │   ├── Persistence
+│   │   └── Services
+│   │
+│   ├── WorkOrders
+│   │   ├── Commands
+│   │   ├── Queries
+│   │   ├── DTOs
+│   │   └── Validators
+│   │
+│   └── DependencyInjection.cs
+│
+├── HVAC.Domain
+│   ├── Entities
+│   ├── ValueObjects
+│   ├── Enums
+│   ├── Exceptions
+│   ├── Events
+│   └── Common
+│
+└── HVAC.Infrastructure
+    ├── Persistence
+    │   ├── DbContext
+    │   ├── Configurations
+    │   └── Repositories
+    │
+    ├── Services
+    └── DependencyInjection.cs
+```
+
+Pero **no vamos a crear todas estas carpetas de una vez**.
+
+Eso también es una buena práctica.
+
+Primero crearemos lo que necesitamos y la arquitectura crecerá junto con el dominio.
+
+---
+
+# 6. Nuestro primer Aggregate
+
+Aquí entra DDD.
+
+Vamos a tener:
+
+```text
+WorkOrder
+```
+
+como Aggregate Root.
+
+Una orden podría tener:
+
+```text
+WorkOrder
+│
+├── Id
+├── Number
+├── CustomerId
+├── EquipmentId
+├── TechnicianId
+├── Status
+├── ScheduledDate
+└── Activities
+```
+
+Y más adelante:
+
+```text
+WorkOrder
+   │
+   ├── WorkOrderActivity
+   │       ├── Activity
+   │       └── Answers
+   │
+   └── Photos
+```
+
+La idea es que `WorkOrder` controle las modificaciones de su propio estado.
+
+Por ejemplo:
+
+```csharp
+workOrder.Start();
+```
+
+en lugar de:
+
+```csharp
+workOrder.Status = WorkOrderStatus.InProgress;
+```
+
+¿Por qué?
+
+Porque el Aggregate debe proteger las reglas del negocio.
+
+---
+
+# 7. Crear el primer Entity
+
+En:
+
+```text
+HVAC.Domain
+└── Entities
+    └── WorkOrder.cs
+```
+
+podríamos comenzar con:
+
+```csharp
+namespace HVAC.Domain.Entities;
+
+public sealed class WorkOrder
+{
+    private WorkOrder()
+    {
+    }
+
+    private WorkOrder(
+        Guid id,
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        Id = id;
+        Number = number;
+        CustomerId = customerId;
+        EquipmentId = equipmentId;
+        Status = WorkOrderStatus.Pending;
+    }
+
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; } = null!;
+
+    public Guid CustomerId { get; private set; }
+
+    public Guid EquipmentId { get; private set; }
+
+    public WorkOrderStatus Status { get; private set; }
+
+    public static WorkOrder Create(
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        if (string.IsNullOrWhiteSpace(number))
+            throw new ArgumentException(
+                "El número de la orden es obligatorio.",
+                nameof(number));
+
+        if (customerId == Guid.Empty)
+            throw new ArgumentException(
+                "El cliente es obligatorio.",
+                nameof(customerId));
+
+        if (equipmentId == Guid.Empty)
+            throw new ArgumentException(
+                "El equipo es obligatorio.",
+                nameof(equipmentId));
+
+        return new WorkOrder(
+            Guid.NewGuid(),
+            number,
+            customerId,
+            equipmentId);
+    }
+
+    public void Start()
+    {
+        if (Status != WorkOrderStatus.Pending)
+            throw new InvalidOperationException(
+                "Solo una orden pendiente puede iniciarse.");
+
+        Status = WorkOrderStatus.InProgress;
+    }
+
+    public void Complete()
+    {
+        if (Status != WorkOrderStatus.InProgress)
+            throw new InvalidOperationException(
+                "Solo una orden en progreso puede completarse.");
+
+        Status = WorkOrderStatus.Completed;
+    }
+}
+```
+
+Aquí ya tenemos algo importante de DDD:
+
+```csharp
+public void Start()
+```
+
+La entidad tiene comportamiento.
+
+No es simplemente:
+
+```text
+Id
+Name
+Status
+...
+```
+
+Esto es lo que suele llamarse un **modelo de dominio rico**.
+
+---
+
+# 8. Crear el enum
+
+En:
+
+```text
+HVAC.Domain
+└── Enums
+    └── WorkOrderStatus.cs
+```
+
+```csharp
+namespace HVAC.Domain.Enums;
+
+public enum WorkOrderStatus
+{
+    Pending = 1,
+    InProgress = 2,
+    Completed = 3,
+    Cancelled = 4
+}
+```
+
+Y agregamos el namespace correspondiente en `WorkOrder`:
+
+```csharp
+using HVAC.Domain.Enums;
+```
+
+---
+
+# 9. Una decisión importante
+
+No quiero que hagamos esto:
+
+```csharp
+public class WorkOrderService
+{
+    public void Start(WorkOrder order)
+    {
+        order.Status = WorkOrderStatus.InProgress;
+    }
+}
+```
+
+porque estaríamos sacando la regla del dominio.
+
+Preferimos:
+
+```csharp
+order.Start();
+```
+
+El dominio decide si puede iniciarse.
+
+---
+
+# 10. Ahora Application
+
+Aquí aparece una distinción fundamental:
+
+**Domain**
+
+Pregunta:
+
+> ¿Qué reglas tiene una orden?
+
+**Application**
+
+Pregunta:
+
+> ¿Qué debemos hacer para ejecutar el caso de uso "crear orden"?
+
+Por ejemplo:
+
+```text
+HTTP POST
+   ↓
+Controller
+   ↓
+CreateWorkOrderHandler
+   ↓
+WorkOrder.Create(...)
+   ↓
+Repository
+   ↓
+Database
+```
+
+---
+
+# 11. DTO de entrada
+
+En Application:
+
+```text
+WorkOrders
+└── DTOs
+    └── CreateWorkOrderRequest.cs
+```
+
+```csharp
+namespace HVAC.Application.WorkOrders.DTOs;
+
+public sealed record CreateWorkOrderRequest(
+    Guid CustomerId,
+    Guid EquipmentId);
+```
+
+Observa algo:
+
+No estamos pasando directamente:
+
+```csharp
+WorkOrder
+```
+
+desde HTTP.
+
+Eso sería acoplar nuestra API al dominio.
+
+Usamos DTO.
+
+---
+
+# 12. ¿Dónde generamos el número de orden?
+
+Podemos tener algo como:
+
+```text
+OT-2026-000001
+```
+
+Esto plantea una cuestión interesante de arquitectura.
+
+¿Quién genera ese número?
+
+Podría ser:
+
+```text
+Domain Service
+Application Service
+Database
+```
+
+y la decisión depende de las reglas reales del negocio.
+
+Para nuestro ejemplo inicial podemos mantenerlo simple y generar un identificador de negocio desde Application.
+
+---
+
+# 13. Repository: una abstracción
+
+Application necesita guardar la orden, pero **no debe saber que usamos PostgreSQL**.
+
+Creamos:
+
+```text
+HVAC.Application
+└── Abstractions
+    └── Persistence
+        └── IWorkOrderRepository.cs
+```
+
+```csharp
+using HVAC.Domain.Entities;
+
+namespace HVAC.Application.Abstractions.Persistence;
+
+public interface IWorkOrderRepository
+{
+    Task AddAsync(
+        WorkOrder workOrder,
+        CancellationToken cancellationToken);
+
+    Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken);
+}
+```
+
+Application dice:
+
+> "Necesito guardar una WorkOrder."
+
+Pero no dice:
+
+```text
+INSERT INTO work_orders...
+```
+
+ni:
+
+```csharp
+DbContext
+```
+
+ni:
+
+```text
+PostgreSQL
+```
+
+---
+
+# 14. Infrastructure implementará el repository
+
+Más adelante tendremos:
+
+```text
+HVAC.Infrastructure
+└── Persistence
+    └── Repositories
+        └── WorkOrderRepository.cs
+```
+
+```csharp
+public sealed class WorkOrderRepository
+    : IWorkOrderRepository
+{
+    private readonly HvacDbContext _context;
+
+    public WorkOrderRepository(HvacDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task AddAsync(
+        WorkOrder workOrder,
+        CancellationToken cancellationToken)
+    {
+        await _context.WorkOrders.AddAsync(
+            workOrder,
+            cancellationToken);
+    }
+
+    public async Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        return await _context.WorkOrders
+            .FirstOrDefaultAsync(
+                x => x.Id == id,
+                cancellationToken);
+    }
+}
+```
+
+La implementación conoce EF Core.
+
+El dominio no.
+
+Application tampoco necesita conocer EF Core.
+
+---
+
+# 15. ¿Y quién hace SaveChanges?
+
+Aquí tenemos una decisión arquitectónica importante.
+
+No quiero que cada repository haga:
+
+```csharp
+await _context.SaveChangesAsync();
+```
+
+porque eso puede dificultar una operación que involucre varias entidades.
+
+Preferimos que Application coordine la transacción mediante una abstracción, por ejemplo:
+
+```csharp
+public interface IUnitOfWork
+{
+    Task<int> SaveChangesAsync(
+        CancellationToken cancellationToken);
+}
+```
+
+Y después:
+
+```text
+Application
+    ↓
+IWorkOrderRepository
+    ↓
+IUnitOfWork
+    ↓
+Infrastructure
+    ↓
+EF Core
+    ↓
+PostgreSQL
+```
+
+---
+
+# 16. ¿Necesitamos MediatR?
+
+No necesariamente.
+
+Este punto es importante porque en proyectos .NET se suele hacer:
+
+```text
+Controller
+ ↓
+MediatR
+ ↓
+Command
+ ↓
+Handler
+```
+
+para absolutamente todo.
+
+DDD + Clean Architecture **no requieren MediatR**.
+
+Podemos comenzar perfectamente con:
+
+```csharp
+WorkOrderService
+```
+
+o una estructura de casos de uso propia.
+
+Por ejemplo:
+
+```text
+Application
+└── WorkOrders
+    └── Create
+        ├── CreateWorkOrderRequest.cs
+        └── CreateWorkOrderHandler.cs
+```
+
+Y:
+
+```csharp
+public sealed class CreateWorkOrderHandler
+{
+    private readonly IWorkOrderRepository _repository;
+    private readonly IUnitOfWork _unitOfWork;
+
+    public CreateWorkOrderHandler(
+        IWorkOrderRepository repository,
+        IUnitOfWork unitOfWork)
+    {
+        _repository = repository;
+        _unitOfWork = unitOfWork;
+    }
+
+    public async Task<Guid> HandleAsync(
+        CreateWorkOrderRequest request,
+        CancellationToken cancellationToken)
+    {
+        var workOrder = WorkOrder.Create(
+            number: $"OT-{DateTime.UtcNow:yyyyMMddHHmmss}",
+            customerId: request.CustomerId,
+            equipmentId: request.EquipmentId);
+
+        await _repository.AddAsync(
+            workOrder,
+            cancellationToken);
+
+        await _unitOfWork.SaveChangesAsync(
+            cancellationToken);
+
+        return workOrder.Id;
+    }
+}
+```
+
+Esto es perfectamente válido.
+
+---
+
+# 17. Controller
+
+Finalmente:
+
+```text
+HVAC.Api
+└── Controllers
+    └── WorkOrdersController.cs
+```
+
+```csharp
+[ApiController]
+[Route("api/work-orders")]
+public sealed class WorkOrdersController : ControllerBase
+{
+    [HttpPost]
+    public async Task<IActionResult> Create(
+        CreateWorkOrderRequest request,
+        CancellationToken cancellationToken)
+    {
+        var id = await _handler.HandleAsync(
+            request,
+            cancellationToken);
+
+        return CreatedAtAction(
+            nameof(GetById),
+            new { id },
+            new { id });
+    }
+
+    [HttpGet("{id:guid}")]
+    public async Task<IActionResult> GetById(Guid id)
+    {
+        // ...
+        return Ok();
+    }
+}
+```
+
+El controller queda delgado.
+
+No contiene:
+
+```text
+Reglas de negocio
+SQL
+EF Core
+Validaciones complejas
+Cálculos
+```
+
+Simplemente traduce:
+
+```text
+HTTP → Application
+```
+
+y:
+
+```text
+Application → HTTP
+```
+
+---
+
+# 18. El flujo completo
+
+Cuando el frontend haga:
+
+```http
+POST /api/work-orders
+Content-Type: application/json
+```
+
+con:
+
+```json
+{
+  "customerId": "....",
+  "equipmentId": "...."
+}
+```
+
+ocurrirá:
+
+```text
+                  HTTP
+                   │
+                   ▼
+        ┌──────────────────┐
+        │ WorkOrders       │
+        │ Controller       │
+        └────────┬─────────┘
+                 │
+                 ▼
+        ┌──────────────────┐
+        │ Application      │
+        │ CreateWorkOrder  │
+        └────────┬─────────┘
+                 │
+                 ▼
+        ┌──────────────────┐
+        │ Domain           │
+        │ WorkOrder.Create │
+        └────────┬─────────┘
+                 │
+                 ▼
+        ┌──────────────────┐
+        │ Repository       │
+        │ Interface        │
+        └────────┬─────────┘
+                 │
+                 ▼
+        ┌──────────────────┐
+        │ Infrastructure   │
+        │ EF Core          │
+        └────────┬─────────┘
+                 │
+                 ▼
+             PostgreSQL
+```
+
+Esta es la idea central que quiero que aprendas.
+
+---
+
+# 19. Pero todavía no hemos terminado
+
+Para hacerlo realmente **profesional en .NET 10**, después iremos agregando:
+
+**Domain**
+
+* Entities
+* Aggregate Roots
+* Value Objects
+* Domain Exceptions
+* Domain Events
+* Specifications cuando realmente aporten valor
+* Invariants
+
+**Application**
+
+* Commands
+* Queries
+* DTOs
+* Validators
+* Interfaces
+* Authorization policies
+* Transaction boundaries
+
+**Infrastructure**
+
+* EF Core
+* PostgreSQL
+* Configurations
+* Repositories
+* Migrations
+* Outbox cuando sea necesario
+* Logging
+* External services
+
+**API**
+
+* Controllers
+* Dependency Injection
+* ProblemDetails / RFC 9457
+* Exception handling
+* Authentication
+* Authorization
+* Versioning
+* OpenAPI
+* Health checks
+
+Y también veremos:
+
+```text
+async / await
+CancellationToken
+IQueryable
+AsNoTracking
+Value Objects
+Records
+sealed
+private setters
+constructores privados
+factory methods
+generics
+extension methods
+```
+
+pero siempre **dentro de un contexto real**, no como conceptos aislados.
+
+---
+
+## La ruta que te recomiendo
+
+Para que realmente aprendas .NET 10 + DDD + Clean Architecture, yo seguiría este orden:
+
+```text
+FASE 1
+Crear solución
+       ↓
+FASE 2
+Domain
+       ↓
+FASE 3
+Aggregate Root
+       ↓
+FASE 4
+Value Objects
+       ↓
+FASE 5
+Application / casos de uso
+       ↓
+FASE 6
+DTO + Validación
+       ↓
+FASE 7
+Infrastructure
+       ↓
+FASE 8
+EF Core 10 + PostgreSQL
+       ↓
+FASE 9
+Dependency Injection
+       ↓
+FASE 10
+Controllers
+       ↓
+FASE 11
+ProblemDetails + excepciones
+       ↓
+FASE 12
+Authentication / Authorization
+       ↓
+FASE 13
+Testing
+       ↓
+FASE 14
+Docker
+       ↓
+FASE 15
+Deploy
+```
+
+Y lo más importante: **no vamos a construir un CRUD genérico disfrazado de DDD**. Usaremos el dominio de mantenimiento HVAC para que puedas ver dónde realmente tiene sentido cada patrón.
+
+**Primer paso práctico:** crear la solución `HVAC` en Visual Studio y dejar correctamente configuradas las **4 capas y sus referencias**. Luego construiremos `WorkOrder` desde cero, línea por línea, empezando por el Domain.
+
+[Webapi parte 2](/blog/webapi-2-csharp)  
+

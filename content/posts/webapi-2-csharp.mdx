@@ -1,0 +1,888 @@
+---
+title: "Crear webapi Parte 2 con Clean Arquitecture "
+date: "2026-09-17"
+description: "Crear WebApi parte 2 con Clean Arquitecture AcSoft"
+slug: "webapi-2-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. Vamos con el **Paso 2: construir la capa `Domain`**. Aquí es donde empieza realmente DDD.
+
+La idea es que al terminar este paso tengamos un dominio capaz de representar una **Orden de Trabajo HVAC** sin depender de EF Core, PostgreSQL, HTTP, DTOs ni ASP.NET Core.
+
+---
+
+# Paso 2 — Construir `HVAC.Domain`
+
+Nuestra estructura inicial será:
+
+```text
+HVAC.Domain
+│
+├── Entities
+│   └── WorkOrder.cs
+│
+├── Enums
+│   └── WorkOrderStatus.cs
+│
+├── ValueObjects
+│
+├── Exceptions
+│
+└── Common
+```
+
+Por ahora no vamos a llenar todas las carpetas. Solo crearemos lo que necesitamos.
+
+---
+
+# 2.1. ¿Qué debe contener Domain?
+
+Una pregunta fundamental:
+
+> ¿Qué cosas pertenecen realmente al dominio?
+
+En nuestro sistema HVAC tenemos conceptos del negocio como:
+
+```text
+Cliente
+Equipo
+Orden de trabajo
+Técnico
+Actividad
+Mantenimiento
+Contrato
+Respuesta
+```
+
+Estos son conceptos del negocio, por lo que potencialmente serán parte de `Domain`.
+
+Por ejemplo:
+
+```text
+WorkOrder
+Equipment
+Customer
+Technician
+MaintenanceActivity
+```
+
+Pero **no**:
+
+```text
+DbContext
+Controller
+HttpRequest
+DTO
+PostgreSQL
+Entity Framework
+IFormFile
+```
+
+Eso pertenece a otras capas.
+
+---
+
+# 2.2. Crear `WorkOrderStatus`
+
+Primero vamos a crear el estado de la orden.
+
+Archivo:
+
+```text
+HVAC.Domain
+└── Enums
+    └── WorkOrderStatus.cs
+```
+
+Código:
+
+```csharp
+namespace HVAC.Domain.Enums;
+
+public enum WorkOrderStatus
+{
+    Pending = 1,
+    InProgress = 2,
+    Completed = 3,
+    Cancelled = 4
+}
+```
+
+Tenemos:
+
+```text
+Pending
+    ↓
+InProgress
+    ↓
+Completed
+```
+
+y:
+
+```text
+Pending
+    ↓
+Cancelled
+```
+
+Pero aquí aparece algo muy importante.
+
+El `enum` **no protege las reglas**.
+
+Esto:
+
+```csharp
+workOrder.Status = WorkOrderStatus.Completed;
+```
+
+podría permitir que alguien cambie directamente el estado.
+
+Por eso nuestra entidad tendrá:
+
+```csharp
+private set;
+```
+
+---
+
+# 2.3. Crear la entidad `WorkOrder`
+
+Archivo:
+
+```text
+HVAC.Domain
+└── Entities
+    └── WorkOrder.cs
+```
+
+Vamos a comenzar con:
+
+```csharp
+using HVAC.Domain.Enums;
+
+namespace HVAC.Domain.Entities;
+
+public sealed class WorkOrder
+{
+    private WorkOrder()
+    {
+    }
+
+    private WorkOrder(
+        Guid id,
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        Id = id;
+        Number = number;
+        CustomerId = customerId;
+        EquipmentId = equipmentId;
+        Status = WorkOrderStatus.Pending;
+    }
+
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; } = null!;
+
+    public Guid CustomerId { get; private set; }
+
+    public Guid EquipmentId { get; private set; }
+
+    public WorkOrderStatus Status { get; private set; }
+}
+```
+
+Ahora vamos a analizar esto porque aquí hay bastante DDD.
+
+---
+
+# 2.4. ¿Por qué `sealed`?
+
+Tenemos:
+
+```csharp
+public sealed class WorkOrder
+```
+
+`sealed` significa que nadie puede hacer:
+
+```csharp
+public class MyWorkOrder : WorkOrder
+```
+
+¿Por qué?
+
+Porque `WorkOrder` representa un concepto específico del dominio.
+
+No necesitamos herencia simplemente por tener herencia.
+
+En DDD moderno prefiero:
+
+> composición y comportamiento explícito antes que jerarquías de clases innecesarias.
+
+No es obligatorio utilizar `sealed`, pero es una buena decisión cuando no queremos que la entidad sea extendida.
+
+---
+
+# 2.5. ¿Por qué constructor privado?
+
+Tenemos:
+
+```csharp
+private WorkOrder()
+{
+}
+```
+
+y:
+
+```csharp
+private WorkOrder(
+    Guid id,
+    string number,
+    Guid customerId,
+    Guid equipmentId)
+```
+
+Esto evita que cualquier parte de nuestra aplicación haga:
+
+```csharp
+var order = new WorkOrder();
+```
+
+o:
+
+```csharp
+var order = new WorkOrder(
+    Guid.NewGuid(),
+    "",
+    Guid.Empty,
+    Guid.Empty);
+```
+
+Queremos controlar cómo nace una orden.
+
+Por eso posteriormente tendremos:
+
+```csharp
+WorkOrder.Create(...)
+```
+
+---
+
+# 2.6. ¿Por qué `private set`?
+
+Tenemos:
+
+```csharp
+public WorkOrderStatus Status { get; private set; }
+```
+
+No queremos esto:
+
+```csharp
+workOrder.Status = WorkOrderStatus.Completed;
+```
+
+desde fuera de la entidad.
+
+Queremos:
+
+```csharp
+workOrder.Start();
+```
+
+o:
+
+```csharp
+workOrder.Complete();
+```
+
+De esa manera la propia entidad puede decidir si la operación es válida.
+
+Esto es una idea central de DDD:
+
+> El dominio debe proteger sus invariantes.
+
+---
+
+# 2.7. Crear `WorkOrder.Create`
+
+Ahora agregaremos un Factory Method.
+
+```csharp
+public static WorkOrder Create(
+    string number,
+    Guid customerId,
+    Guid equipmentId)
+{
+    if (string.IsNullOrWhiteSpace(number))
+        throw new ArgumentException(
+            "El número de la orden es obligatorio.",
+            nameof(number));
+
+    if (customerId == Guid.Empty)
+        throw new ArgumentException(
+            "El cliente es obligatorio.",
+            nameof(customerId));
+
+    if (equipmentId == Guid.Empty)
+        throw new ArgumentException(
+            "El equipo es obligatorio.",
+            nameof(equipmentId));
+
+    return new WorkOrder(
+        Guid.NewGuid(),
+        number,
+        customerId,
+        equipmentId);
+}
+```
+
+Entonces nuestra clase queda:
+
+```csharp
+using HVAC.Domain.Enums;
+
+namespace HVAC.Domain.Entities;
+
+public sealed class WorkOrder
+{
+    private WorkOrder()
+    {
+    }
+
+    private WorkOrder(
+        Guid id,
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        Id = id;
+        Number = number;
+        CustomerId = customerId;
+        EquipmentId = equipmentId;
+        Status = WorkOrderStatus.Pending;
+    }
+
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; } = null!;
+
+    public Guid CustomerId { get; private set; }
+
+    public Guid EquipmentId { get; private set; }
+
+    public WorkOrderStatus Status { get; private set; }
+
+    public static WorkOrder Create(
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        if (string.IsNullOrWhiteSpace(number))
+            throw new ArgumentException(
+                "El número de la orden es obligatorio.",
+                nameof(number));
+
+        if (customerId == Guid.Empty)
+            throw new ArgumentException(
+                "El cliente es obligatorio.",
+                nameof(customerId));
+
+        if (equipmentId == Guid.Empty)
+            throw new ArgumentException(
+                "El equipo es obligatorio.",
+                nameof(equipmentId));
+
+        return new WorkOrder(
+            Guid.NewGuid(),
+            number,
+            customerId,
+            equipmentId);
+    }
+}
+```
+
+---
+
+# 2.8. ¿Por qué `Create` y no `new WorkOrder`?
+
+Porque queremos que el dominio controle la creación.
+
+Ahora podemos hacer:
+
+```csharp
+var workOrder = WorkOrder.Create(
+    "OT-2026-000001",
+    customerId,
+    equipmentId);
+```
+
+Pero no podemos hacer:
+
+```csharp
+new WorkOrder(...);
+```
+
+desde fuera.
+
+Esto nos permite garantizar ciertas condiciones desde el nacimiento del objeto.
+
+---
+
+# 2.9. Agregar comportamiento
+
+Ahora viene una de las partes más importantes.
+
+Vamos a implementar:
+
+```csharp
+public void Start()
+```
+
+```csharp
+public void Start()
+{
+    if (Status != WorkOrderStatus.Pending)
+        throw new InvalidOperationException(
+            "Solo una orden pendiente puede iniciarse.");
+
+    Status = WorkOrderStatus.InProgress;
+}
+```
+
+Y:
+
+```csharp
+public void Complete()
+{
+    if (Status != WorkOrderStatus.InProgress)
+        throw new InvalidOperationException(
+            "Solo una orden en progreso puede completarse.");
+
+    Status = WorkOrderStatus.Completed;
+}
+```
+
+Finalmente:
+
+```csharp
+public void Cancel()
+{
+    if (Status == WorkOrderStatus.Completed)
+        throw new InvalidOperationException(
+            "Una orden completada no puede cancelarse.");
+
+    Status = WorkOrderStatus.Cancelled;
+}
+```
+
+---
+
+# 2.10. Nuestra entidad completa
+
+Queda así:
+
+```csharp
+using HVAC.Domain.Enums;
+
+namespace HVAC.Domain.Entities;
+
+public sealed class WorkOrder
+{
+    private WorkOrder()
+    {
+    }
+
+    private WorkOrder(
+        Guid id,
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        Id = id;
+        Number = number;
+        CustomerId = customerId;
+        EquipmentId = equipmentId;
+        Status = WorkOrderStatus.Pending;
+    }
+
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; } = null!;
+
+    public Guid CustomerId { get; private set; }
+
+    public Guid EquipmentId { get; private set; }
+
+    public WorkOrderStatus Status { get; private set; }
+
+    public static WorkOrder Create(
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        if (string.IsNullOrWhiteSpace(number))
+            throw new ArgumentException(
+                "El número de la orden es obligatorio.",
+                nameof(number));
+
+        if (customerId == Guid.Empty)
+            throw new ArgumentException(
+                "El cliente es obligatorio.",
+                nameof(customerId));
+
+        if (equipmentId == Guid.Empty)
+            throw new ArgumentException(
+                "El equipo es obligatorio.",
+                nameof(equipmentId));
+
+        return new WorkOrder(
+            Guid.NewGuid(),
+            number,
+            customerId,
+            equipmentId);
+    }
+
+    public void Start()
+    {
+        if (Status != WorkOrderStatus.Pending)
+            throw new InvalidOperationException(
+                "Solo una orden pendiente puede iniciarse.");
+
+        Status = WorkOrderStatus.InProgress;
+    }
+
+    public void Complete()
+    {
+        if (Status != WorkOrderStatus.InProgress)
+            throw new InvalidOperationException(
+                "Solo una orden en progreso puede completarse.");
+
+        Status = WorkOrderStatus.Completed;
+    }
+
+    public void Cancel()
+    {
+        if (Status == WorkOrderStatus.Completed)
+            throw new InvalidOperationException(
+                "Una orden completada no puede cancelarse.");
+
+        Status = WorkOrderStatus.Cancelled;
+    }
+}
+```
+
+---
+
+# 2.11. ¿Esto ya es DDD?
+
+Tenemos algunos elementos de DDD:
+
+```text
+✓ Entity
+✓ comportamiento
+✓ invariantes
+✓ encapsulación
+✓ factory method
+✓ enum del dominio
+```
+
+Pero todavía nos falta algo muy importante:
+
+## Value Objects
+
+Por ejemplo, observa:
+
+```csharp
+public string Number { get; private set; }
+```
+
+¿Realmente `Number` es simplemente un `string`?
+
+En nuestro negocio:
+
+```text
+OT-2026-000001
+```
+
+representa un **número de orden de trabajo**.
+
+Podríamos crear:
+
+```text
+WorkOrderNumber
+```
+
+como Value Object.
+
+Lo mismo puede suceder con:
+
+```text
+Email
+PhoneNumber
+DocumentNumber
+Money
+Temperature
+Pressure
+Voltage
+```
+
+Y en tu sistema HVAC esto será especialmente interesante.
+
+Por ejemplo:
+
+```text
+Pressure
+Voltage
+Current
+Temperature
+Capacitance
+RefrigerantCharge
+```
+
+pueden tener reglas propias.
+
+---
+
+# 2.12. Una cuestión importante: ¿validamos todo en Domain?
+
+No.
+
+Hay que distinguir dos tipos de validación.
+
+### Validación de entrada
+
+Por ejemplo:
+
+```text
+CustomerId obligatorio
+EquipmentId obligatorio
+Number obligatorio
+```
+
+puede manejarse en Application mediante un validator.
+
+### Regla de negocio
+
+Por ejemplo:
+
+> Una orden completada no puede cancelarse.
+
+Eso debe protegerlo el dominio.
+
+Por eso tendremos:
+
+```text
+Application
+    ↓
+"¿La petición tiene datos válidos?"
+
+Domain
+    ↓
+"¿Esta operación está permitida según las reglas del negocio?"
+```
+
+Esta distinción es extremadamente importante.
+
+---
+
+# 2.13. Un ejemplo de lo que NO queremos
+
+No queremos un dominio anémico como:
+
+```csharp
+public class WorkOrder
+{
+    public Guid Id { get; set; }
+
+    public string Number { get; set; }
+
+    public WorkOrderStatus Status { get; set; }
+}
+```
+
+y después:
+
+```csharp
+public class WorkOrderService
+{
+    public void Complete(WorkOrder order)
+    {
+        if (order.Status != WorkOrderStatus.InProgress)
+            throw new Exception();
+
+        order.Status = WorkOrderStatus.Completed;
+    }
+}
+```
+
+Porque la regla:
+
+```text
+Solo una orden InProgress puede completarse
+```
+
+termina fuera de la entidad.
+
+Preferimos:
+
+```csharp
+order.Complete();
+```
+
+La entidad conoce su propio comportamiento.
+
+---
+
+# 2.14. Algo que cambiaremos más adelante
+
+Por ahora utilizamos:
+
+```csharp
+ArgumentException
+InvalidOperationException
+```
+
+Esto está bien para comenzar.
+
+Pero en una API profesional no queremos terminar devolviendo al cliente:
+
+```text
+System.InvalidOperationException
+```
+
+Más adelante crearemos excepciones de dominio:
+
+```text
+HVAC.Domain
+└── Exceptions
+    ├── DomainException.cs
+    └── InvalidWorkOrderStateException.cs
+```
+
+y después las convertiremos en:
+
+```http
+400 Bad Request
+```
+
+o:
+
+```http
+409 Conflict
+```
+
+mediante `ProblemDetails`.
+
+Lo veremos cuando lleguemos a la capa API.
+
+---
+
+# 2.15. Algo más importante: todavía NO EF Core
+
+En este paso no debemos instalar:
+
+```text
+Microsoft.EntityFrameworkCore
+Npgsql.EntityFrameworkCore.PostgreSQL
+```
+
+en `HVAC.Domain`.
+
+La capa Domain debe poder compilar sin conocer:
+
+```text
+EF Core
+PostgreSQL
+ASP.NET Core
+HTTP
+JSON
+```
+
+Puedes comprobarlo conceptualmente así:
+
+```text
+HVAC.Domain
+    │
+    ├── C#
+    ├── Entities
+    ├── Value Objects
+    ├── Enums
+    └── Domain Rules
+```
+
+Nada más.
+
+---
+
+# 2.16. Nuestro flujo DDD empieza a verse así
+
+```text
+                DOMAIN
+                  │
+          ┌───────┴────────┐
+          │                │
+      WorkOrder       WorkOrderStatus
+          │
+          │
+     ┌────┴─────┐
+     │          │
+   Create      Start
+     │          │
+     │       Complete
+     │          │
+     └────┬─────┘
+          │
+      Invariants
+```
+
+Y posteriormente:
+
+```text
+WorkOrder
+   │
+   ├── Customer
+   ├── Equipment
+   ├── Technician
+   ├── Activities
+   ├── Answers
+   └── Photos
+```
+
+Pero **no vamos a meter todo todavía dentro de `WorkOrder`**. Primero debemos definir correctamente los límites del Aggregate.
+
+---
+
+# Siguiente paso
+
+El **Paso 3** será especialmente importante para tu proyecto HVAC:
+
+### **Diseñar correctamente el Aggregate Root `WorkOrder`**
+
+Ahí veremos:
+
+1. Qué es realmente un **Aggregate Root**.
+2. Qué entidades deben estar dentro de `WorkOrder`.
+3. Cuáles deben ser referencias mediante `Guid`.
+4. Por qué `Customer` probablemente **no debe estar dentro de `WorkOrder`**.
+5. Cómo manejar `WorkOrderActivity`.
+6. Cómo representar las respuestas:
+
+   * Numérica
+   * Texto
+   * Correcto
+   * No correcto
+   * No aplica
+7. Cómo manejar actividades que se ejecutan **antes y después del mantenimiento**.
+8. Cuándo utilizar Value Objects.
+9. Cómo evitar convertir nuestro dominio en un enorme objeto con 50 propiedades.
+
+Ese paso será la base para que posteriormente **EF Core 10 simplemente persista un modelo de dominio que ya está bien diseñado**, en lugar de diseñar el dominio alrededor de la base de datos.

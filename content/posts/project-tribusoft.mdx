@@ -11,7 +11,12 @@ featured: true
 
 # 1. Nombre de la aplicacion
 
-Se llamará **TribuSoft** empesaremos con una api web hecha en net core 10
+Se llamará **TribuSoft** empesaremos con una api web hecha en net core 10    
+y para las capas [NCapata completo](https://www.youtube.com/watch?v=CYs3Apzg-SQ)  
+
+para la web api tome como referencia el video [CRUD ApiRest en .net10 by Tecnologers](https://www.youtube.com/watch?v=0XSd7VHxy-A&t=995s)  
+
+
 
 # 2. Instalacion de Metcore 10
 
@@ -220,6 +225,152 @@ protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     optionsBuilder.UseSnakeCaseNamingConvention();
 }
 ```
+La manera anterior tiene un inconveniente y es que **appsettings.json** se rastrea en git, por lo tanto en produccion es inseguro.  
+
+Lo mejor es que aqui simplemente especifiquemos con que proveedore de base datos vamos a trabarjar **postgres o sqlserver**
+```js
+{
+  "DatabaseProvider": "Postgres"
+}
+```
+
+
+y la cadena de conexion la guardamos un **user.secret** los paso son :  
+nos ubicamos en nuestro proyecto **TribuSoft.api** y con el boton derecho escogemos **Administrar secretos de usuarios**
+aparecera un **secrets.json** donde colocaremos lo siguiente:  
+
+```js
+{
+  "ConnectionStrings": {
+    "Postgres": "Host=myhost;Port=5432;Database=mydatabase;Username=user;Password=mypassword;SSL Mode=Require",
+    "SqlServer": "Server=localhost;Database=MiDb;User Id=usuario;Password=clave;"
+  },
+  "DatabaseProvider": "Postgres"
+}
+```
+
+y nuestro **program.cs** quedaria asi:  
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// Add cadena de conexion a la base de datos
+var provider = builder.Configuration["DatabaseProvider"]
+    ?? throw new InvalidOperationException(
+        "No se ha configurado 'DatabaseProvider'.");
+
+var connectionString = builder.Configuration
+    .GetConnectionString(provider)
+    ?? throw new InvalidOperationException(
+        $"No se ha configurado la cadena de conexión para '{provider}'.");
+
+
+builder.Services.AddDbContext<AppDbContext>(options =>
+{
+    switch (provider)
+    {
+        case "Postgres":
+            options.UseNpgsql(connectionString);
+            break;
+
+        case "SqlServer":
+            options.UseSqlServer(connectionString);
+            break;
+
+        default:
+            throw new InvalidOperationException(
+                $"Proveedor de base de datos no soportado: '{provider}'.");
+    }
+});
+
+// Add services to the container.
+
+builder.Services.AddControllers();
+// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
+builder.Services.AddOpenApi();
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+}
+
+app.UseHttpsRedirection();
+
+app.UseAuthorization();
+
+app.MapControllers();
+
+app.Run();
+
+```
+
+Nuestro **program.cs** se esta ensuciando con un codigo muy largo para la conexion lo que se recomienda es crear una extension 
+de la conexion a parte y nuestro **program.cs** solo llama al servicion quedando así:  
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+
+namespace MiProyecto.Api.Extensions;
+
+public static class DatabaseExtensions
+{
+    public static IServiceCollection AddDatabase(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        var provider = configuration["DatabaseProvider"]
+            ?? throw new InvalidOperationException(
+                "No se ha configurado 'DatabaseProvider'.");
+
+        var connectionString = configuration
+            .GetConnectionString(provider)
+            ?? throw new InvalidOperationException(
+                $"No se ha configurado la conexión para '{provider}'.");
+
+        services.AddDbContext<AppDbContext>(options =>
+        {
+            switch (provider)
+            {
+                case "Postgres":
+                    options.UseNpgsql(connectionString);
+                    break;
+
+                case "SqlServer":
+                    options.UseSqlServer(connectionString);
+                    break;
+
+                default:
+                    throw new InvalidOperationException(
+                        $"Proveedor no soportado: '{provider}'.");
+            }
+        });
+
+        return services;
+    }
+}
+```
+y ahora nuestro **program.cs** simplemente lo llama:  
+
+```csharp
+using MiProyecto.Api.Extensions;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddDatabase(builder.Configuration);
+
+var app = builder.Build();
+
+app.MapGet("/", () => "API funcionando correctamente");
+
+app.Run();
+
+```
+mucho mas corto y entendible.  
+
+
 
 ## Estructura en postgresql 18
 
@@ -558,7 +709,7 @@ en el proyecto de Application
 en el proyecto de Api
 
 - agregar referencia a Application
-- agregar referencia a infrastructure
+- agregar referencia a infrastructure **NO, sino atraves de injeccion de dependencia en el program.cs**
 
 # 8. Eliminamos archivos de ejemplo en la Api
 
