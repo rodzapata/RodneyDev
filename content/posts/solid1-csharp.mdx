@@ -1,0 +1,1906 @@
+---
+title: "Principios SOLID parte 1 con cshap 14"
+date: "2026-09-19"
+description: "Principios SOLID con ejemplos practicos "
+slug: "solid1-csharp"
+category: "english"
+tags: ["postgresql", "sql", "backend"]
+published: true
+featured: false
+---
+
+
+Claro. Vamos a hacerlo **como lo haría un desarrollador .NET profesional**, no como una explicación puramente teórica.
+
+Usaremos **C# 14 + .NET 10 + Clean Architecture + DDD**, y tomaremos como ejemplo tu plataforma de **órdenes de mantenimiento HVAC**.
+
+video tutorial recomendado [Solid by TheDebugDuck](https://www.youtube.com/watch?v=1pXHglGZY9A&list=PLVp1h3lQuMOVxQ2BCRiCawBx9I_NnkKuw)  
+
+La idea será partir de un código deliberadamente malo y transformarlo progresivamente aplicando:
+
+1. **S — Single Responsibility Principle**
+2. **O — Open/Closed Principle**
+3. **L — Liskov Substitution Principle**
+4. **I — Interface Segregation Principle**
+5. **D — Dependency Inversion Principle**
+
+Al final veremos cómo queda integrado en **Clean Architecture**.
+
+---
+
+# 1. Antes de SOLID: ¿qué problema intenta solucionar?
+
+Imagina que tenemos una orden de servicio:
+
+```text
+Orden de Servicio
+       │
+       ├── validar
+       ├── calcular costo
+       ├── guardar en BD
+       ├── enviar correo
+       ├── generar PDF
+       └── notificar al cliente
+```
+
+Un principiante podría hacer esto:
+
+```csharp
+public class OrdenServicioService
+{
+    public void CrearOrden(OrdenServicio orden)
+    {
+        // Validar
+        if (orden.ClienteId <= 0)
+            throw new Exception("Cliente inválido");
+
+        // Guardar en BD
+        using var connection = new SqlConnection("...");
+        connection.Open();
+
+        // INSERT...
+
+        // Enviar correo
+        using var smtp = new SmtpClient("smtp.gmail.com");
+
+        // ...
+
+        // Generar PDF
+        // ...
+
+        // Enviar WhatsApp
+        // ...
+    }
+}
+```
+
+Funciona.
+
+Pero tenemos un problema enorme:
+
+> **Una sola clase conoce demasiadas cosas.**
+
+Con el tiempo terminaríamos con:
+
+```text
+OrdenServicioService
+    ↓
+SQL Server
+SMTP
+PDF
+WhatsApp
+Logging
+Validaciones
+Reglas de negocio
+Configuración
+...
+```
+
+Esto es exactamente el tipo de diseño que SOLID intenta evitar.
+
+---
+
+# 2. SOLID en una frase
+
+Podemos verlo así:
+
+| Principio | Pregunta que debemos hacernos                                                       |
+| --------- | ----------------------------------------------------------------------------------- |
+| **S**     | ¿Esta clase tiene demasiadas responsabilidades?                                     |
+| **O**     | ¿Tengo que modificar código existente cada vez que aparece un nuevo comportamiento? |
+| **L**     | ¿Puedo reemplazar una implementación por otra sin romper el sistema?                |
+| **I**     | ¿Estoy obligando a una clase a implementar métodos que no necesita?                 |
+| **D**     | ¿Mi lógica depende de detalles concretos o de abstracciones?                        |
+
+Ahora vamos a aplicarlos.
+
+---
+
+# 3. S — Single Responsibility Principle
+
+**Principio**
+
+> Una clase debe tener una única responsabilidad.
+
+Una forma más útil de entenderlo:
+
+> Una clase debería tener **un solo motivo importante para cambiar**.
+
+No significa:
+
+> "Una clase solamente puede tener un método."
+
+Significa que sus responsabilidades deben pertenecer al mismo concepto.
+
+---
+
+# 4. Ejemplo inicial incorrecto
+
+Supongamos:
+
+```csharp
+public class OrdenServicioService
+{
+    public void CrearOrden(OrdenServicio orden)
+    {
+        // Validar orden
+        if (orden.ClienteId <= 0)
+            throw new Exception("Cliente inválido");
+
+        // Guardar orden
+        using var connection = new SqlConnection("...");
+        connection.Open();
+
+        // INSERT INTO...
+
+        // Enviar email
+        using var smtp = new SmtpClient("smtp.gmail.com");
+
+        // ...
+
+        // Crear PDF
+
+        // ...
+
+        // Registrar log
+
+        // ...
+    }
+}
+```
+
+Esta clase tiene varias responsabilidades:
+
+```text
+OrdenServicioService
+│
+├── Validación
+├── Persistencia
+├── Email
+├── PDF
+└── Logging
+```
+
+Tenemos múltiples razones para modificarla.
+
+Por ejemplo:
+
+```text
+Cambió SQL
+       ↓
+modificar OrdenServicioService
+
+Cambió proveedor de email
+       ↓
+modificar OrdenServicioService
+
+Cambió PDF
+       ↓
+modificar OrdenServicioService
+
+Cambió validación
+       ↓
+modificar OrdenServicioService
+```
+
+Eso viola SRP.
+
+---
+
+# 5. Primera mejora
+
+Podemos separar responsabilidades:
+
+```csharp
+public class OrdenServicioValidator
+{
+    public void Validate(OrdenServicio orden)
+    {
+        if (orden.ClienteId <= 0)
+            throw new Exception("Cliente inválido");
+    }
+}
+```
+
+Persistencia:
+
+```csharp
+public class OrdenServicioRepository
+{
+    public async Task SaveAsync(OrdenServicio orden)
+    {
+        // Guardar en BD
+    }
+}
+```
+
+Email:
+
+```csharp
+public class EmailService
+{
+    public async Task SendAsync(string email, string message)
+    {
+        // enviar email
+    }
+}
+```
+
+PDF:
+
+```csharp
+public class PdfService
+{
+    public byte[] Generate(OrdenServicio orden)
+    {
+        // generar PDF
+        return [];
+    }
+}
+```
+
+Ahora tenemos:
+
+```text
+OrdenServicioValidator
+        ↓
+validación
+
+OrdenServicioRepository
+        ↓
+persistencia
+
+EmailService
+        ↓
+email
+
+PdfService
+        ↓
+PDF
+```
+
+Mucho mejor.
+
+Pero todavía tenemos otro problema.
+
+---
+
+# 6. Aparece el problema de acoplamiento
+
+Supongamos que nuestro servicio de aplicación hace esto:
+
+```csharp
+public class CrearOrdenServicio
+{
+    private readonly OrdenServicioRepository _repository;
+    private readonly EmailService _email;
+    private readonly PdfService _pdf;
+
+    public CrearOrdenServicio(
+        OrdenServicioRepository repository,
+        EmailService email,
+        PdfService pdf)
+    {
+        _repository = repository;
+        _email = email;
+        _pdf = pdf;
+    }
+}
+```
+
+Esto parece mejor.
+
+Pero tenemos:
+
+```text
+Application
+    ↓
+OrdenServicioRepository
+    ↓
+SQL Server
+
+Application
+    ↓
+EmailService
+    ↓
+SMTP
+
+Application
+    ↓
+PdfService
+    ↓
+Librería PDF
+```
+
+Nuestra capa Application conoce implementaciones concretas.
+
+Aquí aparece **D**.
+
+Pero antes veamos O.
+
+---
+
+# 7. O — Open/Closed Principle
+
+**Principio**
+
+> Las clases deben estar abiertas para extensión, pero cerradas para modificación.
+
+Una manera práctica de entenderlo:
+
+> Si aparece un nuevo comportamiento, deberíamos poder agregarlo sin modificar constantemente el código existente.
+
+---
+
+# 8. Ejemplo que viola OCP
+
+Imagina que queremos enviar notificaciones.
+
+Primero:
+
+```text
+Email
+```
+
+Entonces alguien escribe:
+
+```csharp
+public class Notificador
+{
+    public void Enviar(string tipo, string mensaje)
+    {
+        if (tipo == "email")
+        {
+            // enviar email
+        }
+        else if (tipo == "whatsapp")
+        {
+            // enviar WhatsApp
+        }
+        else if (tipo == "sms")
+        {
+            // enviar SMS
+        }
+    }
+}
+```
+
+Parece sencillo.
+
+Pero ahora llega:
+
+```text
+Teams
+```
+
+Tenemos que modificar:
+
+```csharp
+if (tipo == "teams")
+{
+    // ...
+}
+```
+
+Luego:
+
+```text
+Telegram
+```
+
+Otra modificación.
+
+Luego:
+
+```text
+Push Notification
+```
+
+Otra modificación.
+
+La clase crece indefinidamente.
+
+---
+
+# 9. Aplicamos abstracción
+
+Creamos:
+
+```csharp
+public interface INotificador
+{
+    Task EnviarAsync(
+        string destinatario,
+        string mensaje,
+        CancellationToken cancellationToken = default);
+}
+```
+
+Ahora Email:
+
+```csharp
+public sealed class EmailNotificador : INotificador
+{
+    public Task EnviarAsync(
+        string destinatario,
+        string mensaje,
+        CancellationToken cancellationToken = default)
+    {
+        // enviar email
+
+        return Task.CompletedTask;
+    }
+}
+```
+
+WhatsApp:
+
+```csharp
+public sealed class WhatsAppNotificador : INotificador
+{
+    public Task EnviarAsync(
+        string destinatario,
+        string mensaje,
+        CancellationToken cancellationToken = default)
+    {
+        // enviar WhatsApp
+
+        return Task.CompletedTask;
+    }
+}
+```
+
+SMS:
+
+```csharp
+public sealed class SmsNotificador : INotificador
+{
+    public Task EnviarAsync(
+        string destinatario,
+        string mensaje,
+        CancellationToken cancellationToken = default)
+    {
+        // enviar SMS
+
+        return Task.CompletedTask;
+    }
+}
+```
+
+Ahora nuestro código puede trabajar con:
+
+```csharp
+INotificador
+```
+
+en lugar de:
+
+```csharp
+EmailNotificador
+WhatsAppNotificador
+SmsNotificador
+```
+
+---
+
+# 10. ¿Qué ganamos?
+
+Podemos agregar:
+
+```csharp
+public sealed class TeamsNotificador : INotificador
+{
+    public Task EnviarAsync(
+        string destinatario,
+        string mensaje,
+        CancellationToken cancellationToken = default)
+    {
+        // Teams
+
+        return Task.CompletedTask;
+    }
+}
+```
+
+Y nuestro código principal **no necesita modificarse**.
+
+Esto es OCP.
+
+---
+
+# 11. L — Liskov Substitution Principle
+
+Este principio suele ser el más difícil.
+
+La idea es:
+
+> Si `B` es una implementación de `A`, debería poder utilizarse `B` donde esperamos `A` sin romper las expectativas del programa.
+
+Ejemplo clásico:
+
+```csharp
+Animal
+   ↑
+Perro
+```
+
+Si tenemos:
+
+```csharp
+public interface IAnimal
+{
+    void Comer();
+}
+```
+
+Entonces:
+
+```csharp
+public sealed class Perro : IAnimal
+{
+    public void Comer()
+    {
+        // comer
+    }
+}
+```
+
+Perfectamente válido.
+
+Pero imaginemos:
+
+```csharp
+public interface IAve
+{
+    void Volar();
+}
+```
+
+Y:
+
+```csharp
+public class Pinguino : IAve
+{
+    public void Volar()
+    {
+        throw new NotSupportedException();
+    }
+}
+```
+
+Esto es una señal de mal diseño.
+
+Porque alguien que recibe:
+
+```csharp
+IAve ave
+```
+
+espera que:
+
+```csharp
+ave.Volar();
+```
+
+funcione.
+
+Pero con `Pinguino` explota.
+
+---
+
+# 12. LSP aplicado a nuestro HVAC
+
+Supongamos:
+
+```csharp
+public abstract class EquipoHvac
+{
+    public abstract void Encender();
+    public abstract void Apagar();
+}
+```
+
+Y:
+
+```csharp
+public class AireAcondicionado : EquipoHvac
+{
+    public override void Encender()
+    {
+        // encender
+    }
+
+    public override void Apagar()
+    {
+        // apagar
+    }
+}
+```
+
+Ahora alguien agrega:
+
+```csharp
+public class EquipoSoloMonitoreo : EquipoHvac
+{
+    public override void Encender()
+    {
+        throw new NotSupportedException();
+    }
+
+    public override void Apagar()
+    {
+        throw new NotSupportedException();
+    }
+}
+```
+
+Tenemos un problema.
+
+La abstracción dice:
+
+```text
+EquipoHvac
+    ↓
+puede encenderse
+puede apagarse
+```
+
+pero:
+
+```text
+EquipoSoloMonitoreo
+    ↓
+NO puede encenderse
+NO puede apagarse
+```
+
+La jerarquía es incorrecta.
+
+---
+
+# 13. Mejor diseño
+
+Podemos separar capacidades:
+
+```csharp
+public interface IEquipo
+{
+    string Nombre { get; }
+}
+```
+
+Y:
+
+```csharp
+public interface IEncendible
+{
+    void Encender();
+}
+```
+
+```csharp
+public interface IApagable
+{
+    void Apagar();
+}
+```
+
+Ahora:
+
+```csharp
+public sealed class AireAcondicionado :
+    IEquipo,
+    IEncendible,
+    IApagable
+{
+    public string Nombre { get; }
+
+    public AireAcondicionado(string nombre)
+    {
+        Nombre = nombre;
+    }
+
+    public void Encender()
+    {
+        // ...
+    }
+
+    public void Apagar()
+    {
+        // ...
+    }
+}
+```
+
+Mientras:
+
+```csharp
+public sealed class SensorTemperatura : IEquipo
+{
+    public string Nombre { get; }
+
+    public SensorTemperatura(string nombre)
+    {
+        Nombre = nombre;
+    }
+}
+```
+
+Ahora no tenemos que fingir que todos los equipos tienen las mismas capacidades.
+
+Eso nos lleva directamente a **ISP**.
+
+---
+
+# 14. I — Interface Segregation Principle
+
+**Principio**
+
+> Los clientes no deberían verse obligados a depender de métodos que no utilizan.
+
+Mala interfaz:
+
+```csharp
+public interface IEquipoService
+{
+    void Crear();
+    void Actualizar();
+    void Eliminar();
+    void Encender();
+    void Apagar();
+    void Reiniciar();
+    void MedirTemperatura();
+    void MedirPresion();
+}
+```
+
+Ahora imagina:
+
+```csharp
+SensorTemperatura
+```
+
+No necesita:
+
+```text
+Encender()
+Apagar()
+Reiniciar()
+MedirPresion()
+```
+
+Pero la interfaz lo obliga.
+
+---
+
+# 15. Interfaces pequeñas
+
+Podemos dividir:
+
+```csharp
+public interface IEquipoReader
+{
+    Task<Equipo?> ObtenerAsync(
+        Guid id,
+        CancellationToken cancellationToken = default);
+}
+```
+
+```csharp
+public interface IEquipoCreator
+{
+    Task<Guid> CrearAsync(
+        Equipo equipo,
+        CancellationToken cancellationToken = default);
+}
+```
+
+```csharp
+public interface IEquipoUpdater
+{
+    Task ActualizarAsync(
+        Equipo equipo,
+        CancellationToken cancellationToken = default);
+}
+```
+
+Y capacidades:
+
+```csharp
+public interface IEncendible
+{
+    void Encender();
+}
+```
+
+```csharp
+public interface IMedidorTemperatura
+{
+    decimal ObtenerTemperatura();
+}
+```
+
+Ahora cada clase implementa solamente lo que realmente necesita.
+
+---
+
+# 16. D — Dependency Inversion Principle
+
+Este es probablemente **el principio más importante cuando hablamos de Clean Architecture**.
+
+**Principio**
+
+> Los módulos de alto nivel no deben depender de módulos de bajo nivel. Ambos deben depender de abstracciones.
+
+Y:
+
+> Las abstracciones no deben depender de detalles. Los detalles deben depender de abstracciones.
+
+---
+
+# 17. Mal diseño
+
+Imagina:
+
+```csharp
+public class CrearOrdenServicio
+{
+    private readonly SqlServerOrdenRepository _repository;
+
+    public CrearOrdenServicio()
+    {
+        _repository = new SqlServerOrdenRepository();
+    }
+
+    public async Task EjecutarAsync()
+    {
+        await _repository.GuardarAsync();
+    }
+}
+```
+
+Aquí tenemos:
+
+```text
+CrearOrdenServicio
+       ↓
+SqlServerOrdenRepository
+       ↓
+SQL Server
+```
+
+Nuestra lógica de aplicación está directamente acoplada a SQL Server.
+
+¿Qué pasa si mañana queremos:
+
+```text
+PostgreSQL
+```
+
+Tenemos que modificar:
+
+```csharp
+CrearOrdenServicio
+```
+
+---
+
+# 18. Aplicamos Dependency Inversion
+
+Creamos una abstracción:
+
+```csharp
+public interface IOrdenServicioRepository
+{
+    Task AgregarAsync(
+        OrdenServicio orden,
+        CancellationToken cancellationToken = default);
+}
+```
+
+Ahora Application depende de:
+
+```text
+IOrdenServicioRepository
+```
+
+No de:
+
+```text
+SqlServerOrdenRepository
+```
+
+---
+
+# 19. Implementación en Infrastructure
+
+Ahora Infrastructure implementa la interfaz:
+
+```csharp
+public sealed class OrdenServicioRepository
+    : IOrdenServicioRepository
+{
+    private readonly AppDbContext _context;
+
+    public OrdenServicioRepository(AppDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task AgregarAsync(
+        OrdenServicio orden,
+        CancellationToken cancellationToken = default)
+    {
+        await _context.OrdenesServicio.AddAsync(
+            orden,
+            cancellationToken);
+
+        await _context.SaveChangesAsync(cancellationToken);
+    }
+}
+```
+
+La dirección conceptual queda:
+
+```text
+Application
+     │
+     │ depende de
+     ▼
+IOrdenServicioRepository
+     ▲
+     │ implementa
+     │
+Infrastructure
+```
+
+Eso es Dependency Inversion.
+
+---
+
+# 20. Y aquí aparece Clean Architecture
+
+Una estructura profesional podría ser:
+
+```text
+HVAC
+│
+├── Domain
+│
+├── Application
+│
+├── Infrastructure
+│
+└── Api
+```
+
+Dependencias:
+
+```text
+             ┌───────────────┐
+             │      API      │
+             └───────┬───────┘
+                     │
+                     ▼
+             ┌───────────────┐
+             │  Application  │
+             └───────┬───────┘
+                     │
+                     ▼
+             ┌───────────────┐
+             │    Domain     │
+             └───────────────┘
+                     
+Infrastructure
+      │
+      ├──────────────► Application
+      │
+      └──────────────► Domain
+```
+
+Importante:
+
+```text
+Domain
+  ↓
+NO conoce Infrastructure
+
+Application
+  ↓
+NO conoce Infrastructure concreta
+
+Infrastructure
+  ↓
+implementa interfaces definidas por Application
+```
+
+---
+
+# 21. Ahora hagamos el refactor completo
+
+Partimos de esto:
+
+```csharp
+public class OrdenServicioService
+{
+    public async Task CrearAsync(OrdenServicio orden)
+    {
+        if (orden.ClienteId <= 0)
+            throw new Exception("Cliente inválido");
+
+        using var connection =
+            new SqlConnection("Server=...");
+
+        await connection.OpenAsync();
+
+        // INSERT...
+
+        var smtp =
+            new SmtpClient("smtp.gmail.com");
+
+        // enviar email
+
+        // generar PDF
+
+        // enviar WhatsApp
+
+        // logging
+    }
+}
+```
+
+Esto viola prácticamente todos los principios.
+
+---
+
+# 22. Paso 1 — Domain
+
+La entidad debe contener **reglas propias del negocio**, no SQL, SMTP, HTTP, PDF, etc.
+
+Por ejemplo:
+
+```csharp
+public sealed class OrdenServicio
+{
+    private readonly List<ActividadRealizada> _actividades = [];
+
+    public Guid Id { get; private set; }
+
+    public Guid ClienteId { get; private set; }
+
+    public DateTime Fecha { get; private set; }
+
+    public IReadOnlyCollection<ActividadRealizada> Actividades
+        => _actividades.AsReadOnly();
+
+    private OrdenServicio()
+    {
+    }
+
+    public OrdenServicio(Guid clienteId)
+    {
+        if (clienteId == Guid.Empty)
+            throw new ArgumentException(
+                "El cliente es obligatorio.",
+                nameof(clienteId));
+
+        Id = Guid.NewGuid();
+        ClienteId = clienteId;
+        Fecha = DateTime.UtcNow;
+    }
+
+    public void AgregarActividad(
+        ActividadRealizada actividad)
+    {
+        ArgumentNullException.ThrowIfNull(actividad);
+
+        _actividades.Add(actividad);
+    }
+}
+```
+
+Observa algo importante:
+
+```csharp
+OrdenServicio
+```
+
+no conoce:
+
+```text
+EF Core
+SQL Server
+PostgreSQL
+HTTP
+Email
+PDF
+ASP.NET Core
+```
+
+Eso es exactamente lo que queremos en Domain.
+
+---
+
+# 23. Paso 2 — Application
+
+Creamos un caso de uso:
+
+```csharp
+public sealed record CrearOrdenServicioCommand(
+    Guid ClienteId);
+```
+
+Y una interfaz:
+
+```csharp
+public interface IOrdenServicioRepository
+{
+    Task AddAsync(
+        OrdenServicio orden,
+        CancellationToken cancellationToken = default);
+}
+```
+
+Luego:
+
+```csharp
+public sealed class CrearOrdenServicioHandler
+{
+    private readonly IOrdenServicioRepository _repository;
+
+    public CrearOrdenServicioHandler(
+        IOrdenServicioRepository repository)
+    {
+        _repository = repository;
+    }
+
+    public async Task<Guid> HandleAsync(
+        CrearOrdenServicioCommand command,
+        CancellationToken cancellationToken)
+    {
+        var orden = new OrdenServicio(
+            command.ClienteId);
+
+        await _repository.AddAsync(
+            orden,
+            cancellationToken);
+
+        return orden.Id;
+    }
+}
+```
+
+Fíjate:
+
+```csharp
+private readonly IOrdenServicioRepository
+```
+
+No:
+
+```csharp
+private readonly SqlServerOrdenServicioRepository
+```
+
+Eso es DIP.
+
+---
+
+# 24. Paso 3 — Infrastructure
+
+Ahora implementamos:
+
+```csharp
+public sealed class OrdenServicioRepository
+    : IOrdenServicioRepository
+{
+    private readonly AppDbContext _context;
+
+    public OrdenServicioRepository(
+        AppDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task AddAsync(
+        OrdenServicio orden,
+        CancellationToken cancellationToken = default)
+    {
+        await _context.OrdenesServicio.AddAsync(
+            orden,
+            cancellationToken);
+
+        await _context.SaveChangesAsync(
+            cancellationToken);
+    }
+}
+```
+
+Infrastructure conoce:
+
+```text
+EF Core
+DbContext
+PostgreSQL
+SQL Server
+```
+
+Eso está bien.
+
+Porque Infrastructure es precisamente la capa de detalles técnicos.
+
+---
+
+# 25. Paso 4 — Dependency Injection
+
+Finalmente hacemos la composición en API.
+
+Por ejemplo:
+
+```csharp
+builder.Services.AddScoped<
+    IOrdenServicioRepository,
+    OrdenServicioRepository>();
+```
+
+Entonces .NET puede resolver:
+
+```text
+CrearOrdenServicioHandler
+          │
+          ▼
+IOrdenServicioRepository
+          │
+          ▼
+OrdenServicioRepository
+          │
+          ▼
+AppDbContext
+```
+
+El Handler nunca necesita hacer:
+
+```csharp
+new OrdenServicioRepository(...)
+```
+
+Esto es importantísimo.
+
+---
+
+# 26. ¿Dónde entra cada principio SOLID?
+
+Ahora podemos visualizarlo:
+
+```text
+                  SOLID
+                    │
+       ┌────────────┼────────────┐
+       │            │            │
+       ▼            ▼            ▼
+      SRP          OCP          LSP
+       │            │            │
+       │            │            │
+       ▼            ▼            ▼
+responsabilidades  extensible   sustitución
+separadas          sin modificar correcta
+       
+       ┌────────────┴────────────┐
+       │                         │
+       ▼                         ▼
+      ISP                       DIP
+       │                         │
+interfaces pequeñas       depender de abstracciones
+```
+
+Y Clean Architecture aprovecha muchísimo estos principios.
+
+---
+
+# 27. Pero cuidado: SOLID no significa crear 100 interfaces
+
+Este es un error muy común.
+
+Por ejemplo, esto:
+
+```csharp
+IClienteService
+IClienteServiceV2
+IClienteRepository
+IClienteRepositoryFactory
+IClienteRepositoryProvider
+IClienteRepositoryManager
+IClienteRepositoryService
+```
+
+no significa automáticamente que tengamos mejor arquitectura.
+
+SOLID **no es una competición para crear interfaces**.
+
+Por ejemplo:
+
+```csharp
+public interface IClienteRepository
+{
+    Task<Cliente?> GetByIdAsync(...);
+
+    Task AddAsync(...);
+
+    Task UpdateAsync(...);
+
+    Task DeleteAsync(...);
+}
+```
+
+puede ser perfectamente razonable si el caso de uso necesita esas operaciones.
+
+La abstracción debe representar una **necesidad real**.
+
+---
+
+# 28. SOLID + DDD
+
+Aquí aparece una diferencia importante.
+
+**SOLID no es DDD.**
+
+Son conceptos diferentes.
+
+DDD se preocupa por cosas como:
+
+```text
+Entidades
+Value Objects
+Agregados
+Domain Services
+Domain Events
+Bounded Contexts
+Invariantes
+Lenguaje ubicuo
+```
+
+SOLID se preocupa por:
+
+```text
+Responsabilidades
+Extensibilidad
+Sustituibilidad
+Interfaces
+Dependencias
+```
+
+Pero se complementan.
+
+Por ejemplo:
+
+```text
+             DDD
+              │
+       OrdenServicio
+              │
+              ▼
+        Aggregate Root
+              │
+              ▼
+       reglas de negocio
+              │
+              │
+             SOLID
+              │
+       ┌──────┴──────┐
+       ▼             ▼
+      SRP           DIP
+       │             │
+       ▼             ▼
+Domain limpio    abstracciones
+```
+
+---
+
+# 29. Un ejemplo más interesante: calcular balance eléctrico
+
+Supongamos que una actividad HVAC pregunta:
+
+> ¿El balance de corriente del compresor está dentro del rango permitido?
+
+Podríamos tener:
+
+```csharp
+public static class BalanceCorriente
+{
+    public static decimal Calcular(
+        decimal r,
+        decimal s,
+        decimal t)
+    {
+        var promedio = (r + s + t) / 3;
+
+        var maximo = Math.Max(r, Math.Max(s, t));
+
+        var diferencia = Math.Abs(maximo - promedio);
+
+        return diferencia / promedio * 100;
+    }
+}
+```
+
+Pero después necesitamos:
+
+```text
+Balance eléctrico
+Presión
+Temperatura
+Voltaje
+Capacitancia
+Refrigerante
+```
+
+No debemos crear una gigantesca clase:
+
+```csharp
+HvacCalculationService
+```
+
+con 50 métodos.
+
+Podemos separar conceptos:
+
+```csharp
+public static class BalanceCorriente
+{
+    public static decimal Calcular(...)
+    {
+        // ...
+    }
+}
+```
+
+```csharp
+public static class ToleranciaVoltaje
+{
+    public static bool EstaDentroDelRango(
+        decimal valor,
+        decimal nominal,
+        decimal tolerancia)
+    {
+        var minimo = nominal * (1 - tolerancia);
+        var maximo = nominal * (1 + tolerancia);
+
+        return valor >= minimo && valor <= maximo;
+    }
+}
+```
+
+Cada concepto tiene una responsabilidad clara.
+
+---
+
+# 30. Otro ejemplo: respuesta de actividad
+
+Para tu aplicación HVAC tienes respuestas como:
+
+```text
+Correcto
+No correcto
+No aplica
+```
+
+Podríamos modelarlo como:
+
+```csharp
+public enum ResultadoActividad
+{
+    Correcto,
+    NoCorrecto,
+    NoAplica
+}
+```
+
+Y no hacer esto:
+
+```csharp
+if (respuesta == "Correcto")
+{
+}
+else if (respuesta == "No correcto")
+{
+}
+else if (respuesta == "No aplica")
+{
+}
+```
+
+por todo el sistema.
+
+El dominio debe expresar el concepto.
+
+---
+
+# 31. Un error común: "if" por todas partes
+
+Mala arquitectura:
+
+```csharp
+if (tipoEquipo == "Minisplit")
+{
+    // ...
+}
+else if (tipoEquipo == "Chiller")
+{
+    // ...
+}
+else if (tipoEquipo == "VRF")
+{
+    // ...
+}
+else if (tipoEquipo == "AHU")
+{
+    // ...
+}
+```
+
+Y luego:
+
+```text
+50 actividades
+20 tipos de equipo
+15 reglas
+```
+
+Terminas con cientos de condiciones.
+
+Aquí OCP puede llevarnos hacia estrategias.
+
+Por ejemplo:
+
+```csharp
+public interface IReglaMantenimiento
+{
+    bool Aplica(Equipo equipo);
+
+    ResultadoActividad Evaluar(
+        Equipo equipo,
+        RespuestaActividad respuesta);
+}
+```
+
+Implementación:
+
+```csharp
+public sealed class ReglaBalanceCompresor
+    : IReglaMantenimiento
+{
+    public bool Aplica(Equipo equipo)
+    {
+        return equipo.Tipo == TipoEquipo.Compresor;
+    }
+
+    public ResultadoActividad Evaluar(
+        Equipo equipo,
+        RespuestaActividad respuesta)
+    {
+        // lógica específica
+    }
+}
+```
+
+Otra:
+
+```csharp
+public sealed class ReglaTemperaturaDescarga
+    : IReglaMantenimiento
+{
+    public bool Aplica(Equipo equipo)
+    {
+        return equipo.Tipo == TipoEquipo.Chiller;
+    }
+
+    public ResultadoActividad Evaluar(
+        Equipo equipo,
+        RespuestaActividad respuesta)
+    {
+        // lógica específica
+    }
+}
+```
+
+Ahora agregar una regla nueva no obliga necesariamente a modificar un servicio gigantesco.
+
+---
+
+# 32. ¿Cómo queda finalmente la arquitectura?
+
+Una estructura razonable para tu proyecto podría ser:
+
+```text
+ACSoft
+│
+├── ACSoft.Domain
+│   │
+│   ├── Entities
+│   │   ├── OrdenServicio.cs
+│   │   ├── Equipo.cs
+│   │   ├── Actividad.cs
+│   │   └── Cliente.cs
+│   │
+│   ├── ValueObjects
+│   │   ├── Voltaje.cs
+│   │   ├── Presion.cs
+│   │   └── Corriente.cs
+│   │
+│   ├── Enums
+│   │
+│   ├── Services
+│   │
+│   └── Exceptions
+│
+├── ACSoft.Application
+│   │
+│   ├── OrdenesServicio
+│   │   ├── Commands
+│   │   ├── Queries
+│   │   ├── DTOs
+│   │   └── Validators
+│   │
+│   ├── Interfaces
+│   │   ├── IOrdenServicioRepository.cs
+│   │   ├── IEmailSender.cs
+│   │   └── ICurrentUser.cs
+│   │
+│   └── Services
+│
+├── ACSoft.Infrastructure
+│   │
+│   ├── Persistence
+│   │   ├── AppDbContext.cs
+│   │   └── Configurations
+│   │
+│   ├── Repositories
+│   │   └── OrdenServicioRepository.cs
+│   │
+│   ├── Email
+│   │   └── EmailSender.cs
+│   │
+│   └── DependencyInjection.cs
+│
+└── ACSoft.Api
+    │
+    ├── Controllers
+    ├── Middlewares
+    ├── Extensions
+    └── Program.cs
+```
+
+---
+
+# 33. La regla de oro que quiero que recuerdes
+
+Cuando estés escribiendo una clase, pregúntate:
+
+### S
+
+> **¿Esta clase está haciendo demasiadas cosas?**
+
+Si sí → separa responsabilidades.
+
+### O
+
+> **¿Cada nuevo comportamiento me obliga a modificar esta clase?**
+
+Si sí → considera polimorfismo, estrategias o abstracciones.
+
+### L
+
+> **¿Una implementación puede reemplazar a otra sin romper las expectativas?**
+
+Si no → probablemente la abstracción está mal diseñada.
+
+### I
+
+> **¿Estoy obligando a una clase a implementar cosas que no necesita?**
+
+Si sí → divide la interfaz.
+
+### D
+
+> **¿Mi código depende de una implementación concreta?**
+
+Por ejemplo:
+
+```csharp
+new SqlServerRepository()
+```
+
+Si sí → probablemente necesitas una abstracción y Dependency Injection.
+
+---
+
+# 34. Y cómo se relaciona todo con Clean Architecture
+
+La imagen mental que te recomiendo usar es esta:
+
+```text
+                    API
+                     │
+                     ▼
+              ┌─────────────┐
+              │ Application │
+              └──────┬──────┘
+                     │
+                     ▼
+              ┌─────────────┐
+              │   Domain    │
+              └─────────────┘
+                     
+                     ▲
+                     │
+              ┌──────┴──────┐
+              │Infrastructure│
+              └─────────────┘
+```
+
+Pero conceptualmente:
+
+```text
+                 BUSINESS
+                    ▲
+                    │
+              ┌─────┴─────┐
+              │  Domain   │
+              └─────┬─────┘
+                    │
+              ┌─────┴─────┐
+              │Application│
+              └─────┬─────┘
+                    │
+         ┌──────────┴──────────┐
+         │                     │
+    Infrastructure             API
+```
+
+Y SOLID ayuda a mantener esa separación.
+
+Especialmente:
+
+```text
+SRP → responsabilidades bien separadas
+
+OCP → extensibilidad
+
+LSP → polimorfismo correcto
+
+ISP → interfaces pequeñas
+
+DIP → inversión de dependencias
+```
+
+---
+
+# 35. El flujo profesional completo
+
+En una petición:
+
+```http
+POST /api/ordenes-servicio
+```
+
+podríamos terminar con:
+
+```text
+HTTP Request
+     │
+     ▼
+Controller
+     │
+     ▼
+Command / Use Case
+     │
+     ▼
+Domain
+     │
+     ├── valida reglas
+     ├── modifica Aggregate
+     └── mantiene invariantes
+     │
+     ▼
+Application
+     │
+     ▼
+IRepository
+     │
+     ▼
+Infrastructure
+     │
+     ▼
+EF Core
+     │
+     ▼
+PostgreSQL / SQL Server
+```
+
+Y la dirección de dependencia sigue controlada:
+
+```text
+API
+ ↓
+Application
+ ↓
+Domain
+
+Infrastructure
+ ↓
+Application
+ ↓
+Domain
+```
+
+La parte fundamental es que **Domain no termina dependiendo de EF Core, PostgreSQL, SMTP, HTTP o cualquier otro detalle externo**.
+
+---
+
+## Una última recomendación para aprender SOLID
+
+No memorices las cinco definiciones.
+
+Para tu proyecto .NET 10, te recomiendo aprenderlas en este orden práctico:
+
+```text
+1. SRP
+   ↓
+2. DIP
+   ↓
+3. ISP
+   ↓
+4. OCP
+   ↓
+5. LSP
+```
+
+Porque **SRP + DIP** son especialmente importantes para entender Clean Architecture.
+
+Y el siguiente paso natural sería tomar una funcionalidad real de tu **ACSoft**, por ejemplo:
+
+> **Crear una Orden de Servicio HVAC**
+
+y construirla **desde cero**, primero con un diseño malo, después refactorizarla aplicando **SRP → DIP → ISP → OCP → LSP**, hasta terminar con:
+
+```text
+Domain
+Application
+Infrastructure
+API
+     +
+DI
+     +
+EF Core
+     +
+DDD Aggregate
+     +
+CQRS/MediatR opcional
+     +
+FluentValidation
+     +
+ProblemDetails
+```
+
+Eso te permitiría ver SOLID no como teoría, sino **dentro de una Web API .NET 10 real**.
