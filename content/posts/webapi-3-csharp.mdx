@@ -1,0 +1,1258 @@
+---
+title: "Crear webapi Parte 3 con Clean Arquitecture "
+date: "2026-09-21"
+description: "Crear WebApi parte 3 con Clean Arquitecture AcSoft"
+slug: "webapi-3-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. En el **paso 3** vamos a hacer algo fundamental: diseñar correctamente el **Aggregate Root `WorkOrder`**.
+
+Aquí es donde DDD empieza a diferenciarse de un CRUD tradicional.
+
+# Paso 3 — Diseñar el Aggregate Root `WorkOrder`
+
+Primero quiero que tengamos clara esta idea:
+
+> Un Aggregate no es simplemente un conjunto de clases relacionadas. Es un **límite de consistencia** dentro del dominio.
+
+Y el **Aggregate Root** es la única entidad a través de la cual el exterior debe modificar las entidades que están dentro de ese Aggregate.
+
+---
+
+# 3.1. Nuestro problema real
+
+Una orden de trabajo HVAC podría tener:
+
+```text
+Orden de trabajo
+│
+├── Cliente
+├── Equipo
+├── Técnico
+├── Actividades
+│   ├── Actividad 1
+│   ├── Actividad 2
+│   └── Actividad 3
+│
+└── Respuestas
+```
+
+Una primera tentación sería hacer:
+
+```csharp
+public class WorkOrder
+{
+    public Customer Customer { get; set; }
+
+    public Equipment Equipment { get; set; }
+
+    public Technician Technician { get; set; }
+
+    public List<Activity> Activities { get; set; }
+}
+```
+
+**No queremos diseñarlo así.**
+
+¿Por qué?
+
+Porque estaríamos mezclando diferentes conceptos del dominio y haciendo que `WorkOrder` sea responsable de controlar objetos que probablemente pertenecen a otros límites.
+
+---
+
+# 3.2. Primero: ¿qué significa Aggregate?
+
+Imagina:
+
+```text
+          AGGREGATE
+┌───────────────────────────────┐
+│                               │
+│       WorkOrder               │
+│       Aggregate Root          │
+│                               │
+│    ┌─────────────────────┐    │
+│    │ WorkOrderActivity   │    │
+│    └─────────────────────┘    │
+│                               │
+│    ┌─────────────────────┐    │
+│    │ ActivityAnswer      │    │
+│    └─────────────────────┘    │
+│                               │
+└───────────────────────────────┘
+```
+
+El exterior interactúa principalmente con:
+
+```csharp
+WorkOrder
+```
+
+No debería hacer:
+
+```csharp
+workOrderActivity.Status = ...
+```
+
+directamente.
+
+Debe hacer algo como:
+
+```csharp
+workOrder.CompleteActivity(activityId);
+```
+
+El Aggregate Root controla las modificaciones.
+
+---
+
+# 3.3. ¿Customer pertenece al Aggregate?
+
+Supongamos:
+
+```text
+Customer
+   Id = 100
+   Name = "Empresa ABC"
+```
+
+y:
+
+```text
+WorkOrder
+   Id = 500
+   CustomerId = 100
+```
+
+¿Necesitamos que `WorkOrder` tenga:
+
+```csharp
+public Customer Customer { get; private set; }
+```
+
+No necesariamente.
+
+De hecho, para nuestro sistema prefiero:
+
+```csharp
+public Guid CustomerId { get; private set; }
+```
+
+Esto significa:
+
+```text
+WorkOrder
+     │
+     └── CustomerId ──────► Customer
+```
+
+pero `Customer` no forma parte del Aggregate.
+
+Esto tiene una ventaja importante.
+
+La orden conoce la **identidad del cliente**, no necesita poseer el cliente completo.
+
+---
+
+# 3.4. Lo mismo ocurre con Equipment
+
+Tendremos:
+
+```csharp
+public Guid EquipmentId { get; private set; }
+```
+
+en lugar de:
+
+```csharp
+public Equipment Equipment { get; private set; }
+```
+
+Porque:
+
+```text
+Equipment
+```
+
+probablemente tendrá su propio ciclo de vida.
+
+Por ejemplo:
+
+```text
+Equipment
+ ├── marca
+ ├── modelo
+ ├── serial
+ ├── refrigerante
+ ├── capacidad
+ ├── ubicación
+ └── estado
+```
+
+No queremos que una orden pueda modificar directamente:
+
+```csharp
+equipment.SerialNumber
+```
+
+desde su Aggregate.
+
+---
+
+# 3.5. ¿Y Technician?
+
+Lo mismo:
+
+```csharp
+public Guid? TechnicianId { get; private set; }
+```
+
+¿Por qué nullable?
+
+Porque una orden podría ser creada antes de asignar técnico.
+
+Por ejemplo:
+
+```text
+Orden creada
+     ↓
+Pendiente
+     ↓
+Asignar técnico
+     ↓
+Iniciar mantenimiento
+```
+
+Entonces:
+
+```csharp
+Guid? TechnicianId
+```
+
+tiene sentido.
+
+---
+
+# 3.6. Entonces, ¿qué sí pertenece a WorkOrder?
+
+Aquí tenemos una decisión interesante.
+
+Las actividades ejecutadas como parte de **esa orden específica** sí pueden pertenecer al Aggregate.
+
+Por ejemplo:
+
+```text
+WorkOrder
+│
+├── WorkOrderActivity
+│
+├── WorkOrderActivity
+│
+└── WorkOrderActivity
+```
+
+Porque una actividad tiene estado dentro de esa orden:
+
+```text
+Pendiente
+Ejecutada
+No aplica
+```
+
+Y además puede tener respuestas.
+
+Por ejemplo:
+
+```text
+Actividad:
+"Medir corriente del compresor"
+
+Respuesta:
+R = 3.2 A
+S = 3.4 A
+T = 3.1 A
+```
+
+Eso pertenece al contexto de la ejecución de la orden.
+
+---
+
+# 3.7. `Activity` vs `WorkOrderActivity`
+
+Esta diferencia es **muy importante**.
+
+Podríamos tener una entidad de catálogo:
+
+```text
+Activity
+```
+
+que representa:
+
+> "Medir corriente del compresor"
+
+Pero cuando esa actividad se ejecuta dentro de una orden tenemos:
+
+```text
+WorkOrderActivity
+```
+
+que representa:
+
+> "Medir corriente del compresor en la OT-2026-00125".
+
+Son conceptos diferentes.
+
+---
+
+# 3.8. Catálogo de actividades
+
+Podríamos tener:
+
+```text
+Activity
+------------------------
+Id
+Code
+Name
+Description
+EquipmentTypeId
+```
+
+Ejemplo:
+
+```text
+ACT-001
+Medir corriente del compresor
+```
+
+Ese catálogo podría ser utilizado por muchas órdenes.
+
+No queremos duplicar toda la definición:
+
+```text
+Activity
+```
+
+dentro de cada orden.
+
+Por eso:
+
+```text
+WorkOrderActivity
+       │
+       └── ActivityId
+```
+
+---
+
+# 3.9. Nuestra estructura empieza a ser
+
+```text
+WorkOrder
+│
+├── Id
+├── Number
+├── CustomerId
+├── EquipmentId
+├── TechnicianId
+├── Status
+│
+└── Activities
+      │
+      ├── WorkOrderActivity
+      ├── WorkOrderActivity
+      └── WorkOrderActivity
+```
+
+Y:
+
+```text
+WorkOrderActivity
+│
+├── Id
+├── ActivityId
+├── Status
+└── Answers
+```
+
+---
+
+# 3.10. Crear `WorkOrderActivityStatus`
+
+En:
+
+```text
+HVAC.Domain
+└── Enums
+    └── WorkOrderActivityStatus.cs
+```
+
+```csharp
+namespace HVAC.Domain.Enums;
+
+public enum WorkOrderActivityStatus
+{
+    Pending = 1,
+    Completed = 2,
+    NotApplicable = 3
+}
+```
+
+Más adelante podemos evaluar si necesitamos más estados.
+
+---
+
+# 3.11. Crear `WorkOrderActivity`
+
+Archivo:
+
+```text
+HVAC.Domain
+└── Entities
+    └── WorkOrderActivity.cs
+```
+
+Inicialmente:
+
+```csharp
+using HVAC.Domain.Enums;
+
+namespace HVAC.Domain.Entities;
+
+public sealed class WorkOrderActivity
+{
+    private WorkOrderActivity()
+    {
+    }
+
+    private WorkOrderActivity(
+        Guid id,
+        Guid activityId)
+    {
+        Id = id;
+        ActivityId = activityId;
+        Status = WorkOrderActivityStatus.Pending;
+    }
+
+    public Guid Id { get; private set; }
+
+    public Guid ActivityId { get; private set; }
+
+    public WorkOrderActivityStatus Status { get; private set; }
+
+    internal static WorkOrderActivity Create(Guid activityId)
+    {
+        if (activityId == Guid.Empty)
+            throw new ArgumentException(
+                "La actividad es obligatoria.",
+                nameof(activityId));
+
+        return new WorkOrderActivity(
+            Guid.NewGuid(),
+            activityId);
+    }
+}
+```
+
+Observa algo:
+
+```csharp
+internal static WorkOrderActivity Create(...)
+```
+
+No es:
+
+```csharp
+public static
+```
+
+¿Por qué?
+
+Porque quiero que `WorkOrder` sea quien controle la creación de sus actividades.
+
+---
+
+# 3.12. Agregar la colección al Aggregate Root
+
+Ahora en `WorkOrder`:
+
+```csharp
+private readonly List<WorkOrderActivity> _activities = [];
+```
+
+y:
+
+```csharp
+public IReadOnlyCollection<WorkOrderActivity> Activities
+    => _activities.AsReadOnly();
+```
+
+Entonces:
+
+```csharp
+public sealed class WorkOrder
+{
+    private readonly List<WorkOrderActivity> _activities = [];
+
+    // ...
+
+    public IReadOnlyCollection<WorkOrderActivity> Activities
+        => _activities.AsReadOnly();
+}
+```
+
+Esto es mejor que:
+
+```csharp
+public List<WorkOrderActivity> Activities { get; set; }
+```
+
+porque no queremos que cualquier parte del sistema haga:
+
+```csharp
+workOrder.Activities.Clear();
+```
+
+o:
+
+```csharp
+workOrder.Activities.Add(...);
+```
+
+El Aggregate controla su colección.
+
+---
+
+# 3.13. Agregar actividad a la orden
+
+Ahora creamos:
+
+```csharp
+public void AddActivity(Guid activityId)
+{
+    if (Status != WorkOrderStatus.Pending)
+        throw new InvalidOperationException(
+            "Solo se pueden agregar actividades a una orden pendiente.");
+
+    var activity = WorkOrderActivity.Create(activityId);
+
+    _activities.Add(activity);
+}
+```
+
+Ahora tenemos:
+
+```text
+Application
+      │
+      ▼
+WorkOrder.AddActivity()
+      │
+      ▼
+WorkOrderActivity.Create()
+```
+
+Esto es muy diferente de:
+
+```csharp
+workOrder.Activities.Add(
+    new WorkOrderActivity(...));
+```
+
+La segunda opción rompe el encapsulamiento.
+
+---
+
+# 3.14. ¿Por qué esto es un Aggregate Root?
+
+Porque `WorkOrder` controla:
+
+```text
+WorkOrder
+   │
+   ├── creación de actividades
+   ├── estado de la orden
+   ├── reglas de transición
+   └── modificación de actividades
+```
+
+El exterior trabaja con:
+
+```csharp
+WorkOrder
+```
+
+y no directamente con:
+
+```csharp
+WorkOrderActivity
+```
+
+---
+
+# 3.15. Ahora viene una decisión importante: las respuestas
+
+Tenemos una actividad:
+
+> Medir amperaje del compresor.
+
+Necesitamos:
+
+```text
+R = 3.2 A
+S = 3.4 A
+T = 3.1 A
+```
+
+Otra actividad:
+
+> ¿El ventilador funciona correctamente?
+
+Respuesta:
+
+```text
+Correcto
+```
+
+Otra:
+
+> Ajuste de tornillería
+
+Respuesta:
+
+```text
+No aplica
+```
+
+Otra:
+
+> Observaciones generales
+
+Respuesta:
+
+```text
+"Se encontró vibración..."
+```
+
+Esto nos dice algo:
+
+> No todas las respuestas tienen el mismo tipo.
+
+---
+
+# 3.16. No hagamos esto
+
+No recomiendo:
+
+```csharp
+public string Answer { get; set; }
+```
+
+para absolutamente todo.
+
+Porque terminaríamos almacenando:
+
+```text
+"3.2"
+"Correcto"
+"No aplica"
+"850"
+"Se encontró fuga"
+```
+
+y luego tendríamos que interpretar los tipos.
+
+Eso es débil desde el punto de vista del dominio.
+
+---
+
+# 3.17. Tampoco queremos 20 columnas
+
+Podríamos caer en:
+
+```text
+AnswerText
+AnswerNumber
+AnswerBoolean
+AnswerDate
+AnswerBefore
+AnswerAfter
+AnswerR
+AnswerS
+AnswerT
+...
+```
+
+Eso puede convertirse rápidamente en un modelo difícil de mantener.
+
+Una mejor dirección es modelar la respuesta según el **tipo definido por la actividad/pregunta**.
+
+Por ejemplo:
+
+```text
+Question
+│
+├── AnswerType = Numeric
+├── AnswerType = Boolean
+├── AnswerType = Text
+└── AnswerType = Measurement
+```
+
+---
+
+# 3.18. Pero hay otra distinción todavía más importante
+
+No debemos confundir:
+
+```text
+Activity
+```
+
+con:
+
+```text
+Question
+```
+
+Una actividad puede tener varias preguntas.
+
+Por ejemplo:
+
+```text
+Actividad:
+"Verificar corriente del compresor"
+```
+
+Preguntas:
+
+```text
+¿Cuál es corriente R?
+¿Cuál es corriente S?
+¿Cuál es corriente T?
+```
+
+Otra:
+
+```text
+Actividad:
+"Verificar funcionamiento del ventilador"
+```
+
+Pregunta:
+
+```text
+¿Funciona correctamente?
+```
+
+Esto nos lleva a un modelo más potente:
+
+```text
+Activity
+│
+└── Questions
+       │
+       ├── Question
+       ├── Question
+       └── Question
+```
+
+Pero aquí debemos detenernos.
+
+---
+
+# 3.19. No meteremos `Activity` y `Question` dentro de `WorkOrder`
+
+La definición de:
+
+```text
+Activity
+Question
+AnswerType
+ValidationRange
+Unit
+```
+
+es parte del **catálogo/configuración de mantenimiento**.
+
+Mientras que:
+
+```text
+WorkOrderActivity
+Answer
+```
+
+representa la **ejecución concreta**.
+
+Esta separación es fundamental:
+
+```text
+CATÁLOGO
+──────────────
+Activity
+Question
+AnswerType
+Unit
+Rules
+
+
+EJECUCIÓN
+──────────────
+WorkOrder
+WorkOrderActivity
+ActivityAnswer
+```
+
+---
+
+# 3.20. El Aggregate queda mucho más limpio
+
+Nuestro modelo conceptual ahora es:
+
+```text
+                         ┌──────────────────────┐
+                         │      WorkOrder       │
+                         │   Aggregate Root     │
+                         │                      │
+                         │ Id                   │
+                         │ Number               │
+                         │ CustomerId           │
+                         │ EquipmentId          │
+                         │ TechnicianId         │
+                         │ Status               │
+                         │                      │
+                         │ Activities           │
+                         │   │                  │
+                         │   ├── WorkOrderAct.  │
+                         │   │       │          │
+                         │   │       └── Answers│
+                         │   │                  │
+                         │   └── WorkOrderAct.  │
+                         └──────────────────────┘
+                                  │
+                                  │ IDs
+                  ┌───────────────┼───────────────┐
+                  ▼               ▼               ▼
+              Customer        Equipment       Technician
+```
+
+Esto ya se parece mucho más a un diseño DDD real.
+
+---
+
+# 3.21. Actualicemos `WorkOrder`
+
+Nuestro `WorkOrder` ahora podría quedar así:
+
+```csharp
+using HVAC.Domain.Enums;
+
+namespace HVAC.Domain.Entities;
+
+public sealed class WorkOrder
+{
+    private readonly List<WorkOrderActivity> _activities = [];
+
+    private WorkOrder()
+    {
+    }
+
+    private WorkOrder(
+        Guid id,
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        Id = id;
+        Number = number;
+        CustomerId = customerId;
+        EquipmentId = equipmentId;
+        Status = WorkOrderStatus.Pending;
+    }
+
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; } = null!;
+
+    public Guid CustomerId { get; private set; }
+
+    public Guid EquipmentId { get; private set; }
+
+    public Guid? TechnicianId { get; private set; }
+
+    public WorkOrderStatus Status { get; private set; }
+
+    public IReadOnlyCollection<WorkOrderActivity> Activities
+        => _activities.AsReadOnly();
+
+    public static WorkOrder Create(
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        if (string.IsNullOrWhiteSpace(number))
+            throw new ArgumentException(
+                "El número de la orden es obligatorio.",
+                nameof(number));
+
+        if (customerId == Guid.Empty)
+            throw new ArgumentException(
+                "El cliente es obligatorio.",
+                nameof(customerId));
+
+        if (equipmentId == Guid.Empty)
+            throw new ArgumentException(
+                "El equipo es obligatorio.",
+                nameof(equipmentId));
+
+        return new WorkOrder(
+            Guid.NewGuid(),
+            number,
+            customerId,
+            equipmentId);
+    }
+
+    public void AssignTechnician(Guid technicianId)
+    {
+        if (Status == WorkOrderStatus.Completed)
+            throw new InvalidOperationException(
+                "Una orden completada no puede modificarse.");
+
+        if (technicianId == Guid.Empty)
+            throw new ArgumentException(
+                "El técnico es obligatorio.",
+                nameof(technicianId));
+
+        TechnicianId = technicianId;
+    }
+
+    public void AddActivity(Guid activityId)
+    {
+        if (Status != WorkOrderStatus.Pending)
+            throw new InvalidOperationException(
+                "Solo se pueden agregar actividades a una orden pendiente.");
+
+        if (_activities.Any(x => x.ActivityId == activityId))
+            throw new InvalidOperationException(
+                "La actividad ya existe en la orden.");
+
+        var activity = WorkOrderActivity.Create(activityId);
+
+        _activities.Add(activity);
+    }
+
+    public void Start()
+    {
+        if (Status != WorkOrderStatus.Pending)
+            throw new InvalidOperationException(
+                "Solo una orden pendiente puede iniciarse.");
+
+        if (TechnicianId is null)
+            throw new InvalidOperationException(
+                "La orden debe tener un técnico asignado.");
+
+        if (_activities.Count == 0)
+            throw new InvalidOperationException(
+                "La orden debe tener al menos una actividad.");
+
+        Status = WorkOrderStatus.InProgress;
+    }
+
+    public void Complete()
+    {
+        if (Status != WorkOrderStatus.InProgress)
+            throw new InvalidOperationException(
+                "Solo una orden en progreso puede completarse.");
+
+        if (_activities.Any(x =>
+                x.Status == WorkOrderActivityStatus.Pending))
+        {
+            throw new InvalidOperationException(
+                "No se puede completar una orden con actividades pendientes.");
+        }
+
+        Status = WorkOrderStatus.Completed;
+    }
+
+    public void Cancel()
+    {
+        if (Status == WorkOrderStatus.Completed)
+            throw new InvalidOperationException(
+                "Una orden completada no puede cancelarse.");
+
+        Status = WorkOrderStatus.Cancelled;
+    }
+}
+```
+
+---
+
+# 3.22. Ahora tenemos reglas de negocio reales
+
+Por ejemplo:
+
+### Regla 1
+
+No podemos iniciar una orden sin técnico:
+
+```csharp
+if (TechnicianId is null)
+```
+
+### Regla 2
+
+No podemos iniciar una orden sin actividades:
+
+```csharp
+if (_activities.Count == 0)
+```
+
+### Regla 3
+
+No podemos completar una orden pendiente:
+
+```csharp
+if (Status != WorkOrderStatus.InProgress)
+```
+
+### Regla 4
+
+No podemos completar una orden con actividades pendientes:
+
+```csharp
+if (_activities.Any(...))
+```
+
+Estas reglas **no pertenecen al Controller**.
+
+Tampoco deberían depender de PostgreSQL.
+
+Son reglas del negocio.
+
+Por eso están en:
+
+```text
+HVAC.Domain
+```
+
+---
+
+# 3.23. Algo muy importante: Aggregate ≠ navegación de EF Core
+
+Cuando posteriormente usemos EF Core podremos tener:
+
+```csharp
+HasMany(...)
+```
+
+y relaciones:
+
+```text
+WorkOrder
+    ↓
+WorkOrderActivities
+```
+
+Pero eso es un detalle de **persistencia**.
+
+No debemos diseñar el Aggregate pensando:
+
+> "¿Cómo hago que EF Core me genere esta relación?"
+
+Primero preguntamos:
+
+> "¿Qué objetos necesitan cambiar juntos para mantener consistencia?"
+
+Después:
+
+> "¿Cómo persistimos ese modelo?"
+
+Ese orden es muy importante en DDD.
+
+---
+
+# 3.24. ¿Qué debería poder hacer Application?
+
+Application podría hacer:
+
+```csharp
+var order = WorkOrder.Create(
+    number,
+    customerId,
+    equipmentId);
+
+order.AssignTechnician(technicianId);
+
+order.AddActivity(activityId);
+
+order.Start();
+
+await repository.AddAsync(order, cancellationToken);
+
+await unitOfWork.SaveChangesAsync(cancellationToken);
+```
+
+Pero no:
+
+```csharp
+order.Status = WorkOrderStatus.InProgress;
+```
+
+ni:
+
+```csharp
+order.Activities.Add(...);
+```
+
+El Aggregate protege su estado.
+
+---
+
+# 3.25. Una regla de oro
+
+Quédate con esta regla:
+
+```text
+                    EXTERIOR
+                       │
+                       ▼
+                ┌─────────────┐
+                │ WorkOrder   │
+                │ Aggregate   │
+                │ Root        │
+                └──────┬──────┘
+                       │
+             controla  │
+                       ▼
+             WorkOrderActivity
+```
+
+No:
+
+```text
+Application
+   │
+   ├── modifica WorkOrder
+   ├── modifica Activity
+   ├── modifica Answer
+   └── cambia estados directamente
+```
+
+Sino:
+
+```text
+Application
+     │
+     ▼
+WorkOrder
+     │
+     ├── AddActivity()
+     ├── AssignTechnician()
+     ├── Start()
+     ├── Complete()
+     └── Cancel()
+```
+
+---
+
+# 3.26. ¿Y los Value Objects?
+
+Ahora que tenemos claro el Aggregate, estamos en una posición mucho mejor para introducirlos.
+
+Por ejemplo, actualmente tenemos:
+
+```csharp
+string Number
+```
+
+Pero podemos evolucionarlo a:
+
+```csharp
+WorkOrderNumber
+```
+
+Y para tu aplicación HVAC posteriormente tendremos candidatos muy interesantes:
+
+```text
+Pressure
+Voltage
+Current
+Temperature
+Capacitance
+RefrigerantCharge
+Percentage
+```
+
+Por ejemplo, en vez de permitir:
+
+```csharp
+double voltage = -5000;
+```
+
+podemos crear un Value Object que represente una medición válida.
+
+Esto nos permitirá expresar reglas como:
+
+```text
+220 V ± 10%
+```
+
+o:
+
+```text
+45 µF ± 5%
+```
+
+directamente en el dominio.
+
+---
+
+# ¿Qué hemos conseguido hasta aquí?
+
+Nuestra arquitectura ya empieza a tener una separación clara:
+
+```text
+┌────────────────────────────────────┐
+│              DOMAIN                │
+│                                    │
+│  WorkOrder                         │
+│      │                             │
+│      ├── reglas de negocio         │
+│      ├── estado                    │
+│      ├── actividades               │
+│      └── invariantes               │
+│                                    │
+│  WorkOrderActivity                 │
+│                                    │
+│  WorkOrderStatus                   │
+└────────────────────────────────────┘
+```
+
+Y conceptualmente:
+
+```text
+Customer ────────┐
+                 │
+Equipment ───────┤
+                 │ IDs
+Technician ──────┤
+                 ▼
+          ┌─────────────┐
+          │ WorkOrder   │
+          │   ROOT      │
+          └──────┬──────┘
+                 │
+                 ▼
+        WorkOrderActivity
+                 │
+                 ▼
+             Answers
+```
+
+### El siguiente paso recomendado es el **Paso 4: Value Objects**.
+
+Ahí vamos a refactorizar este modelo para dejar de utilizar tipos primitivos donde realmente representan conceptos del dominio. Empezaremos con algo sencillo como `WorkOrderNumber`, y después construiremos un ejemplo **muy relacionado con HVAC**, como una medición de **voltaje/corriente/presión con unidad y rango válido**. Eso te permitirá entender por qué DDD utiliza Value Objects y cuándo **no** conviene crearlos.
