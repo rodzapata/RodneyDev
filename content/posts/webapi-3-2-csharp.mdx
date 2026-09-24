@@ -1,0 +1,825 @@
+---
+title: "Crear webapi Parte 3-2 Reasignacion de tecnicos "
+date: "2026-09-24"
+description: "Crear WebApi parte 3-2 Reasignacion de tecnicos"
+slug: "webapi-3-2-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Sí. Y aquí hay una distinción importante: **no deberíamos simplemente cambiar `TechnicianId` en `WorkOrder`**, porque perderíamos el historial de quién estuvo asignado anteriormente.
+
+Para ACSoft, yo modelaría la asignación como un **historial de asignaciones**.
+
+### 1. El problema
+
+Supongamos:
+
+```text
+OT-001
+Equipo: Aire acondicionado #A-100
+```
+
+Inicialmente:
+
+```text
+OT-001 → Técnico Carlos
+```
+
+Carlos empieza a trabajar y luego, por algún motivo, debemos cambiarlo:
+
+```text
+OT-001 → Técnico Pedro
+```
+
+Si simplemente hacemos:
+
+```csharp
+workOrder.TechnicianId = pedroId;
+```
+
+perdemos información importante:
+
+* ¿Quién estuvo asignado inicialmente?
+* ¿Cuándo se asignó Carlos?
+* ¿Cuándo fue desasignado?
+* ¿Quién tomó posteriormente la orden?
+* ¿Cuánto tiempo estuvo Carlos trabajando?
+* ¿Por qué fue reemplazado?
+
+Para un sistema de mantenimiento esto puede ser importante.
+
+---
+
+# 2. Separaría "asignación" de "orden"
+
+Podemos introducir:
+
+```text
+WorkOrder
+    │
+    └── WorkOrderAssignment
+```
+
+Por ejemplo:
+
+```text
+WorkOrder
+OT-001
+
+Assignments
+────────────────────────────────
+Carlos   08:00 → 10:30
+Pedro    10:30 → actual
+```
+
+La orden **no pierde su historial**.
+
+---
+
+# 3. `WorkOrderAssignment`
+
+En el dominio podríamos tener:
+
+```csharp
+public sealed class WorkOrderAssignment
+{
+    private WorkOrderAssignment()
+    {
+    }
+
+    private WorkOrderAssignment(
+        Guid id,
+        Guid technicianId,
+        DateTimeOffset assignedAt)
+    {
+        Id = id;
+        TechnicianId = technicianId;
+        AssignedAt = assignedAt;
+    }
+
+    public Guid Id { get; private set; }
+
+    public Guid TechnicianId { get; private set; }
+
+    public DateTimeOffset AssignedAt { get; private set; }
+
+    public DateTimeOffset? UnassignedAt { get; private set; }
+
+    public bool IsActive => UnassignedAt is null;
+
+    internal static WorkOrderAssignment Create(
+        Guid technicianId,
+        DateTimeOffset assignedAt)
+    {
+        return new WorkOrderAssignment(
+            Guid.NewGuid(),
+            technicianId,
+            assignedAt);
+    }
+
+    internal void End(DateTimeOffset unassignedAt)
+    {
+        if (UnassignedAt is not null)
+            throw new InvalidOperationException(
+                "La asignación ya fue finalizada.");
+
+        if (unassignedAt < AssignedAt)
+            throw new InvalidOperationException(
+                "La fecha de desasignación no puede ser anterior a la asignación.");
+
+        UnassignedAt = unassignedAt;
+    }
+}
+```
+
+Esto representa **una asignación concreta**, no el técnico permanentemente asociado a la orden.
+
+---
+
+# 4. Entonces `WorkOrder` tendría el historial
+
+```csharp
+public sealed class WorkOrder
+{
+    private readonly List<WorkOrderAssignment> _assignments = [];
+
+    private WorkOrder()
+    {
+    }
+
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; } = null!;
+
+    public IReadOnlyCollection<WorkOrderAssignment> Assignments =>
+        _assignments.AsReadOnly();
+
+    // ...
+}
+```
+
+Y podemos tener comportamiento:
+
+```csharp
+public void AssignTechnician(
+    Guid technicianId,
+    DateTimeOffset assignedAt)
+{
+    var currentAssignment = _assignments
+        .SingleOrDefault(x => x.IsActive);
+
+    if (currentAssignment is not null)
+        throw new InvalidOperationException(
+            "La orden ya tiene un técnico asignado.");
+
+    var assignment = WorkOrderAssignment.Create(
+        technicianId,
+        assignedAt);
+
+    _assignments.Add(assignment);
+}
+```
+
+Y para cambiar de técnico:
+
+```csharp
+public void ReassignTechnician(
+    Guid newTechnicianId,
+    DateTimeOffset changedAt)
+{
+    var currentAssignment = _assignments
+        .SingleOrDefault(x => x.IsActive);
+
+    if (currentAssignment is null)
+        throw new InvalidOperationException(
+            "La orden no tiene un técnico asignado.");
+
+    currentAssignment.End(changedAt);
+
+    var newAssignment = WorkOrderAssignment.Create(
+        newTechnicianId,
+        changedAt);
+
+    _assignments.Add(newAssignment);
+}
+```
+
+Entonces:
+
+```text
+OT-001
+
+Assignments
+------------------------------------------------
+Carlos
+Asignado:     08:00
+Desasignado:  10:30
+
+Pedro
+Asignado:     10:30
+Desasignado:  null
+```
+
+---
+
+# 5. ¿Y qué pasa con el estado del técnico?
+
+Aquí aparece algo que conecta directamente con lo que hablamos anteriormente.
+
+Yo **no pondría**:
+
+```csharp
+Technician.Status = Assigned;
+```
+
+simplemente porque alguien tiene una orden.
+
+Un técnico puede tener varias órdenes:
+
+```text
+Carlos
+│
+├── OT-001 → Waiting
+├── OT-002 → InProgress
+└── OT-003 → Pending
+```
+
+Por eso debemos diferenciar:
+
+### Estado de la orden
+
+```text
+Pending
+Assigned
+InProgress
+Waiting
+Completed
+Cancelled
+```
+
+de:
+
+### Estado de la asignación
+
+```text
+Active
+Ended
+```
+
+y de:
+
+### Actividad real del técnico
+
+```text
+WorkSession
+```
+
+Por ejemplo:
+
+```text
+Carlos
+   │
+   ├── OT-001
+   │     └── Waiting
+   │
+   └── OT-002
+         └── InProgress
+               │
+               └── WorkSession
+                   09:00 → 10:30
+```
+
+Esto nos da un modelo mucho más realista.
+
+---
+
+# 6. ¿Qué pasa si Carlos ya trabajó 2 horas?
+
+Esto es precisamente por lo que **no debemos eliminar la asignación**.
+
+Supongamos:
+
+```text
+08:00  Carlos asignado
+08:30  Carlos comienza trabajo
+10:30  Carlos es desasignado
+10:30  Pedro es asignado
+```
+
+Tenemos:
+
+```text
+Assignment
+Carlos
+08:00 → 10:30
+```
+
+Y además:
+
+```text
+WorkSession
+Carlos
+08:30 → 10:30
+```
+
+Después:
+
+```text
+Assignment
+Pedro
+10:30 → ...
+```
+
+Y:
+
+```text
+WorkSession
+Pedro
+10:30 → ...
+```
+
+Por tanto podemos responder preguntas como:
+
+> ¿Quién estuvo asignado a esta OT?
+
+```text
+Carlos
+Pedro
+```
+
+> ¿Quién está actualmente asignado?
+
+```text
+Pedro
+```
+
+> ¿Cuánto tiempo trabajó Carlos?
+
+```text
+2 horas
+```
+
+> ¿Cuánto tiempo efectivo lleva la OT?
+
+```text
+Carlos: 2 h
+Pedro:  ...
+Total: ...
+```
+
+---
+
+# 7. ¿Y si queremos saber por qué se desasignó?
+
+Yo también lo agregaría.
+
+Por ejemplo:
+
+```csharp
+public enum AssignmentEndReason
+{
+    Reassigned = 1,
+    TechnicianUnavailable = 2,
+    TechnicianChanged = 3,
+    WorkOrderCancelled = 4,
+    Other = 99
+}
+```
+
+Entonces:
+
+```csharp
+public DateTimeOffset? UnassignedAt { get; private set; }
+
+public AssignmentEndReason? EndReason { get; private set; }
+```
+
+Y:
+
+```csharp
+internal void End(
+    DateTimeOffset unassignedAt,
+    AssignmentEndReason reason)
+{
+    // reglas...
+    
+    UnassignedAt = unassignedAt;
+    EndReason = reason;
+}
+```
+
+Así tendríamos:
+
+```text
+Carlos
+Asignado:     08:00
+Desasignado:  10:30
+Motivo:       Reassigned
+```
+
+---
+
+# 8. Hay una regla de negocio importante
+
+Yo establecería esta regla:
+
+> **Una WorkOrder puede tener muchas asignaciones históricas, pero solamente una asignación activa en un momento determinado.**
+
+Es decir:
+
+```text
+OT-001
+
+Carlos    08:00 ───── 10:30
+Pedro               10:30 ──────────────>
+```
+
+Correcto.
+
+Pero esto:
+
+```text
+Carlos    08:00 ───────────────>
+Pedro     09:00 ───────────────>
+```
+
+sería incorrecto **si el negocio define que una OT solamente puede tener un técnico principal simultáneamente**.
+
+Ahora bien, si ACSoft en el futuro necesita:
+
+> "Dos técnicos trabajando simultáneamente en la misma OT"
+
+entonces cambiaríamos esa regla.
+
+Y aquí es donde el diseño de dominio nos ayuda: **no estamos obligando a que `WorkOrder` tenga un único `TechnicianId`**.
+
+---
+
+# 9. Incluso podemos eliminar `TechnicianId` de `WorkOrder`
+
+Con este diseño, yo cambiaría la decisión anterior.
+
+En lugar de:
+
+```csharp
+public Guid? TechnicianId { get; private set; }
+```
+
+podríamos tener:
+
+```csharp
+private readonly List<WorkOrderAssignment> _assignments = [];
+
+public IReadOnlyCollection<WorkOrderAssignment> Assignments =>
+    _assignments.AsReadOnly();
+```
+
+Y obtener el técnico actual:
+
+```csharp
+public Guid? CurrentTechnicianId =>
+    _assignments
+        .SingleOrDefault(x => x.IsActive)
+        ?.TechnicianId;
+```
+
+Aunque incluso esto último podría ser un detalle de consulta, en lugar de una propiedad persistida.
+
+---
+
+# 10. El modelo empieza a quedar así
+
+```text
+                    WORK ORDER
+                        │
+        ┌───────────────┼────────────────┐
+        │               │                │
+        ▼               ▼                ▼
+   Assignments     Activities       Time/Work
+        │               │                │
+        │               │                │
+        ▼               ▼                ▼
+   Technician      Activity        WorkSession
+                     Execution
+                        │
+                        ▼
+                  ActivityAnswer
+```
+
+Y esto resuelve **tres problemas diferentes**:
+
+### Asignación
+
+```text
+¿Quién tiene la OT?
+```
+
+→ `WorkOrderAssignment`
+
+### Ejecución técnica
+
+```text
+¿Qué actividades se hicieron?
+¿Qué valores se encontraron?
+¿Qué cambió antes/después?
+```
+
+→ `WorkOrderActivity` + `ActivityAnswer`
+
+### Tiempo
+
+```text
+¿Cuánto tiempo realmente trabajó cada técnico?
+¿Cuándo estuvo esperando?
+¿En qué momento cambió de OT?
+```
+
+→ `WorkSession` / `WorkOrderTimeEntry`
+
+---
+
+## Mi recomendación para ACSoft
+
+Antes de avanzar al **paso 4 (Value Objects)**, yo cerraría primero estos **tres conceptos del dominio**:
+
+```text
+1. WorkOrderAssignment
+   └── historial de técnicos
+
+2. WorkOrderActivity
+   └── ejecución de actividades
+       └── ActivityAnswer
+
+3. WorkSession
+   └── tiempo efectivo del técnico
+```
+
+Porque están fuertemente relacionados y, además, tus dos últimas aclaraciones —**repetir actividades** y **cambiar de técnico/pausar órdenes**— cambian bastante el modelo que habíamos planteado inicialmente.
+
+La buena noticia es que **no necesitamos rehacer todo**: `WorkOrder` sigue siendo el Aggregate Root, pero debemos definir cuidadosamente qué cosas viven dentro de él y cuáles conviene mantener como otros agregados.
+
+> Pregunto Este Back End, será consumido por un Fron End hecho en kotlin, esta cituacion cambia en algo nuestro diseño ?
+
+No cambia la **arquitectura de dominio**. De hecho, que el frontend sea Kotlin/Android refuerza la necesidad de que el backend sea independiente del cliente.
+
+Para ACSoft, pensaría así:
+
+```text
+                    ┌──────────────────────┐
+                    │   Kotlin / Android   │
+                    │   Jetpack Compose    │
+                    │                      │
+                    │ Offline-first        │
+                    └──────────┬───────────┘
+                               │
+                         REST / JSON
+                               │
+                               ▼
+┌─────────────────────────────────────────────────┐
+│                ACSoft Backend                   │
+│                 .NET 10 Web API                 │
+│                                                 │
+│  API → Application → Domain ← Infrastructure   │
+└─────────────────────────────────────────────────┘
+                               │
+                               ▼
+                         PostgreSQL
+```
+
+### Lo que NO cambiaría
+
+Tu separación:
+
+```text
+Api
+ ↓
+Application
+ ↓
+Domain
+ ↑
+Infrastructure
+```
+
+sigue siendo válida.
+
+Tampoco cambiaría por Kotlin cosas como:
+
+```csharp
+EstadoOrdenServicio
+EstadoAsignacion
+WorkOrder
+Technician
+Equipment
+MaintenanceActivity
+```
+
+porque esas son **reglas del negocio**, no decisiones del frontend.
+
+---
+
+## Lo que SÍ cambia
+
+Hay algo importante: como tu frontend será una aplicación móvil para técnicos, debemos diseñar la API pensando desde ahora en situaciones como:
+
+* pérdida de Internet;
+* trabajo offline;
+* sincronización posterior;
+* fotografías;
+* GPS;
+* firma del cliente;
+* órdenes parcialmente ejecutadas;
+* cambios de asignación;
+* actividades realizadas;
+* mediciones antes/después;
+* reintentos de sincronización.
+
+Esto es especialmente importante para tu caso.
+
+Por ejemplo, el técnico podría descargar:
+
+```text
+OS-001
+   ├── Cliente
+   ├── Equipo
+   ├── Actividades
+   └── Preguntas
+```
+
+y luego quedarse sin Internet.
+
+La aplicación Kotlin debería poder continuar trabajando localmente.
+
+Después:
+
+```text
+              SIN INTERNET
+
+Kotlin
+  │
+  ├── Guarda actividades
+  ├── Guarda mediciones
+  ├── Guarda fotografías
+  ├── Guarda firma
+  └── Guarda cambios
+            │
+            ▼
+        Base local
+          Room
+```
+
+Cuando vuelve Internet:
+
+```text
+              INTERNET
+                 │
+                 ▼
+          ┌─────────────┐
+          │ REST API    │
+          └──────┬──────┘
+                 │
+                 ▼
+          ACSoft Backend
+                 │
+                 ▼
+             PostgreSQL
+```
+
+### Y aquí aparece una decisión importante para nuestro diseño
+
+No deberíamos diseñar el backend pensando:
+
+> "El usuario hace clic y el servidor inmediatamente cambia todo."
+
+Para una aplicación móvil offline-first, es mejor pensar en **operaciones que puedan sincronizarse**.
+
+Por ejemplo:
+
+```text
+Asignar técnico
+Iniciar trabajo
+Pausar trabajo
+Continuar trabajo
+Registrar medición
+Responder pregunta
+Agregar fotografía
+Finalizar actividad
+Finalizar orden
+```
+
+Cada una de esas operaciones puede convertirse en una acción de dominio/API.
+
+---
+
+## Y esto afecta especialmente la asignación del técnico
+
+Por ejemplo:
+
+```text
+OS-001
+
+Técnico: Carlos
+Estado asignación: Asignada
+```
+
+Después el supervisor cambia:
+
+```text
+Carlos → Pedro
+```
+
+El backend debería registrar el cambio, no simplemente sobrescribir:
+
+```text
+TecnicoId = Pedro
+```
+
+Porque después podrías necesitar saber:
+
+```text
+Historial de asignación
+
+08:00 → Carlos
+10:30 → Pedro
+```
+
+Esto es bastante importante para una aplicación de mantenimiento.
+
+---
+
+## También cambiaría una cosa de nuestra conversación anterior
+
+Yo no usaría necesariamente:
+
+```csharp
+EstadoAsignacion
+{
+    SinAsignar,
+    Asignada
+}
+```
+
+como un campo obligatorio de `WorkOrder`.
+
+Podemos modelar algo más rico:
+
+```text
+WorkOrder
+   │
+   ├── Status
+   │
+   └── Assignments
+          │
+          ├── Técnico Carlos
+          │    ├── Asignado: 08:00
+          │    └── Desasignado: 10:30
+          │
+          └── Técnico Pedro
+               └── Asignado: 10:30
+```
+
+Esto resuelve directamente tu pregunta anterior:
+
+> "¿Qué pasa si asigno una orden a Carlos y después debo desasignarlo y asignársela a Pedro?"
+
+No perdemos el historial.
+
+---
+
+### Mi recomendación para ACSoft
+
+Como el backend será consumido principalmente por **Kotlin/Android**, yo diseñaría desde ahora estas tres capas conceptuales:
+
+```text
+1. DOMINIO
+   Reglas reales del negocio
+          ↓
+2. API
+   Contratos HTTP/JSON
+          ↓
+3. SINCRONIZACIÓN
+   Pensada para móvil/offline
+```
+
+Pero **no metería lógica de Android/Kotlin dentro del backend**.
+
+El backend debe poder ser consumido mañana por:
+
+```text
+                 ACSoft API
+                     │
+          ┌──────────┼──────────┐
+          ▼          ▼          ▼
+       Android      Web       Otro
+       Kotlin      React      cliente
+```
+
+Eso es precisamente una de las ventajas de nuestra arquitectura Clean Architecture + DDD.
+
+Y dado que ya estamos diseñando **WorkOrder**, antes de seguir con el código yo definiría bien el **ciclo de vida completo de una orden**, incluyendo **asignación, desasignación, pausa, cambio de técnico, múltiples técnicos y trabajo simultáneo en diferentes equipos**. Esa decisión nos evitará tener que rehacer el agregado `WorkOrder` más adelante.
+
+Continuemos con **asignación, desasignación, pausa, cambio de técnico, múltiples técnicos y trabajo simultáneo en diferentes equipos**.
+[Asignacion y reasignacion de tecnicos, multiples trabajos simultaneos](/blog/webapi-3-3-csharp)  
+

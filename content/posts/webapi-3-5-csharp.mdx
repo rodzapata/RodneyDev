@@ -1,0 +1,755 @@
+---
+title: "Crear webapi Parte 3-5 Manejo de una Secion Activa) "
+date: "2026-09-24"
+description: "Crear WebApi parte 3-5 Manejo de una Secion Activa"
+slug: "webapi-3-5-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. Continuemos con el siguiente punto, pero aquí quiero hacer una **corrección importante respecto a lo que dije antes**.
+
+No pondría `WorkSession` dentro de `Technician` ni intentaría que `Technician` controle directamente todas las sesiones. La regla:
+
+> "un técnico no puede tener dos sesiones de trabajo activas simultáneamente"
+
+involucra varias `WorkOrder`, por lo que es mejor resolverla mediante un **servicio de dominio / caso de uso**, manteniendo cada agregado pequeño.
+
+Esto evita crear un `Technician` Aggregate gigante.
+
+---
+
+# Paso 3.3 — Regla de una sola sesión activa
+
+Nuestro modelo queda:
+
+```text
+                 WorkOrder
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+          ▼                     ▼
+WorkOrderAssignment      WorkOrderActivity
+                                │
+                                ▼
+                         ActivityAnswer
+
+
+Technician
+    │
+    │
+    └────── WorkSession
+               │
+               └── WorkOrderId
+```
+
+Y la regla:
+
+```text
+Un Technician
+      │
+      ├── puede tener muchas WorkOrder asignadas
+      │
+      └── puede tener solamente
+          una WorkSession activa de tipo Work
+```
+
+---
+
+# 1. Nuestro `WorkSession` actual
+
+Tenemos:
+
+```csharp
+public sealed class WorkSession
+{
+    private WorkSession()
+    {
+    }
+
+    private WorkSession(
+        Guid id,
+        Guid technicianId,
+        Guid workOrderId,
+        WorkSessionType type,
+        DateTimeOffset startedAt)
+    {
+        Id = id;
+        TechnicianId = technicianId;
+        WorkOrderId = workOrderId;
+        Type = type;
+        StartedAt = startedAt;
+    }
+
+    public Guid Id { get; private set; }
+
+    public Guid TechnicianId { get; private set; }
+
+    public Guid WorkOrderId { get; private set; }
+
+    public WorkSessionType Type { get; private set; }
+
+    public DateTimeOffset StartedAt { get; private set; }
+
+    public DateTimeOffset? EndedAt { get; private set; }
+
+    public bool IsActive => EndedAt is null;
+
+    public TimeSpan? Duration =>
+        EndedAt.HasValue
+            ? EndedAt.Value - StartedAt
+            : null;
+
+    // ...
+}
+```
+
+Esto está bien porque `WorkSession` solamente se preocupa por **su propio período de tiempo**.
+
+No necesita saber si Carlos tiene otra sesión.
+
+---
+
+# 2. ¿Quién comprueba que Carlos no tenga otra sesión?
+
+Aquí entra Application.
+
+Por ejemplo, tendremos un caso de uso conceptualmente:
+
+```text
+StartWorkSession
+```
+
+El flujo sería:
+
+```text
+API
+ ↓
+Application
+ ↓
+Buscar WorkOrder
+ ↓
+Buscar sesión activa del técnico
+ ↓
+¿Existe?
+ ├── Sí → rechazar
+ └── No → crear WorkSession
+```
+
+Esto es diferente a poner toda la regla dentro de `WorkSession`.
+
+---
+
+# 3. Crear una interfaz para consultar sesiones
+
+En:
+
+```text
+HVAC.Application
+└── Interfaces
+    └── IWorkSessionRepository.cs
+```
+
+podemos tener:
+
+```csharp
+namespace HVAC.Application.Interfaces;
+
+public interface IWorkSessionRepository
+{
+    Task<WorkSession?> GetActiveByTechnicianAsync(
+        Guid technicianId,
+        CancellationToken cancellationToken);
+
+    Task AddAsync(
+        WorkSession workSession,
+        CancellationToken cancellationToken);
+}
+```
+
+Pero aquí aparece un detalle de arquitectura: `WorkSession` pertenece a Domain, así que Application puede referenciarlo porque:
+
+```text
+Application → Domain
+```
+
+que ya definimos como una dependencia válida.
+
+Necesitaríamos:
+
+```csharp
+using HVAC.Domain.Entities;
+```
+
+---
+
+# 4. Caso de uso `StartWorkSession`
+
+Como todavía no queremos MediatR, podemos hacer una clase normal.
+
+Por ejemplo:
+
+```text
+HVAC.Application
+└── Features
+    └── WorkSessions
+        └── Commands
+            └── StartWorkSessionHandler.cs
+```
+
+Código:
+
+```csharp
+using HVAC.Application.Interfaces;
+using HVAC.Domain.Entities;
+using HVAC.Domain.Enums;
+
+namespace HVAC.Application.Features.WorkSessions.Commands;
+
+public sealed class StartWorkSessionHandler
+{
+    private readonly IWorkOrderRepository _workOrderRepository;
+    private readonly IWorkSessionRepository _workSessionRepository;
+    private readonly IUnitOfWork _unitOfWork;
+
+    public StartWorkSessionHandler(
+        IWorkOrderRepository workOrderRepository,
+        IWorkSessionRepository workSessionRepository,
+        IUnitOfWork unitOfWork)
+    {
+        _workOrderRepository = workOrderRepository;
+        _workSessionRepository = workSessionRepository;
+        _unitOfWork = unitOfWork;
+    }
+
+    public async Task HandleAsync(
+        Guid workOrderId,
+        Guid technicianId,
+        CancellationToken cancellationToken)
+    {
+        var workOrder = await _workOrderRepository
+            .GetByIdAsync(
+                workOrderId,
+                cancellationToken);
+
+        if (workOrder is null)
+            throw new InvalidOperationException(
+                "La orden de trabajo no existe.");
+
+        if (workOrder.CurrentTechnicianId != technicianId)
+            throw new InvalidOperationException(
+                "El técnico no está asignado a esta orden.");
+
+        var activeSession = await _workSessionRepository
+            .GetActiveByTechnicianAsync(
+                technicianId,
+                cancellationToken);
+
+        if (activeSession is not null)
+            throw new InvalidOperationException(
+                "El técnico ya tiene una sesión de trabajo activa.");
+
+        workOrder.Start();
+
+        var session = WorkSession.Start(
+            technicianId,
+            workOrderId,
+            WorkSessionType.Work,
+            DateTimeOffset.UtcNow);
+
+        await _workSessionRepository.AddAsync(
+            session,
+            cancellationToken);
+
+        await _unitOfWork.SaveChangesAsync(
+            cancellationToken);
+    }
+}
+```
+
+Este caso de uso coordina dos agregados:
+
+```text
+WorkOrder
+    │
+    └── Start()
+
+WorkSession
+    │
+    └── Start()
+```
+
+Y eso es precisamente una de las responsabilidades de Application.
+
+---
+
+# 5. Pero tenemos un problema
+
+Imagina dos celulares Kotlin intentando hacer esto prácticamente al mismo tiempo:
+
+```text
+Celular de Carlos
+       │
+       └── Start OT-001
+
+
+Otro dispositivo / request
+       │
+       └── Start OT-002
+```
+
+Los dos podrían consultar:
+
+```text
+¿Carlos tiene sesión activa?
+
+Respuesta:
+NO
+```
+
+y después los dos podrían crear una sesión.
+
+Terminaríamos con:
+
+```text
+Carlos
+
+OT-001 → WorkSession activa
+OT-002 → WorkSession activa
+```
+
+Eso viola nuestra regla.
+
+Esto es muy importante en una aplicación **offline-first** como la que quieres construir con Kotlin.
+
+---
+
+# 6. Por eso no debemos confiar solamente en C#
+
+La regla de negocio debe existir en Application:
+
+```text
+"No permitimos dos sesiones activas."
+```
+
+pero la persistencia también debe ayudarnos a garantizar la consistencia.
+
+Cuando lleguemos a PostgreSQL/EF Core, podremos implementar mecanismos como un **índice único parcial** para garantizar:
+
+```text
+Un técnico
++
+Una sesión activa
+=
+máximo 1
+```
+
+Por ejemplo, conceptualmente en PostgreSQL:
+
+```sql
+CREATE UNIQUE INDEX ...
+ON work_sessions (technician_id)
+WHERE ended_at IS NULL
+  AND type = 1;
+```
+
+No vamos a implementar todavía EF Core ni SQL.
+
+Primero terminemos el dominio.
+
+---
+
+# 7. Ahora necesitamos cerrar el ciclo de una sesión
+
+Tenemos:
+
+```text
+Start
+```
+
+pero necesitamos:
+
+```text
+Start
+  ↓
+Work
+  ↓
+End
+```
+
+Y también:
+
+```text
+Work
+  ↓
+Waiting
+  ↓
+Work
+```
+
+Aquí hay una decisión importante.
+
+## ¿La espera es otra `WorkSession`?
+
+Yo recomiendo **sí**.
+
+Por ejemplo:
+
+```text
+08:00 → 09:00  Work
+09:00 → 10:30  Waiting
+10:30 → 12:00  Work
+```
+
+Entonces tenemos:
+
+```text
+WorkSession #1
+Type: Work
+08:00 → 09:00
+
+WorkSession #2
+Type: Waiting
+09:00 → 10:30
+
+WorkSession #3
+Type: Work
+10:30 → 12:00
+```
+
+Esto nos permite calcular:
+
+```text
+Tiempo total:       4 h
+
+Trabajo efectivo:   2 h 30 min
+
+Espera:             1 h 30 min
+```
+
+Y esto es mucho más útil para una empresa de mantenimiento.
+
+---
+
+# 8. Entonces "Paused" no será una sesión
+
+Esto es una distinción que quiero que conservemos:
+
+```text
+❌ WorkSession = Paused
+```
+
+No.
+
+"Paused" es una descripción de lo que ocurrió en el flujo.
+
+Lo que realmente registramos es:
+
+```text
+09:00 → 10:30
+Waiting
+```
+
+Por tanto:
+
+```text
+Estado de WorkOrder
+        ↓
+Waiting
+```
+
+y además:
+
+```text
+WorkSession
+        ↓
+Waiting
+```
+
+son conceptos relacionados, pero no son exactamente lo mismo.
+
+---
+
+# 9. ¿Qué ocurre cuando el técnico cambia de OT?
+
+Este es nuestro escenario original.
+
+```text
+08:00
+Carlos → OT-001
+```
+
+Sesión:
+
+```text
+OT-001
+Work
+08:00 → 09:00
+```
+
+A las 09:00 necesita esperar un repuesto.
+
+Finaliza esa sesión:
+
+```text
+09:00
+OT-001
+Waiting
+```
+
+Después:
+
+```text
+09:00
+Carlos → OT-002
+```
+
+Nueva sesión:
+
+```text
+OT-002
+Work
+09:00 → 10:30
+```
+
+Luego:
+
+```text
+10:30
+Carlos → OT-001
+```
+
+Nueva sesión:
+
+```text
+OT-001
+Work
+10:30 → 12:00
+```
+
+El resultado:
+
+```text
+                 Carlos
+                   │
+        ┌──────────┴───────────┐
+        │                      │
+      OT-001                 OT-002
+        │                      │
+   ┌────┴────┐                 │
+   │         │                 │
+ Work      Work               Work
+08-09     10:30-12            09-10:30
+```
+
+Esto es exactamente lo que necesitábamos para el escenario de las órdenes simultáneas.
+
+---
+
+# 10. Pero todavía falta algo importante: `WaitingReason`
+
+Cuando una sesión es:
+
+```text
+Waiting
+```
+
+queremos saber:
+
+```text
+¿Por qué?
+```
+
+Por ejemplo:
+
+```csharp
+public enum WaitingReason
+{
+    Customer = 1,
+    SparePart = 2,
+    Authorization = 3,
+    EquipmentShutdown = 4,
+    Access = 5,
+    Other = 99
+}
+```
+
+Y eventualmente:
+
+```text
+WorkSession
+
+Type:
+    Waiting
+
+WaitingReason:
+    SparePart
+```
+
+Pero **no metería todavía `WaitingReason` directamente en el constructor de `WorkSession`**, porque quiero que primero definamos correctamente el ciclo de estados de la sesión.
+
+---
+
+# 11. Nuestro dominio está quedando bastante claro
+
+Tenemos:
+
+### `WorkOrder`
+
+Responsable de:
+
+```text
+Identidad de la OT
+Cliente
+Equipo
+Estado de la OT
+Asignaciones
+Actividades ejecutadas
+```
+
+### `WorkOrderAssignment`
+
+Responsable de:
+
+```text
+Quién estuvo asignado
+Cuándo fue asignado
+Cuándo dejó de estarlo
+Por qué terminó la asignación
+```
+
+### `WorkSession`
+
+Responsable de:
+
+```text
+Quién trabajó
+En qué OT
+Qué tipo de tiempo
+Cuándo comenzó
+Cuándo terminó
+Cuánto duró
+```
+
+### Application
+
+Responsable de coordinar:
+
+```text
+¿El técnico está asignado?
+¿Tiene otra sesión activa?
+¿La OT puede comenzar?
+Crear sesión
+Finalizar sesión
+Persistir cambios
+```
+
+---
+
+# 12. El flujo completo de ACSoft
+
+Ya podemos visualizar una operación real:
+
+```text
+CREAR OT
+   ↓
+Pending
+   ↓
+ASIGNAR CARLOS
+   ↓
+Assigned
+   ↓
+INICIAR TRABAJO
+   ↓
+InProgress
+   ↓
+WorkSession
+   ↓
+NECESITA REPUESTO
+   ↓
+Waiting
+   ↓
+WaitingSession
+   ↓
+CARLOS TRABAJA EN OT-002
+   ↓
+OT-002 InProgress
+   ↓
+CARLOS REGRESA A OT-001
+   ↓
+OT-001 InProgress
+   ↓
+FINALIZA ACTIVIDADES
+   ↓
+Completed
+```
+
+Y durante todo esto conservamos:
+
+```text
+Assignment History
++
+Work Session History
++
+Activity Execution History
++
+Activity Answer History
+```
+
+Eso nos va a dar una trazabilidad muy buena.
+
+---
+
+## Siguiente paso
+
+Ahora sí, antes de Value Objects, nos falta **cerrar `WorkSession` completamente**: vamos a modificarla para que tenga un ciclo explícito:
+
+```text
+Start()
+   ↓
+Active
+   ↓
+End()
+```
+
+y posteriormente implementaremos correctamente:
+
+```text
+Work
+Waiting
+Travel
+Break
+```
+
+con sus reglas.
+
+Después de eso pasaremos al otro punto que tú mismo detectaste, que es todavía más importante para ACSoft:
+
+```text
+Activity
+    ↓
+Question
+    ↓
+WorkOrderActivity
+    ↓
+ActivityAnswer
+```
+
+incluyendo **BEFORE / DURING / AFTER**, actividades repetibles y mediciones como:
+
+```text
+Compresor
+R = 12.1 A
+S = 11.8 A
+T = 12.0 A
+
+       ↓ mantenimiento ↓
+
+R = 10.2 A
+S = 10.1 A
+T = 10.3 A
+```
+
+Ahí es donde empezaremos a definir los Value Objects de mediciones como `Current`, `Voltage`, `Pressure`, etc.

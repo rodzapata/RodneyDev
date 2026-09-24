@@ -1,0 +1,952 @@
+---
+title: "Crear webapi Parte 3-1 Actualizacion de cambios en el Dominio "
+date: "2026-09-24"
+description: "Crear WebApi parte 3-1 Actualizacion de cambios en el Dominio con Clean Arquitecture AcSoft"
+slug: "webapi-3-1-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Antes de pasar al paso 4, quiero que tengas en cuenta algo en la regla de negocio:
+1. Estamos validando que una actividad no se repita en un orden de trabajo, pero hay casos donde se requiere que las preguntas se repitan antes y después del mantenimiento.
+
+2. Como un tecnico puede pausar una orden de trabajo e iniciar otra para aprovechas el tiempo, como le hacemos seguimientos a esos tiempo efectivo del trabajo, tiempo de espera, tiempo de desplazamiento, etc  
+
+
+Sí. Y esta aclaración cambia una parte importante del diseño que hicimos en el paso 3. **No deberíamos impedir que una actividad se repita dentro de una orden**, porque en mantenimiento HVAC una misma pregunta/medición puede necesitar ejecutarse en distintos momentos.
+
+Hay dos problemas de dominio diferentes que debemos modelar:
+
+1. **Ejecución de actividades/preguntas por etapas**: antes, durante y después del mantenimiento.
+2. **Seguimiento del tiempo real de una orden**, incluyendo pausas, trabajo efectivo, espera y desplazamiento.
+
+## 1. No debemos identificar una actividad solamente por `ActivityId`
+
+Anteriormente teníamos:
+
+```csharp
+if (_activities.Any(x => x.ActivityId == activityId))
+{
+    throw new InvalidOperationException(
+        "La actividad ya existe en la orden.");
+}
+```
+
+Para tu caso, **esa regla no es correcta**.
+
+Por ejemplo:
+
+```text
+Actividad: Medir corriente del compresor
+
+ANTES
+R = 12.1 A
+S = 11.8 A
+T = 12.0 A
+
+      ↓ mantenimiento
+
+DESPUÉS
+R = 10.2 A
+S = 10.1 A
+T = 10.3 A
+```
+
+La actividad conceptual es la misma, pero tenemos **dos ejecuciones**.
+
+Por eso debemos separar:
+
+```text
+Activity
+    ↓
+definición de la actividad
+
+WorkOrderActivity
+    ↓
+instancia/ejecución de esa actividad dentro de una OT
+```
+
+Y una orden puede tener:
+
+```text
+WorkOrder
+│
+├── WorkOrderActivity #1
+│      ActivityId = MEDIR_CORRIENTE
+│      Momento = Before
+│
+└── WorkOrderActivity #2
+       ActivityId = MEDIR_CORRIENTE
+       Momento = After
+```
+
+Por lo tanto, eliminaremos la restricción:
+
+```csharp
+x.ActivityId == activityId
+```
+
+---
+
+# 2. Pero yo iría un poco más lejos
+
+No utilizaría solamente:
+
+```csharp
+Before
+After
+```
+
+porque posiblemente posteriormente necesites:
+
+```text
+Antes
+Durante
+Después
+```
+
+e incluso:
+
+```text
+Inicial
+Final
+Revisión
+Reinspección
+```
+
+Por ejemplo:
+
+```csharp
+public enum ExecutionMoment
+{
+    Before = 1,
+    During = 2,
+    After = 3
+}
+```
+
+Entonces:
+
+```csharp
+public sealed class WorkOrderActivity
+{
+    public Guid Id { get; private set; }
+
+    public Guid ActivityId { get; private set; }
+
+    public ExecutionMoment Moment { get; private set; }
+
+    public WorkOrderActivityStatus Status { get; private set; }
+}
+```
+
+Ahora la combinación que identifica una ejecución puede ser:
+
+```text
+ActivityId + Moment
+```
+
+pero **solo si el negocio determina que una actividad puede ejecutarse una vez por momento**.
+
+Por ejemplo:
+
+```text
+MEDIR_CORRIENTE + BEFORE
+MEDIR_CORRIENTE + AFTER
+```
+
+serían diferentes.
+
+---
+
+# 3. ¿Y si necesitamos repetirla dos veces en "After"?
+
+Aquí aparece una distinción todavía más interesante.
+
+Supongamos:
+
+```text
+Medir presión de descarga
+```
+
+se realiza:
+
+```text
+10:00 → medición inicial
+11:30 → medición después del mantenimiento
+12:30 → nueva medición porque el problema continúa
+```
+
+Entonces `Before/After` tampoco es suficiente.
+
+En ese caso podemos tener:
+
+```text
+WorkOrderActivity
+    Id
+    ActivityId
+    Sequence
+    ExecutionMoment
+```
+
+Por ejemplo:
+
+```text
+ActivityId              Moment       Sequence
+------------------------------------------------
+MEDIR_PRESION            Before          1
+MEDIR_PRESION            After           2
+MEDIR_PRESION            After           3
+```
+
+Eso representa mucho mejor la realidad.
+
+---
+
+# 4. Pero hay algo aún mejor para tu caso
+
+Por lo que has descrito de tu aplicación, yo separaría:
+
+### Definición
+
+```text
+Activity
+Question
+```
+
+de:
+
+### Ejecución
+
+```text
+WorkOrderActivity
+ActivityAnswer
+```
+
+Entonces:
+
+```text
+CATÁLOGO
+─────────────────────────
+
+Activity
+"Verificar compresor"
+
+    ├── Question
+    │   "Corriente R"
+    │
+    ├── Question
+    │   "Corriente S"
+    │
+    └── Question
+        "Corriente T"
+
+
+ORDEN DE TRABAJO
+─────────────────────────
+
+WorkOrderActivity #1
+    Activity = Verificar compresor
+    Moment = Before
+
+        Answers
+        ├── R = 12.1
+        ├── S = 11.8
+        └── T = 12.0
+
+
+WorkOrderActivity #2
+    Activity = Verificar compresor
+    Moment = After
+
+        Answers
+        ├── R = 10.2
+        ├── S = 10.1
+        └── T = 10.3
+```
+
+Esto es mucho más flexible.
+
+---
+
+# 5. Ahora el segundo problema: el tiempo
+
+Aquí creo que debemos cambiar ligeramente nuestra forma de pensar.
+
+No debemos tener simplemente:
+
+```csharp
+WorkOrder.StartedAt
+WorkOrder.CompletedAt
+```
+
+porque eso no representa el trabajo real.
+
+Imagina:
+
+```text
+08:00  Técnico llega
+08:10  Inicia OT-001
+09:00  Pausa OT-001
+09:00  Inicia OT-002
+10:30  Finaliza OT-002
+10:30  Reanuda OT-001
+12:00  Pausa OT-001
+12:30  Reanuda OT-001
+13:30  Finaliza OT-001
+```
+
+El intervalo:
+
+```text
+08:10 → 13:30
+```
+
+son **5h20m de tiempo transcurrido**.
+
+Pero el trabajo efectivo fue mucho menor.
+
+Por eso necesitamos registrar **intervalos de tiempo**, no solamente una fecha de inicio y otra de finalización.
+
+---
+
+# 6. Yo introduciría un `WorkOrderTimeEntry`
+
+Por ejemplo:
+
+```text
+WorkOrder
+    │
+    └── TimeEntries
+          │
+          ├── Travel
+          ├── Work
+          ├── Waiting
+          ├── Paused
+          └── ...
+```
+
+Cada registro representa un período.
+
+Ejemplo:
+
+```text
+OT-001
+
+08:00 ───────── 08:30
+       Travel
+
+08:30 ───────── 09:15
+       Work
+
+09:15 ───────── 10:00
+       Waiting
+
+10:00 ───────── 11:30
+       Work
+```
+
+Podemos calcular:
+
+```text
+Tiempo desplazamiento = 30 min
+Tiempo trabajo        = 135 min
+Tiempo espera         = 45 min
+```
+
+---
+
+# 7. ¿Qué tipos de tiempo necesitamos?
+
+Yo empezaría con:
+
+```csharp
+public enum WorkOrderTimeType
+{
+    Travel = 1,
+    Work = 2,
+    Waiting = 3,
+    Break = 4
+}
+```
+
+Pero hay una consideración importante.
+
+No necesariamente debemos registrar `Paused` como un tipo de tiempo.
+
+Porque:
+
+> **Pausar no es necesariamente una actividad temporal.**
+
+Una pausa es un **cambio de estado de la ejecución de la orden**.
+
+Por ejemplo:
+
+```text
+Work
+  ↓
+Paused
+```
+
+y después:
+
+```text
+Paused
+  ↓
+Work
+```
+
+El tiempo entre ambos eventos se puede calcular.
+
+---
+
+# 8. Entonces podemos tener dos conceptos
+
+### Estado de la orden
+
+```text
+Pending
+Assigned
+InProgress
+Paused
+Completed
+Cancelled
+```
+
+### Tipo de tiempo
+
+```text
+Travel
+Work
+Waiting
+Break
+```
+
+No son lo mismo.
+
+---
+
+# 9. Incluso podemos hacerlo mejor
+
+Para hacer seguimiento profesional, yo introduciría un concepto de:
+
+```text
+WorkOrderTimeEntry
+```
+
+con:
+
+```csharp
+public sealed class WorkOrderTimeEntry
+{
+    public Guid Id { get; private set; }
+
+    public WorkOrderTimeType Type { get; private set; }
+
+    public DateTimeOffset StartedAt { get; private set; }
+
+    public DateTimeOffset? EndedAt { get; private set; }
+}
+```
+
+Ejemplo:
+
+```text
+Id       Type       StartedAt    EndedAt
+------------------------------------------------
+001      Travel     08:00        08:30
+002      Work       08:30        09:15
+003      Waiting    09:15        10:00
+004      Work       10:00        11:30
+```
+
+La duración sería:
+
+```text
+EndedAt - StartedAt
+```
+
+---
+
+# 10. ¿Cómo hacemos para cambiar de una OT a otra?
+
+Aquí aparece una regla importante.
+
+Un técnico podría tener:
+
+```text
+OT-001 → InProgress
+```
+
+y decir:
+
+> "Tengo que esperar que llegue un repuesto."
+
+Entonces:
+
+```text
+OT-001
+    Work
+      ↓
+    Waiting
+```
+
+y el técnico puede comenzar:
+
+```text
+OT-002
+    Work
+```
+
+No debemos considerar que OT-001 está:
+
+```text
+Completed
+```
+
+porque no terminó.
+
+Está:
+
+```text
+Waiting
+```
+
+o posiblemente:
+
+```text
+Paused
+```
+
+dependiendo de la razón.
+
+---
+
+# 11. Esto nos permite tener varias órdenes abiertas
+
+Por ejemplo:
+
+```text
+Técnico 10
+
+OT-001
+Estado: Waiting
+Motivo: Esperando repuesto
+
+OT-002
+Estado: InProgress
+Motivo: Mantenimiento preventivo
+
+OT-003
+Estado: Assigned
+Motivo: Pendiente de iniciar
+```
+
+Esto es perfectamente posible.
+
+Pero debemos distinguir:
+
+> **Varias órdenes abiertas** de **varias órdenes ejecutándose simultáneamente**.
+
+Un técnico físicamente no puede estar haciendo mantenimiento efectivo en dos equipos al mismo tiempo.
+
+Por eso podemos imponer una regla:
+
+```text
+Un técnico puede tener múltiples órdenes abiertas,
+pero solo una sesión de trabajo activa a la vez.
+```
+
+Esta regla me parece mucho más útil para tu aplicación.
+
+---
+
+# 12. Introduciría `WorkSession`
+
+Incluso podemos modelarlo explícitamente.
+
+```text
+Technician
+    │
+    └── WorkSession
+           │
+           ├── WorkOrderId
+           ├── StartedAt
+           └── EndedAt
+```
+
+Ejemplo:
+
+```text
+09:00 ─────────────── 10:00
+      OT-001
+
+10:00 ─────────────── 11:30
+      OT-002
+
+11:30 ─────────────── 13:00
+      OT-001
+```
+
+Entonces podemos calcular:
+
+```text
+OT-001
+09:00-10:00 = 60 min
+11:30-13:00 = 90 min
+
+Tiempo efectivo = 150 min
+```
+
+Mientras que:
+
+```text
+OT-002
+10:00-11:30 = 90 min
+```
+
+---
+
+# 13. ¿Dónde pondría estas sesiones?
+
+Aquí debemos tener cuidado con DDD.
+
+No necesariamente haría:
+
+```text
+WorkOrder
+   └── WorkSession
+```
+
+porque una sesión representa también la relación:
+
+```text
+Technician + WorkOrder + Time
+```
+
+y puede tener un ciclo de vida propio.
+
+Yo estudiaría dos alternativas:
+
+### Opción A
+
+```text
+WorkOrder
+   └── TimeEntries
+```
+
+Más sencilla.
+
+### Opción B
+
+```text
+Technician
+    │
+    └── WorkSessions
+           │
+           └── WorkOrderId
+```
+
+Más apropiada si quieres controlar la agenda/actividad del técnico.
+
+Para tu aplicación, **me inclino por separar el seguimiento temporal del Aggregate `WorkOrder`**, porque el sistema podría crecer hacia:
+
+```text
+agenda del técnico
+rutas
+desplazamientos
+geolocalización
+jornada
+productividad
+tiempos por contrato
+```
+
+y no queremos meter todo dentro de `WorkOrder`.
+
+---
+
+# 14. Una arquitectura conceptual que me gusta más
+
+Quedaría:
+
+```text
+                    DOMAIN
+                       │
+          ┌────────────┴────────────┐
+          │                         │
+     WorkOrder                 Technician
+     Aggregate                 Aggregate
+          │                         │
+          │                         │
+          └───────┐       ┌─────────┘
+                  │       │
+                  ▼       ▼
+             WorkSession
+```
+
+Pero todavía podemos mantener:
+
+```text
+WorkOrder
+    └── WorkOrderActivity
+           └── ActivityAnswer
+```
+
+porque esas sí representan la ejecución de la orden.
+
+---
+
+# 15. Algo muy útil: separar "estado" de "tiempo"
+
+Esto te permitirá generar informes muy interesantes.
+
+Por ejemplo:
+
+### OT-001
+
+```text
+Tiempo total transcurrido: 5h 20m
+
+Desplazamiento: 30m
+Trabajo efectivo: 2h 45m
+Espera: 1h 20m
+Pausa: 45m
+```
+
+Y posteriormente:
+
+```text
+Tiempo contratado: 3h
+Tiempo efectivo: 2h 45m
+Desviación: -15m
+```
+
+O:
+
+```text
+Tiempo desplazamiento
+Tiempo diagnóstico
+Tiempo reparación
+Tiempo pruebas
+Tiempo espera repuesto
+Tiempo espera cliente
+```
+
+Eso sería mucho más valioso para tu aplicación que simplemente:
+
+```text
+startedAt
+completedAt
+```
+
+---
+
+# 16. También podemos registrar el motivo de espera
+
+No recomiendo:
+
+```text
+Waiting
+```
+
+solamente.
+
+Podríamos tener:
+
+```csharp
+public enum WaitingReason
+{
+    Customer = 1,
+    SparePart = 2,
+    Authorization = 3,
+    EquipmentShutdown = 4,
+    Weather = 5,
+    Other = 99
+}
+```
+
+Entonces:
+
+```text
+Waiting
+    Reason = SparePart
+```
+
+o:
+
+```text
+Waiting
+    Reason = Customer
+```
+
+Esto permitirá posteriormente obtener estadísticas:
+
+```text
+¿Por qué se pierde tiempo?
+
+Repuestos       18%
+Cliente         12%
+Autorizaciones   8%
+Otros            5%
+```
+
+---
+
+# 17. Una recomendación importante para el diseño
+
+Yo **no agregaría todavía todo esto al código de `WorkOrder`**.
+
+Tenemos que evitar hacer:
+
+```text
+WorkOrder
+├── Customer
+├── Equipment
+├── Technician
+├── Activities
+├── Answers
+├── TimeEntries
+├── WorkSessions
+├── GPS
+├── Photos
+├── Signatures
+├── Notifications
+├── Billing
+├── Contract
+└── ...
+```
+
+Eso terminaría convirtiendo `WorkOrder` en un **God Aggregate**.
+
+En DDD queremos Aggregates relativamente pequeños y con límites claros.
+
+---
+
+# 18. Por tanto, modificaría nuestras decisiones del paso 3
+
+### ❌ Eliminamos:
+
+```csharp
+if (_activities.Any(x => x.ActivityId == activityId))
+```
+
+### ✅ Permitimos múltiples ejecuciones:
+
+```text
+ActivityId + ExecutionMoment + Sequence
+```
+
+o incluso una instancia independiente por ejecución.
+
+---
+
+### ❌ No ponemos todo el seguimiento temporal dentro de `WorkOrder`.
+
+### ✅ Creamos un concepto independiente para:
+
+```text
+WorkSession
+TimeEntry
+```
+
+---
+
+### ❌ No consideramos `Paused` como una categoría de tiempo.
+
+### ✅ `Paused` es un estado/evento de la orden.
+
+---
+
+### ✅ Permitimos:
+
+```text
+OT-001 = Waiting
+OT-002 = InProgress
+```
+
+para el mismo técnico.
+
+Pero controlamos que:
+
+```text
+un técnico no tenga dos WorkSessions activas simultáneamente.
+```
+
+---
+
+# 19. Nuestro modelo empieza a quedar así
+
+```text
+                         DOMAIN
+                            │
+        ┌───────────────────┴──────────────────┐
+        │                                      │
+        ▼                                      ▼
+   WorkOrder                              Technician
+ Aggregate Root                           Aggregate Root
+        │                                      │
+        │                                      │
+        ├── WorkOrderActivity                  │
+        │       │                              │
+        │       └── ActivityAnswer             │
+        │                                      │
+        │                               WorkSession
+        │                                      │
+        └──────────────────────┐               │
+                               │               │
+                               ▼               ▼
+                          WorkOrderId      TechnicianId
+```
+
+Y el catálogo:
+
+```text
+Activity
+   │
+   └── Questions
+          │
+          └── AnswerDefinition
+```
+
+queda separado de la ejecución.
+
+---
+
+## Y esto cambia nuestro siguiente paso
+
+Antes te había propuesto pasar directamente a **Value Objects**. Pero con estas aclaraciones, considero mejor hacer una pequeña pausa y diseñar primero el **modelo de ejecución de actividades y respuestas**, porque es una parte central de tu negocio.
+
+La siguiente pieza que deberíamos diseñar sería:
+
+```text
+Activity
+    ↓
+Question
+    ↓
+AnswerDefinition
+    ↓
+WorkOrderActivity
+    ↓
+ActivityAnswer
+```
+
+y resolver formalmente:
+
+* cómo representar **Antes / Durante / Después**;
+* cómo permitir que una misma actividad se ejecute varias veces;
+* cómo manejar preguntas numéricas, booleanas, texto y mediciones;
+* cómo guardar `R-S-T` para corriente;
+* cómo guardar unidad y rango esperado;
+* cómo calcular automáticamente si una medición está dentro o fuera del rango;
+* y cómo hacer que todo esto siga siendo un **Aggregate coherente**, sin crear un `WorkOrder` gigantesco.
+
+Después de eso pasamos a los **Value Objects**, donde podremos modelar correctamente conceptos como `Voltage`, `Current`, `Pressure`, `Temperature`, etc.
+
+Me parece bien pero antes hay que tener en cuenta:
+
+>Otra dura como manejariamos el caso de que a un tecnico se le asigne una Orden, pero despues por cuaquier motivo debemos desasignarsela a él y asignarla a otro tecnico ?
+
+[reasignacion de tecnicos](/blog/webapi-3-2-csharp)  
+

@@ -1,0 +1,855 @@
+---
+title: "Crear webapi Parte 3-3 Reasignacion de tecnicos "
+date: "2026-09-24"
+description: "Crear WebApi parte 3-3 Reasignacion de tecnicos y trabajos simiultaneos"
+slug: "webapi-3-3-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. 👍 Continuemos **paso a paso**, y antes de meternos con Value Objects vamos a cerrar el modelo de **asignación de técnicos**, porque ya sabemos que una OT puede cambiar de técnico durante su ciclo de vida.
+
+## Paso 3.1 — Modelar `WorkOrderAssignment`
+
+La idea fundamental será:
+
+> Una `WorkOrder` puede tener muchas asignaciones históricas, pero solamente una asignación activa al mismo tiempo.
+
+Por ejemplo:
+
+```text
+OT-0001
+│
+├── Carlos
+│   08:00 ─────────── 10:30
+│                       │
+│                       └── Reasignado
+│
+└── Pedro
+    10:30 ───────────────────►
+```
+
+Esto es mucho mejor que guardar solamente:
+
+```csharp
+Guid? TechnicianId
+```
+
+porque ese dato solamente nos dice **quién está actualmente asignado**, pero no nos dice quién estuvo antes.
+
+---
+
+# 1. Crear `AssignmentEndReason`
+
+En `HVAC.Domain/Enums`:
+
+```csharp
+namespace HVAC.Domain.Enums;
+
+public enum AssignmentEndReason
+{
+    Reassigned = 1,
+    TechnicianUnavailable = 2,
+    TechnicianChanged = 3,
+    WorkOrderCancelled = 4,
+    Other = 99
+}
+```
+
+Por ahora no necesitamos demasiados motivos. Podemos ampliar el enum cuando aparezcan reglas reales del negocio.
+
+---
+
+# 2. Crear `WorkOrderAssignment`
+
+Nueva carpeta:
+
+```text
+HVAC.Domain
+├── Entities
+│   ├── WorkOrder.cs
+│   └── WorkOrderAssignment.cs
+│
+├── Enums
+│   ├── WorkOrderStatus.cs
+│   └── AssignmentEndReason.cs
+│
+├── ValueObjects
+├── Exceptions
+└── Common
+```
+
+Código:
+
+```csharp
+using HVAC.Domain.Enums;
+
+namespace HVAC.Domain.Entities;
+
+public sealed class WorkOrderAssignment
+{
+    private WorkOrderAssignment()
+    {
+    }
+
+    private WorkOrderAssignment(
+        Guid id,
+        Guid technicianId,
+        DateTimeOffset assignedAt)
+    {
+        Id = id;
+        TechnicianId = technicianId;
+        AssignedAt = assignedAt;
+    }
+
+    public Guid Id { get; private set; }
+
+    public Guid TechnicianId { get; private set; }
+
+    public DateTimeOffset AssignedAt { get; private set; }
+
+    public DateTimeOffset? UnassignedAt { get; private set; }
+
+    public AssignmentEndReason? EndReason { get; private set; }
+
+    public bool IsActive => UnassignedAt is null;
+
+    internal static WorkOrderAssignment Create(
+        Guid technicianId,
+        DateTimeOffset assignedAt)
+    {
+        if (technicianId == Guid.Empty)
+            throw new ArgumentException(
+                "El técnico es obligatorio.",
+                nameof(technicianId));
+
+        return new WorkOrderAssignment(
+            Guid.NewGuid(),
+            technicianId,
+            assignedAt);
+    }
+
+    internal void End(
+        DateTimeOffset unassignedAt,
+        AssignmentEndReason reason)
+    {
+        if (!IsActive)
+            throw new InvalidOperationException(
+                "La asignación ya fue finalizada.");
+
+        if (unassignedAt < AssignedAt)
+            throw new InvalidOperationException(
+                "La fecha de desasignación no puede ser anterior a la asignación.");
+
+        UnassignedAt = unassignedAt;
+        EndReason = reason;
+    }
+}
+```
+
+### ¿Qué representa esta clase?
+
+Una instancia representa **un período concreto de asignación**.
+
+Por ejemplo:
+
+```text
+Id:            A001
+TechnicianId:  Carlos
+AssignedAt:    08:00
+UnassignedAt:  10:30
+EndReason:     Reassigned
+```
+
+No representa al técnico.
+
+No representa la orden.
+
+Representa:
+
+> "Carlos estuvo asignado a esta OT desde las 08:00 hasta las 10:30."
+
+---
+
+# 3. Modificar `WorkOrder`
+
+Ahora agregamos la colección:
+
+```csharp
+private readonly List<WorkOrderAssignment> _assignments = [];
+```
+
+y:
+
+```csharp
+public IReadOnlyCollection<WorkOrderAssignment> Assignments =>
+    _assignments.AsReadOnly();
+```
+
+Entonces nuestra entidad empieza a quedar así:
+
+```csharp
+public sealed class WorkOrder
+{
+    private readonly List<WorkOrderAssignment> _assignments = [];
+
+    private WorkOrder()
+    {
+    }
+
+    private WorkOrder(
+        Guid id,
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        Id = id;
+        Number = number;
+        CustomerId = customerId;
+        EquipmentId = equipmentId;
+        Status = WorkOrderStatus.Pending;
+    }
+
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; } = null!;
+
+    public Guid CustomerId { get; private set; }
+
+    public Guid EquipmentId { get; private set; }
+
+    public WorkOrderStatus Status { get; private set; }
+
+    public IReadOnlyCollection<WorkOrderAssignment> Assignments =>
+        _assignments.AsReadOnly();
+
+    // Métodos...
+}
+```
+
+---
+
+# 4. Agregar `AssignTechnician()`
+
+Ahora viene una parte muy importante de DDD.
+
+No queremos que Application haga esto:
+
+```csharp
+workOrder.TechnicianId = technicianId;
+```
+
+Queremos:
+
+```csharp
+workOrder.AssignTechnician(
+    technicianId,
+    DateTimeOffset.UtcNow);
+```
+
+El propio agregado controla sus reglas.
+
+```csharp
+public void AssignTechnician(
+    Guid technicianId,
+    DateTimeOffset assignedAt)
+{
+    if (Status == WorkOrderStatus.Completed)
+        throw new InvalidOperationException(
+            "No se puede asignar un técnico a una orden completada.");
+
+    if (Status == WorkOrderStatus.Cancelled)
+        throw new InvalidOperationException(
+            "No se puede asignar un técnico a una orden cancelada.");
+
+    var currentAssignment = _assignments
+        .SingleOrDefault(x => x.IsActive);
+
+    if (currentAssignment is not null)
+        throw new InvalidOperationException(
+            "La orden ya tiene un técnico asignado.");
+
+    var assignment = WorkOrderAssignment.Create(
+        technicianId,
+        assignedAt);
+
+    _assignments.Add(assignment);
+}
+```
+
+Fíjate en algo importante:
+
+**la entidad `WorkOrderAssignment` no decide si la OT puede ser asignada.**
+
+Esa decisión corresponde a `WorkOrder`, porque `WorkOrder` es el Aggregate Root.
+
+---
+
+# 5. Reasignar
+
+Ahora podemos implementar:
+
+```csharp
+public void ReassignTechnician(
+    Guid newTechnicianId,
+    DateTimeOffset changedAt)
+{
+    if (Status == WorkOrderStatus.Completed)
+        throw new InvalidOperationException(
+            "No se puede reasignar una orden completada.");
+
+    if (Status == WorkOrderStatus.Cancelled)
+        throw new InvalidOperationException(
+            "No se puede reasignar una orden cancelada.");
+
+    var currentAssignment = _assignments
+        .SingleOrDefault(x => x.IsActive);
+
+    if (currentAssignment is null)
+        throw new InvalidOperationException(
+            "La orden no tiene un técnico actualmente asignado.");
+
+    if (currentAssignment.TechnicianId == newTechnicianId)
+        throw new InvalidOperationException(
+            "El nuevo técnico es el mismo técnico actual.");
+
+    currentAssignment.End(
+        changedAt,
+        AssignmentEndReason.Reassigned);
+
+    var newAssignment = WorkOrderAssignment.Create(
+        newTechnicianId,
+        changedAt);
+
+    _assignments.Add(newAssignment);
+}
+```
+
+Ahora el dominio controla toda la operación.
+
+---
+
+# 6. ¿Qué ocurre cuando reasignamos?
+
+Supongamos:
+
+```text
+09:00
+OT-001 → Carlos
+
+11:30
+Carlos → Pedro
+```
+
+Antes:
+
+```text
+Assignments
+
+Carlos
+09:00 → null
+```
+
+Después de:
+
+```csharp
+workOrder.ReassignTechnician(
+    pedroId,
+    DateTimeOffset.UtcNow);
+```
+
+tenemos:
+
+```text
+Assignments
+
+Carlos
+09:00 → 11:30
+Reason: Reassigned
+
+Pedro
+11:30 → null
+```
+
+**No actualizamos ni borramos el registro anterior.**
+
+Creamos uno nuevo.
+
+Esto es lo que nos permite tener historial.
+
+---
+
+# 7. ¿Y si queremos simplemente desasignar?
+
+También necesitamos esa operación.
+
+Por ejemplo, el coordinador decide:
+
+> "Por ahora esta OT queda sin técnico."
+
+Podemos tener:
+
+```csharp
+public void UnassignTechnician(
+    DateTimeOffset unassignedAt,
+    AssignmentEndReason reason)
+{
+    var currentAssignment = _assignments
+        .SingleOrDefault(x => x.IsActive);
+
+    if (currentAssignment is null)
+        throw new InvalidOperationException(
+            "La orden no tiene un técnico asignado.");
+
+    currentAssignment.End(
+        unassignedAt,
+        reason);
+}
+```
+
+Entonces:
+
+```text
+Carlos
+08:00 → 10:30
+Reason: TechnicianUnavailable
+
+OT-001
+Estado: Assigned? ❌
+Técnico actual: ninguno
+```
+
+Esto nos lleva a una pregunta importante: **¿el estado de la OT debe ser `Assigned` cuando tiene técnico?**
+
+Yo diría que sí, pero debemos separar correctamente:
+
+```text
+WorkOrderStatus
+```
+
+de:
+
+```text
+Assignment
+```
+
+---
+
+# 8. Nuestro `WorkOrderStatus`
+
+Ahora que conocemos mejor el negocio, yo cambiaría el enum inicial.
+
+Antes teníamos:
+
+```csharp
+Pending
+InProgress
+Completed
+Cancelled
+```
+
+Pero necesitamos representar:
+
+```text
+Creada
+   ↓
+Sin asignar
+   ↓
+Asignada
+   ↓
+En ejecución
+   ↓
+En espera
+   ↓
+En ejecución
+   ↓
+Completada
+```
+
+Podríamos utilizar:
+
+```csharp
+public enum WorkOrderStatus
+{
+    Pending = 1,
+    Assigned = 2,
+    InProgress = 3,
+    Waiting = 4,
+    Completed = 5,
+    Cancelled = 6
+}
+```
+
+Pero aquí hay una decisión de negocio que quiero que hagamos correctamente antes de seguir.
+
+**`Waiting` no significa que el técnico esté libre de la OT.**
+
+Por ejemplo:
+
+```text
+OT-001 → Waiting
+       → Técnico Carlos
+
+OT-002 → InProgress
+       → Técnico Carlos
+```
+
+Esto puede ser perfectamente válido si Carlos está esperando una autorización o repuesto de OT-001 mientras trabaja en OT-002.
+
+---
+
+# 9. Y aquí aparece nuestra arquitectura definitiva
+
+Estamos empezando a llegar a un modelo mucho más interesante:
+
+```text
+                    WorkOrder
+                        │
+          ┌─────────────┼─────────────┐
+          │             │             │
+          ▼             ▼             ▼
+   Assignments     Activities      Status
+          │             │
+          │             ▼
+          │       ActivityAnswer
+          │
+          ▼
+     Technician
+```
+
+Y por otro lado:
+
+```text
+Technician
+    │
+    └── WorkSessions
+           │
+           ├── OT-001
+           │
+           └── OT-002
+```
+
+Esto permite perfectamente el escenario que planteaste:
+
+```text
+08:00  Carlos → OT-001
+09:00  OT-001 → Waiting
+09:00  Carlos → OT-002
+10:30  OT-002 → Waiting
+10:30  Carlos → OT-001
+12:00  OT-001 → Completed
+```
+
+Y además:
+
+```text
+OT-001
+Assignments:
+    Carlos → 08:00-12:00
+
+Work:
+    Carlos → 08:00-09:00
+    Carlos → 10:30-12:00
+```
+
+Mientras que OT-002:
+
+```text
+Assignments:
+    Carlos → 09:00-10:30
+
+Work:
+    Carlos → 09:00-10:30
+```
+
+Eso nos da **trazabilidad real del trabajo**, no solamente el estado actual.
+
+---
+
+## El siguiente paso
+
+Antes de tocar `ValueObjects`, yo haría ahora **Paso 3.2: `WorkSession`**, porque es la pieza que nos permitirá resolver correctamente:
+
+* cambiar entre OT-001 y OT-002;
+* pausar una OT;
+* reanudarla;
+* contabilizar tiempo efectivo;
+* registrar tiempos de espera;
+* evitar que un técnico esté físicamente trabajando en dos OT simultáneamente;
+* y posteriormente sincronizar todo esto desde la aplicación Kotlin offline-first.
+
+Después de eso podremos volver a `WorkOrderActivity` y diseñar correctamente **Before / During / After + actividades repetibles + respuestas R/S/T**.
+
+> puedes pasarme el codigo completo de WorkOrder.cs
+
+Claro. Para que tengas una base consistente con lo que acabamos de diseñar, este sería el `WorkOrder.cs` **completo** hasta este punto, incluyendo creación, estados, asignación, desasignación y reasignación de técnicos.
+
+```csharp
+using HVAC.Domain.Enums;
+
+namespace HVAC.Domain.Entities;
+
+public sealed class WorkOrder
+{
+    private readonly List<WorkOrderAssignment> _assignments = [];
+
+    private WorkOrder()
+    {
+    }
+
+    private WorkOrder(
+        Guid id,
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        Id = id;
+        Number = number;
+        CustomerId = customerId;
+        EquipmentId = equipmentId;
+        Status = WorkOrderStatus.Pending;
+    }
+
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; } = null!;
+
+    public Guid CustomerId { get; private set; }
+
+    public Guid EquipmentId { get; private set; }
+
+    public WorkOrderStatus Status { get; private set; }
+
+    public IReadOnlyCollection<WorkOrderAssignment> Assignments =>
+        _assignments.AsReadOnly();
+
+    public Guid? CurrentTechnicianId =>
+        _assignments
+            .SingleOrDefault(x => x.IsActive)
+            ?.TechnicianId;
+
+    public static WorkOrder Create(
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        if (string.IsNullOrWhiteSpace(number))
+            throw new ArgumentException(
+                "El número de la orden es obligatorio.",
+                nameof(number));
+
+        if (customerId == Guid.Empty)
+            throw new ArgumentException(
+                "El cliente es obligatorio.",
+                nameof(customerId));
+
+        if (equipmentId == Guid.Empty)
+            throw new ArgumentException(
+                "El equipo es obligatorio.",
+                nameof(equipmentId));
+
+        return new WorkOrder(
+            Guid.NewGuid(),
+            number,
+            customerId,
+            equipmentId);
+    }
+
+    public void AssignTechnician(
+        Guid technicianId,
+        DateTimeOffset assignedAt)
+    {
+        EnsureOrderCanBeAssigned();
+
+        var currentAssignment = _assignments
+            .SingleOrDefault(x => x.IsActive);
+
+        if (currentAssignment is not null)
+            throw new InvalidOperationException(
+                "La orden ya tiene un técnico asignado.");
+
+        var assignment = WorkOrderAssignment.Create(
+            technicianId,
+            assignedAt);
+
+        _assignments.Add(assignment);
+
+        Status = WorkOrderStatus.Assigned;
+    }
+
+    public void UnassignTechnician(
+        DateTimeOffset unassignedAt,
+        AssignmentEndReason reason)
+    {
+        var currentAssignment = _assignments
+            .SingleOrDefault(x => x.IsActive);
+
+        if (currentAssignment is null)
+            throw new InvalidOperationException(
+                "La orden no tiene un técnico actualmente asignado.");
+
+        currentAssignment.End(
+            unassignedAt,
+            reason);
+
+        if (Status == WorkOrderStatus.Assigned)
+        {
+            Status = WorkOrderStatus.Pending;
+        }
+    }
+
+    public void ReassignTechnician(
+        Guid newTechnicianId,
+        DateTimeOffset changedAt)
+    {
+        EnsureOrderCanBeAssigned();
+
+        var currentAssignment = _assignments
+            .SingleOrDefault(x => x.IsActive);
+
+        if (currentAssignment is null)
+            throw new InvalidOperationException(
+                "La orden no tiene un técnico actualmente asignado.");
+
+        if (currentAssignment.TechnicianId == newTechnicianId)
+            throw new InvalidOperationException(
+                "El nuevo técnico es el mismo técnico actual.");
+
+        currentAssignment.End(
+            changedAt,
+            AssignmentEndReason.Reassigned);
+
+        var newAssignment = WorkOrderAssignment.Create(
+            newTechnicianId,
+            changedAt);
+
+        _assignments.Add(newAssignment);
+
+        Status = WorkOrderStatus.Assigned;
+    }
+
+    public void Start()
+    {
+        if (Status != WorkOrderStatus.Assigned)
+            throw new InvalidOperationException(
+                "Solo una orden asignada puede iniciar.");
+
+        if (CurrentTechnicianId is null)
+            throw new InvalidOperationException(
+                "La orden debe tener un técnico asignado.");
+
+        Status = WorkOrderStatus.InProgress;
+    }
+
+    public void SetWaiting()
+    {
+        if (Status != WorkOrderStatus.InProgress)
+            throw new InvalidOperationException(
+                "Solo una orden en ejecución puede pasar a espera.");
+
+        Status = WorkOrderStatus.Waiting;
+    }
+
+    public void Resume()
+    {
+        if (Status != WorkOrderStatus.Waiting)
+            throw new InvalidOperationException(
+                "Solo una orden en espera puede reanudarse.");
+
+        if (CurrentTechnicianId is null)
+            throw new InvalidOperationException(
+                "La orden debe tener un técnico asignado.");
+
+        Status = WorkOrderStatus.InProgress;
+    }
+
+    public void Complete()
+    {
+        if (Status != WorkOrderStatus.InProgress)
+            throw new InvalidOperationException(
+                "Solo una orden en ejecución puede completarse.");
+
+        Status = WorkOrderStatus.Completed;
+    }
+
+    public void Cancel()
+    {
+        if (Status == WorkOrderStatus.Completed)
+            throw new InvalidOperationException(
+                "Una orden completada no puede cancelarse.");
+
+        if (Status == WorkOrderStatus.Cancelled)
+            throw new InvalidOperationException(
+                "La orden ya está cancelada.");
+
+        Status = WorkOrderStatus.Cancelled;
+    }
+
+    private void EnsureOrderCanBeAssigned()
+    {
+        if (Status == WorkOrderStatus.Completed)
+            throw new InvalidOperationException(
+                "No se puede asignar un técnico a una orden completada.");
+
+        if (Status == WorkOrderStatus.Cancelled)
+            throw new InvalidOperationException(
+                "No se puede asignar un técnico a una orden cancelada.");
+    }
+}
+```
+
+### Y los enums que utiliza
+
+`WorkOrderStatus.cs`:
+
+```csharp
+namespace HVAC.Domain.Enums;
+
+public enum WorkOrderStatus
+{
+    Pending = 1,
+    Assigned = 2,
+    InProgress = 3,
+    Waiting = 4,
+    Completed = 5,
+    Cancelled = 6
+}
+```
+
+`AssignmentEndReason.cs`:
+
+```csharp
+namespace HVAC.Domain.Enums;
+
+public enum AssignmentEndReason
+{
+    Reassigned = 1,
+    TechnicianUnavailable = 2,
+    TechnicianChanged = 3,
+    WorkOrderCancelled = 4,
+    Other = 99
+}
+```
+
+Y `WorkOrderAssignment.cs` sería la clase que vimos anteriormente.
+
+### Una observación importante
+
+Hay una pequeña decisión de diseño que **todavía no considero definitiva**:
+
+```csharp
+public Guid? CurrentTechnicianId =>
+    _assignments
+        .SingleOrDefault(x => x.IsActive)
+        ?.TechnicianId;
+```
+
+La puse porque resulta muy cómoda para el dominio y para consultas sencillas. Pero cuando construyamos **EF Core + persistencia**, vamos a revisar si conviene mantenerla como propiedad calculada o resolver el técnico actual mediante consulta.
+
+También vamos a revisar `UnassignTechnician()`: si una OT está `InProgress` y quitamos al técnico, probablemente **no debería volver automáticamente a `Pending`**. En ese caso puede ser más correcto pasarla a un estado como `Waiting` o `PendingAssignment`. Esa regla depende del flujo operativo que definamos para ACSoft.
+
+Por eso **no pasaría todavía a EF Core**. Primero terminemos `WorkSession`, que nos permitirá definir correctamente qué sucede con el tiempo cuando una OT cambia de técnico o queda en espera.
+
+Manejemos **workSession** [Manejando las sessiones](/blog/webapi-3-4-csharp)
