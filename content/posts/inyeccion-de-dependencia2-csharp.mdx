@@ -1,0 +1,868 @@
+---
+title: "Inyeccion de Dependencia 2"
+date: "2026-09-25"
+description: "Inyeccion de Dependencia 2 con Clean Arquitecture AcSoft"
+slug: "inyeccion-de-dependencia2-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft", "webapi"]
+published: true
+featured: true
+---
+
+Sí. Solo ajustaría el plan: como decidiste **no usar librerías externas por ahora**, vamos a construir exactamente la misma estructura **sin MediatR ni FluentValidation**. Primero dominamos DI nativo de .NET 10; después podemos incorporar esas librerías si realmente las necesitas.
+
+Vamos a hacerlo sobre tu proyecto **ACSoft**, no sobre un proyecto genérico.
+
+## 1. Estructura final que construiremos
+
+```text
+ACSoft.sln
+│
+├── ACSoft.Domain
+│   ├── Entities
+│   │   └── WorkOrder.cs
+│   ├── Enums
+│   │   └── WorkOrderStatus.cs
+│   ├── ValueObjects
+│   ├── Exceptions
+│   └── Events
+│
+├── ACSoft.Application
+│   ├── Features
+│   │   └── WorkOrders
+│   │       ├── Commands
+│   │       └── DTOs
+│   │
+│   ├── Interfaces
+│   │   └── Persistence
+│   │       └── IWorkOrderRepository.cs
+│   │
+│   └── DependencyInjection.cs
+│
+├── ACSoft.Infrastructure
+│   ├── Persistence
+│   │   ├── AcSoftDbContext.cs
+│   │   ├── Configurations
+│   │   └── Repositories
+│   │       └── WorkOrderRepository.cs
+│   │
+│   └── DependencyInjection.cs
+│
+└── ACSoft.Api
+    ├── Controllers
+    │   └── WorkOrdersController.cs
+    └── Program.cs
+```
+
+---
+
+# 2. Primero: las referencias entre proyectos
+
+Esta parte es fundamental.
+
+### `ACSoft.Domain`
+
+No referencia ningún proyecto:
+
+```text
+ACSoft.Domain
+    ↓
+   nada
+```
+
+### `ACSoft.Application`
+
+Referencia:
+
+```text
+ACSoft.Application
+       │
+       ▼
+ACSoft.Domain
+```
+
+### `ACSoft.Infrastructure`
+
+Referencia:
+
+```text
+ACSoft.Infrastructure
+       │
+       ├────► ACSoft.Application
+       │
+       └────► ACSoft.Domain
+```
+
+### `ACSoft.Api`
+
+Referencia:
+
+```text
+ACSoft.Api
+    │
+    ├────► ACSoft.Application
+    │
+    └────► ACSoft.Infrastructure
+```
+
+Por tanto:
+
+```text
+                 ACSoft.Api
+                /          \
+               ▼            ▼
+     ACSoft.Application   ACSoft.Infrastructure
+              │             │
+              │             │
+              ▼             ▼
+         ACSoft.Domain ◄────┘
+```
+
+Esto es importante: **API necesita Infrastructure porque API es el Composition Root**, es decir, el lugar donde conectamos las implementaciones.
+
+---
+
+# 3. Domain
+
+Empecemos por `WorkOrder`.
+
+Por ejemplo:
+
+```csharp
+namespace ACSoft.Domain.Entities;
+
+public sealed class WorkOrder
+{
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; }
+
+    public Guid CustomerId { get; private set; }
+
+    public Guid EquipmentId { get; private set; }
+
+    public WorkOrderStatus Status { get; private set; }
+
+    private WorkOrder()
+    {
+        // EF Core
+    }
+
+    private WorkOrder(
+        Guid id,
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        Id = id;
+        Number = number;
+        CustomerId = customerId;
+        EquipmentId = equipmentId;
+        Status = WorkOrderStatus.Pending;
+    }
+
+    public static WorkOrder Create(
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        return new WorkOrder(
+            Guid.NewGuid(),
+            number,
+            customerId,
+            equipmentId);
+    }
+}
+```
+
+Y:
+
+```csharp
+namespace ACSoft.Domain.Enums;
+
+public enum WorkOrderStatus
+{
+    Pending,
+    Assigned,
+    InProgress,
+    Waiting,
+    Completed,
+    Cancelled
+}
+```
+
+Observa que Domain **no sabe absolutamente nada de DI**.
+
+No tenemos:
+
+```csharp
+IServiceCollection
+DbContext
+ILogger
+IConfiguration
+```
+
+Eso es exactamente lo que queremos.
+
+---
+
+# 4. Application: la abstracción
+
+Creamos:
+
+```text
+ACSoft.Application
+└── Interfaces
+    └── Persistence
+        └── IWorkOrderRepository.cs
+```
+
+```csharp
+using ACSoft.Domain.Entities;
+
+namespace ACSoft.Application.Interfaces.Persistence;
+
+public interface IWorkOrderRepository
+{
+    Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken);
+
+    Task AddAsync(
+        WorkOrder workOrder,
+        CancellationToken cancellationToken);
+}
+```
+
+Application dice:
+
+> Necesito una forma de obtener y guardar órdenes.
+
+Pero **no dice cómo**.
+
+---
+
+# 5. Application: nuestro servicio
+
+Como todavía no utilizaremos MediatR, podemos usar un servicio directamente.
+
+```text
+ACSoft.Application
+└── Features
+    └── WorkOrders
+        └── WorkOrderService.cs
+```
+
+```csharp
+using ACSoft.Application.Interfaces.Persistence;
+using ACSoft.Domain.Entities;
+
+namespace ACSoft.Application.Features.WorkOrders;
+
+public sealed class WorkOrderService
+{
+    private readonly IWorkOrderRepository _repository;
+
+    public WorkOrderService(
+        IWorkOrderRepository repository)
+    {
+        _repository = repository;
+    }
+
+    public async Task<Guid> CreateAsync(
+        Guid customerId,
+        Guid equipmentId,
+        CancellationToken cancellationToken)
+    {
+        var number =
+            $"OT-{DateTime.UtcNow:yyyyMMddHHmmss}";
+
+        var workOrder = WorkOrder.Create(
+            number,
+            customerId,
+            equipmentId);
+
+        await _repository.AddAsync(
+            workOrder,
+            cancellationToken);
+
+        return workOrder.Id;
+    }
+}
+```
+
+Aquí ya tenemos DI:
+
+```text
+WorkOrderService
+       │
+       ▼
+IWorkOrderRepository
+```
+
+El servicio **no crea**:
+
+```csharp
+new WorkOrderRepository()
+```
+
+---
+
+# 6. Application `DependencyInjection.cs`
+
+Ahora registramos nuestros servicios de Application.
+
+```csharp
+using ACSoft.Application.Features.WorkOrders;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace ACSoft.Application;
+
+public static class DependencyInjection
+{
+    public static IServiceCollection AddApplication(
+        this IServiceCollection services)
+    {
+        services.AddScoped<WorkOrderService>();
+
+        return services;
+    }
+}
+```
+
+Ahora podemos hacer:
+
+```csharp
+builder.Services.AddApplication();
+```
+
+desde API.
+
+---
+
+# 7. Infrastructure: DbContext
+
+Ahora sí entramos en Infrastructure.
+
+```text
+ACSoft.Infrastructure
+└── Persistence
+    └── AcSoftDbContext.cs
+```
+
+```csharp
+using ACSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace ACSoft.Infrastructure.Persistence;
+
+public sealed class AcSoftDbContext : DbContext
+{
+    public AcSoftDbContext(
+        DbContextOptions<AcSoftDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<WorkOrder> WorkOrders =>
+        Set<WorkOrder>();
+}
+```
+
+Aquí EF Core conoce las entidades de Domain.
+
+Eso está bien:
+
+```text
+Infrastructure
+      │
+      ▼
+Domain
+```
+
+---
+
+# 8. Infrastructure: repositorio
+
+```text
+ACSoft.Infrastructure
+└── Persistence
+    └── Repositories
+        └── WorkOrderRepository.cs
+```
+
+```csharp
+using ACSoft.Application.Interfaces.Persistence;
+using ACSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace ACSoft.Infrastructure.Persistence.Repositories;
+
+public sealed class WorkOrderRepository
+    : IWorkOrderRepository
+{
+    private readonly AcSoftDbContext _context;
+
+    public WorkOrderRepository(
+        AcSoftDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        return await _context.WorkOrders
+            .FirstOrDefaultAsync(
+                x => x.Id == id,
+                cancellationToken);
+    }
+
+    public async Task AddAsync(
+        WorkOrder workOrder,
+        CancellationToken cancellationToken)
+    {
+        await _context.WorkOrders.AddAsync(
+            workOrder,
+            cancellationToken);
+    }
+}
+```
+
+Fíjate en la dependencia:
+
+```text
+WorkOrderRepository
+        │
+        ├──► AcSoftDbContext
+        │
+        └──► IWorkOrderRepository
+```
+
+---
+
+# 9. Infrastructure `DependencyInjection.cs`
+
+Aquí ocurre la magia de DI.
+
+```csharp
+using ACSoft.Application.Interfaces.Persistence;
+using ACSoft.Infrastructure.Persistence;
+using ACSoft.Infrastructure.Persistence.Repositories;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace ACSoft.Infrastructure;
+
+public static class DependencyInjection
+{
+    public static IServiceCollection AddInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddDbContext<AcSoftDbContext>(options =>
+        {
+            var connectionString =
+                configuration.GetConnectionString(
+                    "DefaultConnection");
+
+            options.UseNpgsql(connectionString);
+        });
+
+        services.AddScoped<
+            IWorkOrderRepository,
+            WorkOrderRepository>();
+
+        return services;
+    }
+}
+```
+
+La línea clave:
+
+```csharp
+services.AddScoped<
+    IWorkOrderRepository,
+    WorkOrderRepository>();
+```
+
+significa:
+
+> Si alguna clase solicita `IWorkOrderRepository`, .NET debe proporcionar `WorkOrderRepository`.
+
+---
+
+# 10. ¿Qué pasa con `AcSoftDbContext`?
+
+Esta línea:
+
+```csharp
+services.AddDbContext<AcSoftDbContext>(options =>
+{
+    options.UseNpgsql(connectionString);
+});
+```
+
+le dice a DI:
+
+> Cuando alguien necesite `AcSoftDbContext`, crea uno configurado para PostgreSQL.
+
+Por eso nuestro repositorio puede hacer:
+
+```csharp
+public WorkOrderRepository(
+    AcSoftDbContext context)
+{
+    _context = context;
+}
+```
+
+Sin hacer:
+
+```csharp
+new AcSoftDbContext(...)
+```
+
+---
+
+# 11. API: `Program.cs`
+
+Ahora ensamblamos todo.
+
+```csharp
+using ACSoft.Application;
+using ACSoft.Infrastructure;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddApplication();
+
+builder.Services.AddInfrastructure(
+    builder.Configuration);
+
+builder.Services.AddControllers();
+
+var app = builder.Build();
+
+app.MapControllers();
+
+app.Run();
+```
+
+Este archivo es el **Composition Root**.
+
+Aquí no implementamos repositorios.
+
+Aquí solamente decimos:
+
+```text
+Application → registra sus servicios
+
+Infrastructure → registra sus implementaciones
+
+API → los conecta
+```
+
+---
+
+# 12. Nuestro Controller
+
+Ahora el Controller puede recibir directamente:
+
+```csharp
+using ACSoft.Application.Features.WorkOrders;
+using Microsoft.AspNetCore.Mvc;
+
+namespace ACSoft.Api.Controllers;
+
+[ApiController]
+[Route("api/work-orders")]
+public sealed class WorkOrdersController : ControllerBase
+{
+    private readonly WorkOrderService _service;
+
+    public WorkOrdersController(
+        WorkOrderService service)
+    {
+        _service = service;
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> Create(
+        Guid customerId,
+        Guid equipmentId,
+        CancellationToken cancellationToken)
+    {
+        var id = await _service.CreateAsync(
+            customerId,
+            equipmentId,
+            cancellationToken);
+
+        return CreatedAtAction(
+            nameof(GetById),
+            new { id },
+            new { id });
+    }
+
+    [HttpGet("{id:guid}")]
+    public async Task<IActionResult> GetById(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        return Ok();
+    }
+}
+```
+
+---
+
+# 13. Ahora observa la cadena completa
+
+Cuando llega:
+
+```http
+POST /api/work-orders
+```
+
+ASP.NET necesita crear:
+
+```text
+WorkOrdersController
+```
+
+Pero necesita:
+
+```text
+WorkOrderService
+```
+
+DI busca:
+
+```csharp
+services.AddScoped<WorkOrderService>();
+```
+
+Entonces crea `WorkOrderService`.
+
+Pero este necesita:
+
+```text
+IWorkOrderRepository
+```
+
+DI busca:
+
+```csharp
+services.AddScoped<
+    IWorkOrderRepository,
+    WorkOrderRepository>();
+```
+
+Entonces crea:
+
+```text
+WorkOrderRepository
+```
+
+Pero este necesita:
+
+```text
+AcSoftDbContext
+```
+
+DI busca:
+
+```csharp
+services.AddDbContext<AcSoftDbContext>();
+```
+
+Y crea el contexto.
+
+Por tanto:
+
+```text
+HTTP Request
+     │
+     ▼
+WorkOrdersController
+     │
+     ▼
+WorkOrderService
+     │
+     ▼
+IWorkOrderRepository
+     │
+     ▼
+WorkOrderRepository
+     │
+     ▼
+AcSoftDbContext
+     │
+     ▼
+PostgreSQL
+```
+
+Todo esto ocurre **sin que tú escribas `new` para ninguna de esas dependencias**.
+
+---
+
+# 14. ¿Y dónde entra DDD?
+
+Aquí tenemos una separación importante.
+
+### Domain
+
+```text
+WorkOrder
+```
+
+contiene reglas propias de la orden.
+
+### Application
+
+```text
+WorkOrderService
+```
+
+coordina el caso de uso.
+
+### Infrastructure
+
+```text
+WorkOrderRepository
+AcSoftDbContext
+```
+
+se encargan de persistencia.
+
+### API
+
+```text
+WorkOrdersController
+```
+
+se encarga de HTTP.
+
+Y DI conecta todo.
+
+---
+
+# 15. ¿Qué NO vamos a hacer todavía?
+
+Por decisión tuya, **no vamos a introducir todavía**:
+
+```text
+❌ MediatR
+❌ FluentValidation
+❌ AutoMapper
+❌ CQRS mediante librerías
+❌ otras librerías externas
+```
+
+Esto es incluso útil pedagógicamente porque primero podemos entender qué hace realmente .NET.
+
+Por ejemplo, cuando más adelante veamos MediatR, podrás entender que:
+
+```text
+Controller
+    ↓
+MediatR
+    ↓
+Handler
+    ↓
+Repository
+```
+
+no es magia: es otra forma de organizar el flujo de aplicación.
+
+---
+
+# 16. Una aclaración sobre FluentValidation
+
+Cuando decidamos incorporar validación externa, podremos comparar:
+
+### Sin librería
+
+```csharp
+if (request.CustomerId == Guid.Empty)
+{
+    ...
+}
+```
+
+contra:
+
+### FluentValidation
+
+```text
+CreateWorkOrderRequest
+        ↓
+Validator
+        ↓
+ValidationResult
+```
+
+Pero **no necesitamos FluentValidation para aprender DI**.
+
+---
+
+# 17. El concepto más importante de hoy
+
+Quiero que separes mentalmente estas tres cosas:
+
+### 1. Dependency Injection
+
+```text
+"Te entrego la dependencia que necesitas."
+```
+
+### 2. Dependency Inversion
+
+```text
+"Dependo de una abstracción,
+no de una implementación concreta."
+```
+
+### 3. Composition Root
+
+```text
+"Aquí conecto las abstracciones
+con sus implementaciones."
+```
+
+En nuestro proyecto:
+
+```text
+                    Composition Root
+                           │
+                      Program.cs
+                           │
+          ┌────────────────┴────────────────┐
+          ▼                                 ▼
+     Application                      Infrastructure
+          │                                 │
+          │                                 │
+          ▼                                 ▼
+IWorkOrderRepository  ◄────────── WorkOrderRepository
+```
+
+Ese diagrama resume gran parte de lo que acabamos de construir.
+
+---
+
+## Siguiente paso: hacerlo realmente profesional
+
+Ahora que ya tenemos DI básico, el siguiente paso que te recomiendo **antes de agregar MediatR o FluentValidation** es mejorar nuestro ejemplo de ACSoft para introducir:
+
+1. `IUnitOfWork`
+2. `WorkOrderRepository`
+3. `AcSoftDbContext`
+4. transacciones
+5. `SaveChangesAsync`
+6. `CancellationToken`
+7. lifetimes `Scoped / Transient / Singleton`
+8. y finalmente ver **qué ocurre cuando una dependencia no está registrada**, incluyendo el error real de DI.
+
+Esto nos permitirá entender DI a fondo antes de pasar a patrones adicionales.
