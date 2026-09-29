@@ -1,0 +1,561 @@
+---
+title: "Crear webapi Parte 4-1 ValueObjects "
+date: "2026-09-29"
+description: "Crear WebApi parte 4-1 ValueObjets"
+slug: "webapi-4-1-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. Empecemos con **Value Objects en DDD usando C# 14**, pero aplicándolo directamente a ACSoft.
+
+## 1. ¿Qué es realmente un Value Object?
+
+En DDD, un Value Object representa **un concepto del dominio cuyo significado depende de sus valores y no de una identidad propia**.
+
+Por ejemplo:
+
+```text
+Voltage = 220 V
+```
+
+No nos importa que ese objeto tenga un `Guid`. Nos importa que represente **220 voltios**.
+
+Dos objetos:
+
+```csharp
+Voltage(220)
+Voltage(220)
+```
+
+representan el mismo valor conceptual.
+
+En cambio:
+
+```text
+WorkOrder
+Customer
+Equipment
+Technician
+```
+
+sí tienen identidad propia.
+
+---
+
+# 2. ¿Por qué no usar simplemente `decimal`?
+
+Podríamos hacer:
+
+```csharp
+public decimal Voltage { get; private set; }
+```
+
+Pero entonces el dominio no expresa claramente qué significa ese número.
+
+Además, podríamos hacer accidentalmente:
+
+```csharp
+equipment.Voltage = -500;
+```
+
+o mezclar valores:
+
+```csharp
+decimal voltage = 220;
+decimal current = 15;
+```
+
+El compilador no nos protege de intercambiarlos.
+
+Con un Value Object:
+
+```csharp
+Voltage voltage = Voltage.Create(220);
+Current current = Current.Create(15);
+```
+
+el código empieza a hablar el lenguaje del negocio.
+
+---
+
+# 3. Nuestro primer Value Object: `Voltage`
+
+Creemos:
+
+```text
+AcSoft.Domain
+ └── ValueObjects
+      └── Voltage.cs
+```
+
+Yo utilizaría un `sealed record`:
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record Voltage
+{
+    public decimal Value { get; }
+
+    private Voltage(decimal value)
+    {
+        Value = value;
+    }
+
+    public static Voltage Create(decimal value)
+    {
+        if (value < 0)
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                "El voltaje no puede ser negativo.");
+
+        return new Voltage(value);
+    }
+}
+```
+
+Ya tenemos varias características importantes.
+
+---
+
+# 4. ¿Por qué `record`?
+
+Porque un Value Object normalmente necesita **igualdad por valor**.
+
+Por ejemplo:
+
+```csharp
+var voltage1 = Voltage.Create(220);
+var voltage2 = Voltage.Create(220);
+```
+
+Con un `record`, conceptualmente:
+
+```csharp
+voltage1 == voltage2
+```
+
+es `true`.
+
+Porque ambos representan:
+
+```text
+220 V
+```
+
+No porque sean la misma instancia en memoria.
+
+Esto es precisamente lo que queremos en un Value Object.
+
+---
+
+# 5. ¿Por qué `sealed`?
+
+Tenemos:
+
+```csharp
+public sealed record Voltage
+```
+
+porque no queremos que alguien cree:
+
+```csharp
+public class SpecialVoltage : Voltage
+{
+}
+```
+
+y empiece a alterar las reglas del concepto.
+
+Un Value Object representa un concepto específico del dominio.
+
+En nuestro caso:
+
+```text
+Voltage
+```
+
+debe tener reglas claras y controladas.
+
+---
+
+# 6. ¿Por qué el constructor es `private`?
+
+Tenemos:
+
+```csharp
+private Voltage(decimal value)
+{
+    Value = value;
+}
+```
+
+Por lo tanto esto **no está permitido**:
+
+```csharp
+var voltage = new Voltage(220);
+```
+
+La única manera de crearlo es:
+
+```csharp
+var voltage = Voltage.Create(220);
+```
+
+Esto es importante porque nos obliga a pasar por las reglas del dominio.
+
+Por ejemplo:
+
+```csharp
+Voltage.Create(-220);
+```
+
+provocará una excepción.
+
+El objeto **nunca debería existir en un estado inválido**.
+
+---
+
+# 7. ¿Por qué `Value` no tiene `set`?
+
+Tenemos:
+
+```csharp
+public decimal Value { get; }
+```
+
+y no:
+
+```csharp
+public decimal Value { get; set; }
+```
+
+Esto hace que el Value Object sea **inmutable**.
+
+Una vez creado:
+
+```csharp
+var voltage = Voltage.Create(220);
+```
+
+no podemos hacer:
+
+```csharp
+voltage.Value = 230;
+```
+
+Si queremos otro valor:
+
+```csharp
+var newVoltage = Voltage.Create(230);
+```
+
+Esto es muy importante en DDD.
+
+---
+
+# 8. Pero tenemos un problema
+
+Nuestro código actual:
+
+```csharp
+Voltage.Create(220);
+```
+
+no deja claro que estamos hablando de:
+
+```text
+220 V
+```
+
+Aunque nosotros sabemos que `Voltage` significa voltaje, posteriormente vamos a necesitar unidades para otros conceptos:
+
+```text
+Current       → A
+Pressure      → PSI
+Temperature   → °C
+Capacitance   → µF
+Mass          → g
+```
+
+Por eso **no recomiendo crear todavía un `Unit` genérico**.
+
+Es mejor que cada Value Object represente su propio concepto.
+
+Por ejemplo:
+
+```csharp
+Voltage
+Current
+Pressure
+Temperature
+Capacitance
+```
+
+Así evitamos crear una abstracción genérica innecesaria como:
+
+```csharp
+Measurement<TUnit>
+```
+
+demasiado pronto.
+
+---
+
+# 9. Agreguemos una regla real de ACSoft
+
+Supongamos que para determinadas mediciones de nuestro sistema queremos impedir voltajes absurdos.
+
+Podríamos tener:
+
+```csharp
+public static Voltage Create(decimal value)
+{
+    if (value < 0)
+        throw new ArgumentOutOfRangeException(
+            nameof(value),
+            "El voltaje no puede ser negativo.");
+
+    if (value > 1000)
+        throw new ArgumentOutOfRangeException(
+            nameof(value),
+            "El voltaje supera el límite permitido.");
+
+    return new Voltage(value);
+}
+```
+
+Pero aquí aparece una cuestión **muy importante de diseño**:
+
+### ¿Debe `Voltage` conocer los límites de cada equipo?
+
+Por ejemplo:
+
+```text
+Minisplit → 220 V ±10 %
+Equipo A  → 208 V ±10 %
+Equipo B  → 460 V ±10 %
+```
+
+**No.**
+
+`Voltage` debe representar:
+
+> "Un valor de voltaje válido."
+
+No debería saber:
+
+> "Este equipo espera 198–242 V."
+
+Eso pertenece a la configuración/parámetro del equipo o de la actividad.
+
+Por eso nuestro Value Object puede quedarse con reglas intrínsecas:
+
+```text
+Voltage
+ └── valor válido
+```
+
+Mientras que otro concepto se encargará de:
+
+```text
+VoltageRange
+ ├── Minimum
+ └── Maximum
+```
+
+---
+
+# 10. Entonces nuestro diseño empieza a quedar así
+
+```text
+Domain
+│
+├── Entities
+│   ├── WorkOrder
+│   ├── WorkOrderAssignment
+│   ├── WorkSession
+│   └── ...
+│
+├── Enums
+│   ├── WorkOrderStatus
+│   ├── WorkSessionType
+│   └── ...
+│
+└── ValueObjects
+    └── Voltage
+```
+
+Y posteriormente:
+
+```text
+ValueObjects
+├── Voltage
+├── Current
+├── Pressure
+├── Temperature
+├── Capacitance
+├── Percentage
+├── MeasurementRange
+└── ...
+```
+
+---
+
+# 11. Una mejora importante: no usar excepciones genéricas indiscriminadamente
+
+Más adelante, cuando avancemos con el diseño de errores de dominio, podemos utilizar una excepción propia, por ejemplo:
+
+```csharp
+DomainException
+```
+
+en lugar de llenar el dominio de:
+
+```csharp
+ArgumentException
+InvalidOperationException
+ArgumentOutOfRangeException
+```
+
+Pero **no lo cambiaría todavía**.
+
+Primero quiero que entiendas el concepto fundamental del Value Object.
+
+---
+
+# 12. Nuestro primer Value Object completo
+
+Por ahora:
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record Voltage
+{
+    public decimal Value { get; }
+
+    private Voltage(decimal value)
+    {
+        Value = value;
+    }
+
+    public static Voltage Create(decimal value)
+    {
+        if (value < 0)
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                "El voltaje no puede ser negativo.");
+
+        return new Voltage(value);
+    }
+}
+```
+
+Uso:
+
+```csharp
+var voltage = Voltage.Create(220);
+
+Console.WriteLine(voltage.Value);
+```
+
+Resultado:
+
+```text
+220
+```
+
+Y:
+
+```csharp
+var voltage1 = Voltage.Create(220);
+var voltage2 = Voltage.Create(220);
+
+Console.WriteLine(voltage1 == voltage2);
+```
+
+Resultado:
+
+```text
+True
+```
+
+---
+
+## 13. ¿Qué hemos conseguido?
+
+Antes:
+
+```csharp
+decimal voltage = 220;
+```
+
+Ahora:
+
+```csharp
+Voltage voltage = Voltage.Create(220);
+```
+
+La segunda versión comunica mucho mejor el dominio.
+
+Y además:
+
+```text
+                 decimal
+                    ↓
+             cualquier número
+                    ↓
+          -------------------
+          |                 |
+       válido            inválido
+```
+
+mientras que:
+
+```text
+                Voltage
+                   ↓
+             Create(220)
+                   ↓
+        ┌──────────────────┐
+        │ reglas de dominio│
+        └──────────────────┘
+                   ↓
+          Voltage válido
+```
+
+Ese es uno de los grandes beneficios de los Value Objects.
+
+---
+
+### Siguiente paso
+
+Ahora haría algo **muy importante antes de crear `Current`, `Pressure`, etc.**:
+
+👉 **diseñar `MeasurementRange`**, porque ahí podemos modelar directamente uno de tus requisitos reales:
+
+```text
+Voltaje nominal: 220 V
+Tolerancia: ±10 %
+
+Rango permitido:
+198 V ───────────── 242 V
+```
+
+y luego podremos hacer:
+
+```csharp
+var voltage = Voltage.Create(230);
+
+var range = MeasurementRange.Create(
+    minimum: 198,
+    maximum: 242);
+
+bool valid = range.Contains(voltage.Value);
+```
+
+Esto nos permitirá posteriormente conectar **Value Objects + parámetros específicos del equipo + ActivityAnswer**, que es exactamente donde ACSoft empieza a adquirir un modelo de dominio bastante potente.

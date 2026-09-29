@@ -1,0 +1,1055 @@
+---
+title: "Cuando cambiar Herencia por Composicion"
+date: "2026-09-28"
+description: "Cuando es recomendable Cambiar Herencia por Composicion "
+slug: "cambiar-herencia-por-composicion-csharp"
+category: "clean Arquitecture"
+tags: ["postgresql", "sql", "backend"]
+published: true
+featured: false
+---
+
+
+Sí. En **.NET 10 / C# 14**, especialmente si estás trabajando con **DDD + Clean Architecture**, hay muchos casos donde **la herencia parece conveniente al principio, pero termina haciendo el diseño más rígido**.
+
+La idea clave es:
+
+> **No uses herencia simplemente porque dos clases comparten propiedades o código. Usa herencia cuando realmente existe una relación "es-un" estable y polimórfica.**
+
+Para reutilizar comportamiento, muchas veces es mejor **composición**.
+
+---
+
+# 1. Un ejemplo donde la herencia parece buena
+
+Supongamos que en ACSoft tenemos diferentes tipos de equipos:
+
+```csharp
+public abstract class Equipment
+{
+    public Guid Id { get; protected set; }
+    public string SerialNumber { get; protected set; } = string.Empty;
+
+    public abstract void PerformMaintenance();
+}
+```
+
+Y después:
+
+```csharp
+public sealed class MiniSplit : Equipment
+{
+    public override void PerformMaintenance()
+    {
+        // mantenimiento minisplit
+    }
+}
+```
+
+```csharp
+public sealed class Chiller : Equipment
+{
+    public override void PerformMaintenance()
+    {
+        // mantenimiento chiller
+    }
+}
+```
+
+A primera vista parece perfecto.
+
+Tenemos:
+
+```text
+             Equipment
+              /      \
+             /        \
+      MiniSplit      Chiller
+```
+
+Pero aquí aparece una pregunta importante:
+
+**¿Realmente el comportamiento de mantenimiento pertenece al tipo de equipo?**
+
+En tu proyecto ACSoft, probablemente no.
+
+Porque el mantenimiento puede depender de:
+
+* tipo de mantenimiento;
+* rutina;
+* actividad;
+* configuración;
+* parámetros;
+* condiciones del equipo;
+* respuestas del técnico.
+
+Por ejemplo:
+
+```text
+MiniSplit
+   |
+   +-- Mantenimiento preventivo
+   +-- Mantenimiento correctivo
+   +-- Limpieza
+   +-- Revisión eléctrica
+```
+
+Entonces meter todo mediante herencia puede empezar a complicarse.
+
+---
+
+# 2. Problema: explosión de clases
+
+Imagina que tenemos:
+
+```text
+Equipment
+├── MiniSplit
+├── Cassette
+├── Chiller
+├── AHU
+└── VRF
+```
+
+Después necesitamos distinguir:
+
+```text
+PreventiveMiniSplit
+CorrectiveMiniSplit
+EmergencyMiniSplit
+```
+
+Y luego:
+
+```text
+PreventiveChiller
+CorrectiveChiller
+EmergencyChiller
+```
+
+Ya empezamos a tener:
+
+```text
+Equipment
+├── MiniSplit
+│   ├── PreventiveMiniSplit
+│   ├── CorrectiveMiniSplit
+│   └── EmergencyMiniSplit
+│
+├── Chiller
+│   ├── PreventiveChiller
+│   ├── CorrectiveChiller
+│   └── EmergencyChiller
+│
+└── AHU
+    ├── PreventiveAHU
+    ├── CorrectiveAHU
+    └── EmergencyAHU
+```
+
+Y si mañana aparece:
+
+```text
+Inspection
+Installation
+Calibration
+Cleaning
+```
+
+la cantidad de clases crece rápidamente.
+
+Esto es una señal de que probablemente estamos utilizando **herencia para representar combinaciones de características**.
+
+Ahí suele ser mejor composición.
+
+---
+
+# 3. Composición
+
+Podríamos separar:
+
+```text
+Equipment
+    +
+MaintenanceType
+    +
+MaintenanceRoutine
+    +
+Activities
+```
+
+Por ejemplo:
+
+```csharp
+public sealed class Equipment
+{
+    public Guid Id { get; private set; }
+
+    public EquipmentType Type { get; private set; }
+
+    public MaintenanceConfiguration MaintenanceConfiguration
+    {
+        get;
+        private set;
+    }
+
+    // ...
+}
+```
+
+Y:
+
+```csharp
+public enum EquipmentType
+{
+    MiniSplit,
+    Cassette,
+    Chiller,
+    AHU,
+    VRF
+}
+```
+
+Ahora el comportamiento no depende necesariamente de crear una clase diferente para cada combinación.
+
+---
+
+# 4. Regla importante: "is-a" vs "has-a"
+
+Esta es una de las mejores formas de decidir.
+
+### Herencia
+
+```text
+MiniSplit IS AN Equipment
+```
+
+Entonces:
+
+```csharp
+public class MiniSplit : Equipment
+```
+
+tiene sentido.
+
+### Composición
+
+```text
+Equipment HAS A MaintenanceConfiguration
+```
+
+Entonces:
+
+```csharp
+public class Equipment
+{
+    public MaintenanceConfiguration MaintenanceConfiguration { get; }
+}
+```
+
+tiene sentido.
+
+Pero cuidado:
+
+> Que exista una relación "is-a" no significa automáticamente que debamos utilizar herencia.
+
+Hay que preguntarse también si necesitamos **polimorfismo real**.
+
+---
+
+# 5. No uses herencia solamente para compartir propiedades
+
+Este es uno de los errores más comunes.
+
+Supongamos:
+
+```csharp
+public abstract class Person
+{
+    public string Name { get; set; }
+    public string Email { get; set; }
+}
+```
+
+Y:
+
+```csharp
+public class Customer : Person
+{
+}
+```
+
+```csharp
+public class Technician : Person
+{
+}
+```
+
+Parece razonable.
+
+Pero si Customer y Technician comienzan a evolucionar de forma diferente:
+
+```text
+Person
+ ├── Customer
+ │     ├── contracts
+ │     ├── billing
+ │     └── addresses
+ │
+ └── Technician
+       ├── certifications
+       ├── skills
+       └── schedules
+```
+
+la clase base empieza a convertirse en un contenedor de propiedades comunes.
+
+En muchos casos sería mejor:
+
+```csharp
+public sealed class Customer
+{
+    public PersonData Person { get; }
+}
+```
+
+y:
+
+```csharp
+public sealed class Technician
+{
+    public PersonData Person { get; }
+}
+```
+
+donde:
+
+```csharp
+public sealed record PersonData(
+    string Name,
+    string Email);
+```
+
+Aquí estamos reutilizando **composición**, no herencia.
+
+---
+
+# 6. Otro caso: herencia para reutilizar código
+
+Supongamos:
+
+```csharp
+public abstract class BaseRepository
+{
+    protected void ValidateId(Guid id)
+    {
+        if (id == Guid.Empty)
+            throw new ArgumentException("Invalid ID.");
+    }
+}
+```
+
+Y:
+
+```csharp
+public class CustomerRepository : BaseRepository
+{
+}
+```
+
+```csharp
+public class WorkOrderRepository : BaseRepository
+{
+}
+```
+
+Esto puede parecer cómodo.
+
+Pero ahora:
+
+```text
+CustomerRepository
+        ↓
+BaseRepository
+        ↓
+ValidateId()
+```
+
+y:
+
+```text
+WorkOrderRepository
+        ↓
+BaseRepository
+        ↓
+ValidateId()
+```
+
+La pregunta es:
+
+**¿Realmente CustomerRepository "es un" BaseRepository?**
+
+Conceptualmente, no.
+
+El repositorio es un repositorio de clientes.
+
+El `BaseRepository` solamente fue creado para compartir código.
+
+Aquí la composición o simplemente una utilidad privada puede ser más apropiada.
+
+---
+
+# 7. Otro problema: clases base que crecen demasiado
+
+Este es particularmente peligroso en proyectos grandes.
+
+Empiezas con:
+
+```csharp
+public abstract class Entity
+{
+    public Guid Id { get; protected set; }
+}
+```
+
+Perfecto.
+
+Después:
+
+```csharp
+public abstract class Entity
+{
+    public Guid Id { get; protected set; }
+
+    public DateTime CreatedAt { get; protected set; }
+
+    public DateTime UpdatedAt { get; protected set; }
+
+    public bool IsDeleted { get; protected set; }
+
+    public void Delete()
+    {
+        IsDeleted = true;
+    }
+
+    // ...
+}
+```
+
+Después:
+
+```csharp
+public abstract class Entity
+{
+    // identidad
+    // auditoría
+    // soft delete
+    // eventos
+    // tenant
+    // seguridad
+    // versionado
+    // ...
+}
+```
+
+Y terminas con:
+
+```text
+                Entity
+                  |
+             AuditableEntity
+                  |
+             SoftDeleteEntity
+                  |
+              TenantEntity
+                  |
+            Customer
+```
+
+Esto es una señal de **jerarquía artificial**.
+
+---
+
+# 8. Mejor composición
+
+Podríamos separar responsabilidades:
+
+```csharp
+public sealed record AuditInfo(
+    DateTime CreatedAt,
+    DateTime? UpdatedAt);
+```
+
+```csharp
+public sealed record TenantInfo(
+    Guid TenantId);
+```
+
+Y:
+
+```csharp
+public sealed class Customer
+{
+    public Guid Id { get; private set; }
+
+    public AuditInfo Audit { get; private set; }
+
+    public TenantInfo Tenant { get; private set; }
+}
+```
+
+Ahora cada concepto tiene su propia responsabilidad.
+
+Esto encaja muy bien con **DDD y Value Objects**.
+
+---
+
+# 9. Cuidado con herencia y DDD
+
+En DDD hay que distinguir entre:
+
+### Jerarquía conceptual real
+
+Por ejemplo:
+
+```text
+Tercero
+ ├── PersonaNatural
+ └── PersonaJuridica
+```
+
+Aquí sí puede tener bastante sentido la herencia porque existe una abstracción de dominio real:
+
+```csharp
+public abstract class Tercero
+{
+    public Guid Id { get; protected set; }
+
+    public string NumeroDocumento { get; protected set; }
+}
+```
+
+```csharp
+public sealed class PersonaNatural : Tercero
+{
+    public string Nombres { get; private set; }
+    public string Apellidos { get; private set; }
+}
+```
+
+```csharp
+public sealed class PersonaJuridica : Tercero
+{
+    public string RazonSocial { get; private set; }
+}
+```
+
+Aquí tenemos:
+
+```text
+PersonaNatural IS-A Tercero
+PersonaJuridica IS-A Tercero
+```
+
+y probablemente existe comportamiento polimórfico o una necesidad conceptual clara.
+
+---
+
+# 10. Pero incluso aquí hay que preguntarse si realmente necesitamos herencia
+
+Supongamos que solamente queremos almacenar:
+
+```text
+TipoDocumento
+NumeroDocumento
+Nombre
+```
+
+y diferenciar:
+
+```text
+N = Persona Natural
+J = Persona Jurídica
+```
+
+Podría ser suficiente:
+
+```csharp
+public enum TipoPersona
+{
+    Natural,
+    Juridica
+}
+```
+
+y:
+
+```csharp
+public sealed class Tercero
+{
+    public Guid Id { get; private set; }
+
+    public TipoPersona Tipo { get; private set; }
+
+    public string Nombre { get; private set; } = string.Empty;
+}
+```
+
+Entonces:
+
+> **No debemos utilizar herencia solamente porque conceptualmente existen categorías diferentes.**
+
+Debemos preguntarnos qué comportamiento diferente necesitamos.
+
+---
+
+# 11. Herencia puede violar Open/Closed Principle
+
+Imagina:
+
+```csharp
+public abstract class Payment
+{
+    public abstract decimal CalculateFee();
+}
+```
+
+Después:
+
+```csharp
+public sealed class CashPayment : Payment
+{
+    public override decimal CalculateFee() => 0;
+}
+```
+
+```csharp
+public sealed class CardPayment : Payment
+{
+    public override decimal CalculateFee() => 10;
+}
+```
+
+Parece correcto.
+
+Pero después aparecen:
+
+```text
+Cash
+Card
+Transfer
+PSE
+Nequi
+Daviplata
+Crypto
+...
+```
+
+y algunas reglas dependen de:
+
+* banco;
+* país;
+* moneda;
+* cliente;
+* convenio;
+* horario.
+
+La jerarquía puede convertirse en una estructura difícil de mantener.
+
+Una alternativa podría ser composición con una estrategia:
+
+```csharp
+public interface IFeeCalculator
+{
+    decimal Calculate(decimal amount);
+}
+```
+
+Por ejemplo:
+
+```csharp
+public sealed class NoFeeCalculator : IFeeCalculator
+{
+    public decimal Calculate(decimal amount) => 0;
+}
+```
+
+```csharp
+public sealed class FixedFeeCalculator : IFeeCalculator
+{
+    public decimal Calculate(decimal amount) => 10;
+}
+```
+
+Y:
+
+```csharp
+public sealed class Payment
+{
+    private readonly IFeeCalculator _feeCalculator;
+
+    public Payment(IFeeCalculator feeCalculator)
+    {
+        _feeCalculator = feeCalculator;
+    }
+
+    public decimal CalculateFee(decimal amount)
+    {
+        return _feeCalculator.Calculate(amount);
+    }
+}
+```
+
+Aquí tenemos **composición + polimorfismo**, sin necesidad de una jerarquía de `Payment`.
+
+---
+
+# 12. Un criterio muy importante: ¿necesito sustituibilidad?
+
+Pregúntate:
+
+> **¿Puedo utilizar la clase derivada donde espero la clase base sin cambiar el significado del programa?**
+
+Esto está relacionado con **Liskov Substitution Principle (LSP)**.
+
+Por ejemplo:
+
+```csharp
+public abstract class Bird
+{
+    public abstract void Fly();
+}
+```
+
+Y:
+
+```csharp
+public class Eagle : Bird
+{
+    public override void Fly()
+    {
+        // vuela
+    }
+}
+```
+
+Pero:
+
+```csharp
+public class Penguin : Bird
+{
+    public override void Fly()
+    {
+        throw new NotSupportedException();
+    }
+}
+```
+
+Tenemos un problema.
+
+Un `Penguin` es un ave biológicamente, pero:
+
+```text
+Bird → Fly()
+```
+
+no representa correctamente el dominio.
+
+La herencia fue mal diseñada.
+
+Podríamos separar:
+
+```csharp
+public abstract class Bird
+{
+}
+```
+
+y:
+
+```csharp
+public interface IFlyingBird
+{
+    void Fly();
+}
+```
+
+Entonces:
+
+```csharp
+public sealed class Eagle : Bird, IFlyingBird
+{
+    public void Fly()
+    {
+    }
+}
+```
+
+Mientras:
+
+```csharp
+public sealed class Penguin : Bird
+{
+}
+```
+
+---
+
+# 13. Otro caso muy común en .NET: `BaseService`
+
+Veo este patrón con frecuencia:
+
+```csharp
+public abstract class BaseService
+{
+    protected readonly IRepository Repository;
+
+    protected BaseService(IRepository repository)
+    {
+        Repository = repository;
+    }
+
+    protected void Validate()
+    {
+    }
+
+    protected void Log()
+    {
+    }
+
+    protected void SomethingElse()
+    {
+    }
+}
+```
+
+Después:
+
+```csharp
+public class CustomerService : BaseService
+{
+}
+```
+
+```csharp
+public class WorkOrderService : BaseService
+{
+}
+```
+
+```csharp
+public class EquipmentService : BaseService
+{
+}
+```
+
+Esto suele terminar creando una especie de **"Dios Base Class"**.
+
+Todo termina dependiendo de:
+
+```text
+BaseService
+```
+
+aunque los servicios no tengan realmente una relación de dominio.
+
+En Clean Architecture prefiero que cada servicio dependa explícitamente de lo que necesita:
+
+```csharp
+public sealed class CreateWorkOrderService
+{
+    private readonly IWorkOrderRepository _repository;
+    private readonly IUnitOfWork _unitOfWork;
+
+    public CreateWorkOrderService(
+        IWorkOrderRepository repository,
+        IUnitOfWork unitOfWork)
+    {
+        _repository = repository;
+        _unitOfWork = unitOfWork;
+    }
+}
+```
+
+Mucho más explícito.
+
+---
+
+# 14. Entonces, ¿cuándo sí utilizar herencia?
+
+Yo utilizaría herencia cuando se cumplen varias de estas condiciones:
+
+### 1. Existe una relación conceptual fuerte
+
+```text
+PersonaNatural IS-A Tercero
+```
+
+### 2. Existe polimorfismo real
+
+Por ejemplo:
+
+```csharp
+Tercero tercero = personaNatural;
+```
+
+y el código puede trabajar correctamente con cualquiera de los tipos derivados.
+
+### 3. La abstracción es estable
+
+No estás pensando:
+
+> "Probablemente después agregaremos 20 tipos."
+
+### 4. Las clases derivadas respetan completamente el contrato de la clase base
+
+Es decir, no necesitas:
+
+```csharp
+throw new NotSupportedException();
+```
+
+para romper el comportamiento heredado.
+
+### 5. La herencia representa el dominio
+
+No simplemente:
+
+> "Estas clases tienen las mismas propiedades."
+
+---
+
+# 15. ¿Cuándo preferir composición?
+
+Una regla práctica:
+
+| Situación                                    | Preferencia               |
+| -------------------------------------------- | ------------------------- |
+| "Es un" estable                              | Herencia puede ser buena  |
+| "Tiene un"                                   | Composición               |
+| Compartir propiedades                        | Composición               |
+| Compartir código                             | Composición               |
+| Compartir comportamiento intercambiable      | Interfaces + composición  |
+| Muchas combinaciones de características      | Composición               |
+| Jerarquía que crece constantemente           | Composición               |
+| Clase base con muchas responsabilidades      | Composición               |
+| Subclases que lanzan `NotSupportedException` | Revisar/eliminar herencia |
+| Necesitas polimorfismo verdadero             | Herencia o interfaz       |
+| Reglas que cambian independientemente        | Composición               |
+
+---
+
+# 16. Aplicándolo directamente a ACSoft
+
+Para tu proyecto HVAC yo evitaría construir algo como:
+
+```text
+Equipment
+├── MiniSplit
+├── Cassette
+├── PisoTecho
+├── Chiller
+├── AHU
+├── VRF
+├── FCU
+└── ...
+```
+
+**solo porque cada uno tiene propiedades diferentes**.
+
+En cambio, tu modelo puede estar más orientado a:
+
+```text
+Equipment
+│
+├── Category
+├── Type
+├── Subtype
+├── Application
+│
+├── MaintenanceRoutines
+│
+└── Activities
+       │
+       ├── Questions
+       ├── Parameters
+       └── AnswerRules
+```
+
+Esto es mucho más flexible para el problema que estás modelando.
+
+Por ejemplo:
+
+```text
+Equipment
+   |
+   +-- Type: MiniSplit
+   |
+   +-- Routine: Preventive
+          |
+          +-- Check electrical connections
+          +-- Check capacitor
+          +-- Measure current
+          +-- Check refrigerant pressure
+```
+
+Y otro equipo:
+
+```text
+Equipment
+   |
+   +-- Type: Chiller
+   |
+   +-- Routine: Preventive
+          |
+          +-- Check compressor
+          +-- Measure amperage
+          +-- Check chilled water
+          +-- Check condenser
+```
+
+No necesitas necesariamente:
+
+```csharp
+class MiniSplitPreventiveMaintenance : Maintenance
+```
+
+y:
+
+```csharp
+class ChillerPreventiveMaintenance : Maintenance
+```
+
+La **configuración del dominio** puede determinar qué actividades corresponden.
+
+---
+
+# 17. Una regla que te recomiendo recordar
+
+Cuando estés diseñando una clase en C# 14, hazte estas cuatro preguntas:
+
+```text
+1. ¿Realmente es un "IS-A"?
+
+2. ¿Necesito polimorfismo?
+
+3. ¿La clase derivada puede sustituir completamente a la base?
+
+4. ¿Esta jerarquía seguirá teniendo sentido si el dominio cambia?
+```
+
+Si las respuestas son principalmente **no**, probablemente composición sea una mejor opción.
+
+Y especialmente en **DDD + Clean Architecture**, intenta evitar esta mentalidad:
+
+```text
+"Necesito reutilizar código → creo una clase base"
+```
+
+y reemplázala por:
+
+```text
+"Necesito modelar un concepto → creo una abstracción"
+```
+
+Esa diferencia parece pequeña, pero produce diseños mucho más mantenibles.

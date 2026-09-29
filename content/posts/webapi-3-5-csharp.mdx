@@ -753,3 +753,674 @@ T = 10.3 A
 ```
 
 Ahí es donde empezaremos a definir los Value Objects de mediciones como `Current`, `Voltage`, `Pressure`, etc.
+
+> Antes de Values Objects, empezemos con **WorkSessionType** 
+
+Perfecto. Entonces continuemos y **cerremos definitivamente `WorkSession`** antes de pasar al modelo de actividades.
+
+La idea será que `WorkSession` represente un intervalo real:
+
+```text
+Inicio ───────────────── Fin
+  │                       │
+  └────── duración ───────┘
+```
+
+y que pueda representar:
+
+```text
+Work
+Waiting
+Travel
+Break
+```
+
+## 3.4 — `WorkSession` completa
+
+
+### 14 . `WorkSessionType`
+
+Mantendremos:
+
+```csharp
+namespace HVAC.Domain.Enums;
+
+public enum WorkSessionType
+{
+    Work = 1,
+    Waiting = 2,
+    Travel = 3,
+    Break = 4
+}
+```
+
+La interpretación será:
+
+| Tipo      | Significado                          |
+| --------- | ------------------------------------ |
+| `Work`    | Trabajo efectivo sobre la OT         |
+| `Waiting` | La OT está detenida esperando algo   |
+| `Travel`  | Desplazamiento relacionado con la OT |
+| `Break`   | Pausa personal/descanso              |
+
+Importante: **no utilizaremos `Paused` como tipo**. "Pausar" es una acción del flujo; lo que registramos es qué estaba ocurriendo durante ese intervalo.
+
+---
+
+# 15. `WaitingReason`
+
+Como acabamos de aclarar, tendremos:
+
+```csharp
+namespace HVAC.Domain.Enums;
+
+public enum WaitingReason
+{
+    Customer = 1,
+    SparePart = 2,
+    Authorization = 3,
+    EquipmentShutdown = 4,
+    Access = 5,
+    Other = 99
+}
+```
+
+Pero `WaitingReason` solamente tendrá sentido cuando:
+
+```text
+WorkSessionType = Waiting
+```
+
+Por ejemplo:
+
+```text
+WorkSession
+Type: Waiting
+WaitingReason: SparePart
+```
+
+Mientras que:
+
+```text
+WorkSession
+Type: Work
+WaitingReason: null
+```
+
+---
+
+# 16. `WorkSession.cs`
+
+Ahora podemos mejorar la clase que teníamos:
+
+```csharp
+using HVAC.Domain.Enums;
+
+namespace HVAC.Domain.Entities;
+
+public sealed class WorkSession
+{
+    private WorkSession()
+    {
+    }
+
+    private WorkSession(
+        Guid id,
+        Guid technicianId,
+        Guid workOrderId,
+        WorkSessionType type,
+        DateTimeOffset startedAt,
+        WaitingReason? waitingReason)
+    {
+        Id = id;
+        TechnicianId = technicianId;
+        WorkOrderId = workOrderId;
+        Type = type;
+        StartedAt = startedAt;
+        WaitingReason = waitingReason;
+    }
+
+    public Guid Id { get; private set; }
+
+    public Guid TechnicianId { get; private set; }
+
+    public Guid WorkOrderId { get; private set; }
+
+    public WorkSessionType Type { get; private set; }
+
+    public WaitingReason? WaitingReason { get; private set; }
+
+    public DateTimeOffset StartedAt { get; private set; }
+
+    public DateTimeOffset? EndedAt { get; private set; }
+
+    public bool IsActive => EndedAt is null;
+
+    public TimeSpan? Duration =>
+        EndedAt.HasValue
+            ? EndedAt.Value - StartedAt
+            : null;
+
+    public static WorkSession Start(
+        Guid technicianId,
+        Guid workOrderId,
+        WorkSessionType type,
+        DateTimeOffset startedAt,
+        WaitingReason? waitingReason = null)
+    {
+        if (technicianId == Guid.Empty)
+            throw new ArgumentException(
+                "El técnico es obligatorio.",
+                nameof(technicianId));
+
+        if (workOrderId == Guid.Empty)
+            throw new ArgumentException(
+                "La orden de trabajo es obligatoria.",
+                nameof(workOrderId));
+
+        ValidateWaitingReason(type, waitingReason);
+
+        return new WorkSession(
+            Guid.NewGuid(),
+            technicianId,
+            workOrderId,
+            type,
+            startedAt,
+            waitingReason);
+    }
+
+    public void End(DateTimeOffset endedAt)
+    {
+        if (!IsActive)
+            throw new InvalidOperationException(
+                "La sesión ya ha finalizado.");
+
+        if (endedAt < StartedAt)
+            throw new InvalidOperationException(
+                "La fecha de finalización no puede ser anterior al inicio.");
+
+        EndedAt = endedAt;
+    }
+
+    private static void ValidateWaitingReason(
+        WorkSessionType type,
+        WaitingReason? waitingReason)
+    {
+        if (type == WorkSessionType.Waiting &&
+            waitingReason is null)
+        {
+            throw new InvalidOperationException(
+                "Una sesión de espera debe tener un motivo.");
+        }
+
+        if (type != WorkSessionType.Waiting &&
+            waitingReason is not null)
+        {
+            throw new InvalidOperationException(
+                "El motivo de espera solamente puede utilizarse en una sesión Waiting.");
+        }
+    }
+}
+```
+
+---
+
+# 17. ¿Qué conseguimos con esto?
+
+Ahora el dominio evita situaciones incoherentes.
+
+**Correcto**
+
+```csharp
+WorkSession.Start(
+    technicianId,
+    workOrderId,
+    WorkSessionType.Work,
+    startedAt);
+```
+
+Resultado:
+
+```text
+Work
+WaitingReason = null
+```
+
+---
+
+**Correcto**
+
+```csharp
+WorkSession.Start(
+    technicianId,
+    workOrderId,
+    WorkSessionType.Waiting,
+    startedAt,
+    WaitingReason.SparePart);
+```
+
+Resultado:
+
+```text
+Waiting
+Reason = SparePart
+```
+
+---
+
+**Incorrecto**
+
+```csharp
+WorkSession.Start(
+    technicianId,
+    workOrderId,
+    WorkSessionType.Waiting,
+    startedAt);
+```
+
+El dominio rechaza la operación:
+
+```text
+Una sesión de espera debe tener un motivo.
+```
+
+---
+
+### También incorrecto
+
+```csharp
+WorkSession.Start(
+    technicianId,
+    workOrderId,
+    WorkSessionType.Work,
+    startedAt,
+    WaitingReason.Customer);
+```
+
+Porque:
+
+```text
+Work ≠ Waiting
+```
+
+y por tanto no tiene sentido tener `WaitingReason`.
+
+---
+
+# 18. Ahora podemos representar nuestro escenario real
+
+Supongamos:
+
+```text
+08:00
+Carlos comienza OT-001
+```
+
+Creamos:
+
+```text
+WorkSession #1
+
+Technician: Carlos
+OT:         OT-001
+Type:       Work
+Start:      08:00
+End:        null
+```
+
+A las 09:00 llega a un punto donde necesita esperar un repuesto.
+
+Finalizamos:
+
+```text
+WorkSession #1
+
+08:00 → 09:00
+Work
+```
+
+Y creamos:
+
+```text
+WorkSession #2
+
+09:00 → ...
+Waiting
+Reason: SparePart
+```
+
+Luego, a las 10:30 llega el repuesto.
+
+Finalizamos:
+
+```text
+WorkSession #2
+
+09:00 → 10:30
+Waiting
+SparePart
+```
+
+Y creamos:
+
+```text
+WorkSession #3
+
+10:30 → ...
+Work
+```
+
+Queda:
+
+```text
+08:00 ───── 09:00
+       Work
+
+09:00 ───────────── 10:30
+       Waiting
+       SparePart
+
+10:30 ────────────────►
+       Work
+```
+
+---
+
+# 19. ¿Y si el técnico se va a otra OT?
+
+Aquí es donde nuestro modelo empieza a funcionar realmente bien.
+
+Tenemos:
+
+```text
+OT-001
+09:00 → Waiting
+Reason: SparePart
+```
+
+Entonces Carlos puede iniciar:
+
+```text
+OT-002
+09:00 → 11:00
+Work
+```
+
+Después:
+
+```text
+OT-001
+11:00 → 12:30
+Work
+```
+
+Históricamente:
+
+```text
+Carlos
+
+OT-001
+├── Work     08:00 → 09:00
+├── Waiting  09:00 → 11:00
+└── Work     11:00 → 12:30
+
+OT-002
+└── Work     09:00 → 11:00
+```
+
+Y ahora podemos calcular perfectamente:
+
+### OT-001
+
+```text
+Trabajo efectivo:
+1h + 1h30 = 2h30
+
+Espera:
+2h
+
+Tiempo total:
+4h30
+```
+
+### OT-002
+
+```text
+Trabajo efectivo:
+2h
+```
+
+Esto es muchísimo más útil que simplemente:
+
+```text
+StartedAt
+CompletedAt
+```
+
+en la orden.
+
+---
+
+# 20. Una decisión importante sobre `Travel`
+
+Aquí quiero hacer una distinción.
+
+Si tenemos:
+
+```text
+08:00 → 08:30
+Travel
+```
+
+¿ese desplazamiento pertenece a:
+
+```text
+OT-001
+```
+
+o a:
+
+```text
+la jornada del técnico
+```
+
+En una primera versión podemos asociarlo a `WorkOrderId`.
+
+Pero posteriormente, si ACSoft necesita gestionar:
+
+* rutas,
+* múltiples visitas,
+* kilometraje,
+* GPS,
+* tiempos de desplazamiento entre clientes,
+
+probablemente tendremos que separar **tiempo de viaje** de `WorkOrder`.
+
+Por ahora no complicaría el modelo.
+
+---
+
+# 21. ¿Qué pasa con `Break`?
+
+Un descanso normalmente **no pertenece realmente a una OT**.
+
+Por ejemplo:
+
+```text
+12:00 → 12:30
+Almuerzo
+```
+
+No deberíamos cargar esos 30 minutos a:
+
+```text
+OT-001
+```
+
+Por eso aquí tenemos una señal de que nuestro diseño podría evolucionar.
+
+Para la primera versión podemos permitirlo, pero conceptualmente:
+
+```text
+WorkSession
+    WorkOrderId = OT-001
+    Type = Break
+```
+
+no es tan correcto como:
+
+```text
+TechnicianTimeEntry
+    Type = Break
+```
+
+Esto refuerza algo que ya habíamos detectado:
+
+> `WorkSession` probablemente terminará representando específicamente trabajo/tiempo relacionado con una OT, mientras que el tiempo general del técnico puede necesitar otro concepto.
+
+**No lo resolvería todavía.** No queremos sobre-diseñar antes de conocer los requisitos reales.
+
+---
+
+# 22. La regla más importante que queda
+
+Ahora necesitamos una operación de aplicación como:
+
+```text
+StartWorkSession
+```
+
+y:
+
+```text
+EndWorkSession
+```
+
+y después:
+
+```text
+StartWaiting
+```
+
+Pero quiero evitar que tengamos cinco handlers haciendo pequeñas modificaciones independientes.
+
+Nuestro flujo debería ser conceptualmente:
+
+```text
+StartWork
+     ↓
+WorkSession(Work)
+
+StartWaiting
+     ↓
+End WorkSession
+     ↓
+WorkSession(Waiting)
+
+ResumeWork
+     ↓
+End WaitingSession
+     ↓
+WorkSession(Work)
+```
+
+Esto mantiene el historial completo.
+
+---
+
+# 23. Y aquí aparece una regla fundamental de ACSoft
+
+No debemos hacer:
+
+```text
+OT-001.Status = Waiting
+```
+
+y simplemente borrar o modificar la sesión anterior.
+
+Debemos **cerrar la sesión anterior y crear una nueva**.
+
+Así:
+
+```text
+WorkSession #1
+Work
+08:00 → 09:00
+
+WorkSession #2
+Waiting / SparePart
+09:00 → 11:00
+
+WorkSession #3
+Work
+11:00 → 12:30
+```
+
+Esto se llama, conceptualmente, mantener un **historial de eventos/intervalos**, y será muy útil para auditoría y reportes.
+
+---
+
+## ¿Qué hemos terminado hasta ahora?
+
+Nuestro modelo de ejecución ya tiene tres piezas:
+
+```text
+                    WorkOrder
+                        │
+              ┌─────────┴─────────┐
+              │                   │
+              ▼                   ▼
+       Assignment History    Activity Execution
+              │                   │
+              ▼                   ▼
+         Technician          ActivityAnswer
+              │
+              ▼
+         WorkSession
+```
+
+Y `WorkSession` ahora sabe:
+
+```text
+Quién
+Qué OT
+Qué tipo de tiempo
+Cuándo comenzó
+Cuándo terminó
+Por qué estaba esperando
+Cuánto duró
+```
+
+### Siguiente paso
+
+Ahora sí podemos entrar en la parte que probablemente será **la más importante del dominio de ACSoft**:
+
+```text
+Activity
+    │
+    └── Question
+           │
+           └── AnswerDefinition
+
+WorkOrder
+    │
+    └── WorkOrderActivity
+           │
+           └── ActivityAnswer
+```
+
+Ahí vamos a resolver de una vez:
+
+* una actividad que se ejecuta **Before / During / After**;
+* la misma actividad ejecutándose varias veces;
+* preguntas booleanas;
+* preguntas numéricas;
+* R/S/T para corriente;
+* unidades;
+* valores mínimos/máximos;
+* `Correcto / No correcto / No aplica`;
+* respuestas antes y después;
+* y cómo evitar que `WorkOrder` se convierta en un **God Aggregate**.
+
+
+Podemos continuar ya con valuesObjects [webapi paso 4 valueObjets](/blog/webapi-4-0-csharp)

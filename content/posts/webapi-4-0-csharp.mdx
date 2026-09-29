@@ -1,0 +1,111 @@
+---
+title: "Crear webapi Parte 4 ValueObjects "
+date: "2026-09-29"
+description: "Crear WebApi parte 4 ValueObjets"
+slug: "webapi-4-0-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+# Paso 4 Values Objects
+
+Sí. **Ya podemos pasar a Value Objects**, pero haría una pequeña aclaración: no necesitamos terminar todo el modelo de `Activity → Question → Answer` antes de empezar.
+
+Para ACSoft, ya tenemos suficiente dominio para aprender Value Objects correctamente. De hecho, **es un buen momento**, porque ahora podemos aplicar Value Objects a problemas reales del sistema en lugar de hacer ejemplos artificiales.
+
+Yo seguiría este orden:
+
+1. **Value Objects en DDD: qué problema resuelven**
+2. `Voltage` → voltaje con unidad y validación
+3. `Current` → corriente eléctrica
+4. `Pressure` → presión
+5. `Temperature`
+6. `MeasurementRange` → mínimo/máximo/tolerancia
+7. `Percentage`
+8. `RefrigerantCharge` o una medición de cantidad
+9. Cómo persistirlos con **EF Core 10**
+10. Cuándo **NO** convertir algo en Value Object
+11. Finalmente volver a `ActivityAnswer` y utilizar estos Value Objects.
+
+### Un punto importante
+
+No convertiría cosas como:
+
+```csharp
+CustomerId
+EquipmentId
+TechnicianId
+WorkOrderId
+```
+
+en Value Objects todavía. `Guid` es suficiente mientras estamos construyendo el dominio.
+
+En cambio, esto sí tiene mucho sentido:
+
+```text
+220 V
+12.5 A
+350 PSI
+8.2 °C
+45 µF
+850 g
+±10 %
+```
+
+Porque no son simplemente números: **tienen significado, unidad y reglas de negocio**.
+
+Por ejemplo, esto:
+
+```csharp
+decimal voltage = 220;
+```
+
+permite accidentalmente:
+
+```csharp
+voltage = -500;
+```
+
+o confundir:
+
+```csharp
+220 // ¿voltios?
+220 // ¿amperios?
+220 // ¿PSI?
+```
+
+Un Value Object nos permite expresar el concepto dentro del dominio:
+
+```csharp
+Voltage voltage = Voltage.Create(220);
+```
+
+y hacer que el propio dominio controle sus reglas.
+
+### Empezaría por `Voltage`
+
+Nuestro primer Value Object podría quedar conceptualmente así:
+
+```text
+Voltage
+ ├── Value
+ └── Unit
+```
+
+y posteriormente:
+
+```csharp
+var voltage = Voltage.Create(220);
+
+voltage.Value; // 220
+```
+
+Pero quiero hacerlo **paso a paso**, empezando por el diseño correcto del Value Object antes de escribir código, porque aquí aparecen conceptos importantes de DDD: **inmutabilidad, igualdad por valor, validación, `record`, `sealed record` y encapsulación**.
+
+Así que sí: **podemos pasar a Value Objects ahora**, y empezaría por `Voltage` como nuestro primer Value Object real de ACSoft.
+
+> Continuemos con ValuesObjects
+
+paso a paso con [webapi parte 4-1 values Objects](/blog/webapi-4-1-csharp)
