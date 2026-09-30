@@ -1,0 +1,792 @@
+---
+title: "Crear webapi Parte 4-2 ValueObjects "
+date: "2026-09-29"
+description: "Crear WebApi parte 4-2 ValueObjets"
+slug: "webapi-4-2-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. Continuemos con el siguiente Value Object: **`MeasurementRange`**. Este es especialmente importante para ACSoft porque nos permitirá representar las tolerancias de las mediciones de los equipos.
+
+## 1. El problema que queremos resolver
+
+Tenemos un equipo con:
+
+```text
+Voltaje nominal: 220 V
+Tolerancia: ±10 %
+```
+
+El rango permitido es:
+
+```text
+220 × 10 % = 22
+
+Mínimo = 220 - 22 = 198 V
+Máximo = 220 + 22 = 242 V
+```
+
+Entonces:
+
+```text
+198 V ───────── 220 V ───────── 242 V
+     válido          válido
+```
+
+Pero aquí aparece algo importante:
+
+**`Voltage` y `MeasurementRange` son conceptos diferentes.**
+
+```text
+Voltage
+    ↓
+"230 V"
+
+MeasurementRange
+    ↓
+"198 V a 242 V"
+```
+
+---
+
+# 2. Primer diseño de `MeasurementRange`
+
+Creemos:
+
+```text
+AcSoft.Domain
+└── ValueObjects
+    ├── Voltage.cs
+    └── MeasurementRange.cs
+```
+
+Inicialmente:
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record MeasurementRange
+{
+    public decimal Minimum { get; }
+    public decimal Maximum { get; }
+
+    private MeasurementRange(
+        decimal minimum,
+        decimal maximum)
+    {
+        Minimum = minimum;
+        Maximum = maximum;
+    }
+
+    public static MeasurementRange Create(
+        decimal minimum,
+        decimal maximum)
+    {
+        if (minimum > maximum)
+        {
+            throw new ArgumentException(
+                "El valor mínimo no puede ser mayor que el máximo.");
+        }
+
+        return new MeasurementRange(
+            minimum,
+            maximum);
+    }
+
+    public bool Contains(decimal value)
+    {
+        return value >= Minimum &&
+               value <= Maximum;
+    }
+}
+```
+
+---
+
+# 3. ¿Qué conseguimos?
+
+Podemos crear:
+
+```csharp
+var range = MeasurementRange.Create(
+    198,
+    242);
+```
+
+Y comprobar:
+
+```csharp
+range.Contains(220);
+```
+
+Resultado:
+
+```text
+true
+```
+
+También:
+
+```csharp
+range.Contains(198);
+```
+
+Resultado:
+
+```text
+true
+```
+
+Y:
+
+```csharp
+range.Contains(242);
+```
+
+Resultado:
+
+```text
+true
+```
+
+Pero:
+
+```csharp
+range.Contains(250);
+```
+
+Resultado:
+
+```text
+false
+```
+
+Estamos haciendo que el concepto de **rango válido** viva dentro del dominio.
+
+---
+
+# 4. Algo muy importante: ¿198 y 242 están incluidos?
+
+Nuestro método:
+
+```csharp
+return value >= Minimum &&
+       value <= Maximum;
+```
+
+define un intervalo inclusivo:
+
+```text
+[198, 242]
+```
+
+Por lo tanto:
+
+```text
+198 → válido
+220 → válido
+242 → válido
+243 → inválido
+197 → inválido
+```
+
+Para mediciones HVAC normalmente esto resulta muy útil.
+
+---
+
+# 5. Ahora relacionémoslo con `Voltage`
+
+Podemos hacer:
+
+```csharp
+var voltage = Voltage.Create(230);
+
+var range = MeasurementRange.Create(
+    198,
+    242);
+
+bool isValid = range.Contains(
+    voltage.Value);
+```
+
+Pero aquí tenemos una pequeña debilidad.
+
+Estamos haciendo:
+
+```csharp
+range.Contains(voltage.Value);
+```
+
+Es decir, estamos sacando el `decimal` del Value Object.
+
+Podríamos mejorar el diseño.
+
+---
+
+# 6. ¿Debe `MeasurementRange` recibir cualquier `decimal`?
+
+Consideremos:
+
+```csharp
+var voltageRange =
+    MeasurementRange.Create(198, 242);
+
+var pressure = Pressure.Create(300);
+
+voltageRange.Contains(pressure.Value);
+```
+
+El compilador no sabe que esto es conceptualmente incorrecto.
+
+Porque ambos terminan siendo:
+
+```csharp
+decimal
+```
+
+Esto nos lleva a una decisión importante.
+
+Podríamos hacer un rango específico para cada magnitud:
+
+```text
+VoltageRange
+PressureRange
+TemperatureRange
+CurrentRange
+```
+
+pero probablemente terminaríamos duplicando mucho código.
+
+Otra posibilidad es hacer un `MeasurementRange<T>`.
+
+Pero **yo no lo haría todavía**.
+
+¿Por qué?
+
+Porque todavía estamos aprendiendo el modelo y no sabemos si todos los rangos tendrán exactamente las mismas reglas.
+
+En DDD:
+
+> No debemos crear una abstracción genérica solamente porque podemos.
+
+---
+
+# 7. Agreguemos una fábrica para tolerancia porcentual
+
+Aquí tenemos algo más interesante para ACSoft.
+
+Tenemos:
+
+```text
+220 V ±10 %
+```
+
+En lugar de calcular manualmente:
+
+```csharp
+var minimum = 220 - (220 * 0.10m);
+var maximum = 220 + (220 * 0.10m);
+```
+
+podemos encapsular esa regla.
+
+Primero creamos otro Value Object:
+
+```text
+Percentage
+```
+
+Pero antes de hacerlo, podemos visualizar lo que queremos conseguir:
+
+```csharp
+var range = MeasurementRange.FromTolerance(
+    nominalValue: 220,
+    tolerancePercent: 10);
+```
+
+y obtener:
+
+```text
+Minimum = 198
+Maximum = 242
+```
+
+La lógica sería:
+
+```text
+nominal = 220
+
+tolerance = 10 %
+
+difference = 220 × 10 / 100
+           = 22
+
+minimum = 220 - 22
+        = 198
+
+maximum = 220 + 22
+        = 242
+```
+
+---
+
+# 8. Aquí aparece nuestro próximo Value Object: `Percentage`
+
+Este sí vale la pena.
+
+Creemos:
+
+```text
+AcSoft.Domain
+└── ValueObjects
+    ├── Voltage.cs
+    ├── MeasurementRange.cs
+    └── Percentage.cs
+```
+
+Código:
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record Percentage
+{
+    public decimal Value { get; }
+
+    private Percentage(decimal value)
+    {
+        Value = value;
+    }
+
+    public static Percentage Create(decimal value)
+    {
+        if (value < 0 || value > 100)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                "El porcentaje debe estar entre 0 y 100.");
+        }
+
+        return new Percentage(value);
+    }
+}
+```
+
+Ahora:
+
+```csharp
+var tolerance = Percentage.Create(10);
+```
+
+representa:
+
+```text
+10 %
+```
+
+y no simplemente:
+
+```text
+10
+```
+
+---
+
+# 9. ¿Por qué esto es mejor?
+
+Antes:
+
+```csharp
+decimal tolerance = 10;
+```
+
+¿Qué significa `10`?
+
+Podría ser:
+
+```text
+10 %
+10 V
+10 A
+10 PSI
+10 °C
+```
+
+Ahora:
+
+```csharp
+Percentage tolerance = Percentage.Create(10);
+```
+
+El código expresa claramente el concepto.
+
+---
+
+# 10. Ahora sí: `MeasurementRange.FromTolerance`
+
+Podemos agregar:
+
+```csharp
+public static MeasurementRange FromTolerance(
+    decimal nominalValue,
+    Percentage tolerance)
+{
+    if (nominalValue < 0)
+    {
+        throw new ArgumentOutOfRangeException(
+            nameof(nominalValue),
+            "El valor nominal no puede ser negativo.");
+    }
+
+    var difference =
+        nominalValue * tolerance.Value / 100m;
+
+    return new MeasurementRange(
+        nominalValue - difference,
+        nominalValue + difference);
+}
+```
+
+Nuestro Value Object completo queda:
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record MeasurementRange
+{
+    public decimal Minimum { get; }
+    public decimal Maximum { get; }
+
+    private MeasurementRange(
+        decimal minimum,
+        decimal maximum)
+    {
+        Minimum = minimum;
+        Maximum = maximum;
+    }
+
+    public static MeasurementRange Create(
+        decimal minimum,
+        decimal maximum)
+    {
+        if (minimum > maximum)
+        {
+            throw new ArgumentException(
+                "El valor mínimo no puede ser mayor que el máximo.");
+        }
+
+        return new MeasurementRange(
+            minimum,
+            maximum);
+    }
+
+    public static MeasurementRange FromTolerance(
+        decimal nominalValue,
+        Percentage tolerance)
+    {
+        if (nominalValue < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(nominalValue),
+                "El valor nominal no puede ser negativo.");
+        }
+
+        var difference =
+            nominalValue * tolerance.Value / 100m;
+
+        return new MeasurementRange(
+            nominalValue - difference,
+            nominalValue + difference);
+    }
+
+    public bool Contains(decimal value)
+    {
+        return value >= Minimum &&
+               value <= Maximum;
+    }
+}
+```
+
+---
+
+# 11. Ahora nuestro ejemplo HVAC queda muy limpio
+
+```csharp
+var nominalVoltage = 220m;
+
+var tolerance = Percentage.Create(10);
+
+var voltageRange =
+    MeasurementRange.FromTolerance(
+        nominalVoltage,
+        tolerance);
+```
+
+Tenemos:
+
+```text
+Minimum = 198
+Maximum = 242
+```
+
+Y:
+
+```csharp
+var measuredVoltage = Voltage.Create(230);
+
+var valid = voltageRange.Contains(
+    measuredVoltage.Value);
+```
+
+Resultado:
+
+```text
+true
+```
+
+---
+
+# 12. Probemos los valores de tu dominio
+
+### Voltaje
+
+```csharp
+var tolerance = Percentage.Create(10);
+
+var voltageRange =
+    MeasurementRange.FromTolerance(
+        220,
+        tolerance);
+```
+
+Resultado:
+
+```text
+198 – 242 V
+```
+
+### Capacitor
+
+Supongamos:
+
+```text
+45 µF ±5 %
+```
+
+```csharp
+var tolerance = Percentage.Create(5);
+
+var capacitorRange =
+    MeasurementRange.FromTolerance(
+        45,
+        tolerance);
+```
+
+Resultado:
+
+```text
+42.75 – 47.25
+```
+
+Exactamente la regla que queremos.
+
+### Refrigerante
+
+Aquí tenemos:
+
+```text
+850 g ±20 g
+```
+
+Y aquí vemos algo interesante.
+
+**No debemos usar `Percentage`**, porque la tolerancia es absoluta:
+
+```text
+850 - 20 = 830
+850 + 20 = 870
+```
+
+Por eso necesitamos mantener:
+
+```csharp
+MeasurementRange.Create(
+    830,
+    870);
+```
+
+Esto demuestra por qué es bueno no meter toda la lógica en un único Value Object genérico.
+
+---
+
+# 13. Y aquí aparece una distinción fundamental
+
+Tenemos dos tipos de tolerancia:
+
+### Tolerancia absoluta
+
+```text
+850 g ±20 g
+
+Minimum = 830
+Maximum = 870
+```
+
+### Tolerancia porcentual
+
+```text
+220 V ±10 %
+
+Minimum = 198
+Maximum = 242
+```
+
+Por eso `MeasurementRange` puede representar el resultado final:
+
+```text
+MeasurementRange
+├── Minimum
+└── Maximum
+```
+
+mientras que la forma de calcularlo puede ser:
+
+```text
+FromTolerance(...)
+```
+
+o directamente:
+
+```text
+Create(minimum, maximum)
+```
+
+---
+
+# 14. Esto empieza a conectar con `ActivityAnswer`
+
+Y aquí está la razón por la que estamos haciendo todo esto.
+
+Más adelante podremos tener algo conceptualmente parecido a:
+
+```text
+Activity:
+    Medir voltaje del compresor
+
+Question:
+    Voltaje R-S
+
+Expected:
+    220 V ±10 %
+
+Answer:
+    230 V
+
+Evaluation:
+    Correcto
+```
+
+Y:
+
+```text
+Activity:
+    Medir voltaje del compresor
+
+Question:
+    Voltaje R-S
+
+Expected:
+    220 V ±10 %
+
+Answer:
+    250 V
+
+Evaluation:
+    No correcto
+```
+
+El Value Object no decide que el equipo esté "bien" o "mal".
+
+El Value Object proporciona:
+
+```text
+230 V
+```
+
+y:
+
+```text
+198–242 V
+```
+
+La **regla de evaluación** decidirá:
+
+```text
+230 ∈ [198,242]
+        ↓
+     Correcto
+```
+
+Esto es una separación de responsabilidades muy importante.
+
+---
+
+# 15. Nuestro mapa de Value Objects empieza a quedar así
+
+```text
+AcSoft.Domain
+│
+└── ValueObjects
+    │
+    ├── Voltage
+    │
+    ├── Percentage
+    │
+    └── MeasurementRange
+```
+
+Posteriormente podremos agregar:
+
+```text
+Current
+Pressure
+Temperature
+Capacitance
+Mass
+```
+
+Pero **no crearía todos de golpe**.
+
+Primero debemos entender bien el patrón.
+
+---
+
+## Siguiente paso recomendado
+
+Antes de crear `Current`, `Pressure` y `Temperature`, yo haría una pausa para algo muy importante:
+
+**¿Cuándo un Value Object debe ser `record`, `record struct` o `class`?**
+
+En C# 14 tenemos varias posibilidades:
+
+```csharp
+public sealed record Voltage
+```
+
+```csharp
+public readonly record struct Voltage
+```
+
+```csharp
+public sealed class Voltage
+```
+
+Y en un proyecto DDD real con .NET 10 **no siempre `record` es automáticamente la mejor opción**.
+
+Después de entender esa decisión, podemos definir la estrategia que usaremos para **todos los Value Objects de ACSoft** y evitar inconsistencias en el dominio.
+
+paso a paso con [webapi parte 4-3 values Objects Record](/blog/webapi-4-3-csharp)
+

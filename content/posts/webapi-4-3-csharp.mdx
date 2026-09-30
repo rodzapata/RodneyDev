@@ -1,0 +1,812 @@
+---
+title: "Crear webapi Parte 4-3 ValueObjects Records"
+date: "2026-09-30"
+description: "Crear WebApi parte 4-3 ValueObjets Records"
+slug: "webapi-4-3-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. Ahora vamos a resolver una decisión importante antes de crear más Value Objects: **`record`, `record struct` o `class`**.
+
+Para ACSoft, esta decisión importa porque vamos a tener muchos conceptos como `Voltage`, `Current`, `Pressure`, `Percentage`, etc.
+
+# 1. Las tres posibilidades
+
+Podríamos escribir:
+
+```csharp
+public sealed record Voltage
+{
+    public decimal Value { get; }
+}
+```
+
+o:
+
+```csharp
+public readonly record struct Voltage(decimal Value);
+```
+
+o:
+
+```csharp
+public sealed class Voltage
+{
+    public decimal Value { get; }
+}
+```
+
+Las tres pueden representar Value Objects, pero tienen comportamientos diferentes.
+
+---
+
+# 2. `record`: nuestra opción actual
+
+Tenemos:
+
+```csharp
+public sealed record Voltage
+{
+    public decimal Value { get; }
+
+    private Voltage(decimal value)
+    {
+        Value = value;
+    }
+
+    public static Voltage Create(decimal value)
+    {
+        if (value < 0)
+            throw new ArgumentOutOfRangeException(
+                nameof(value));
+
+        return new Voltage(value);
+    }
+}
+```
+
+Esto nos da automáticamente **igualdad por valor**.
+
+Por ejemplo:
+
+```csharp
+var voltage1 = Voltage.Create(220);
+var voltage2 = Voltage.Create(220);
+
+Console.WriteLine(voltage1 == voltage2);
+```
+
+Resultado:
+
+```text
+True
+```
+
+Esto es exactamente lo que queremos conceptualmente.
+
+---
+
+# 3. ¿Por qué no `class`?
+
+Una clase tradicional utiliza igualdad por referencia si no sobrescribimos esa lógica.
+
+Por ejemplo:
+
+```csharp
+public sealed class Voltage
+{
+    public decimal Value { get; }
+
+    public Voltage(decimal value)
+    {
+        Value = value;
+    }
+}
+```
+
+Entonces:
+
+```csharp
+var voltage1 = new Voltage(220);
+var voltage2 = new Voltage(220);
+
+Console.WriteLine(voltage1 == voltage2);
+```
+
+normalmente sería:
+
+```text
+False
+```
+
+Aunque ambos representan:
+
+```text
+220 V
+```
+
+Tendríamos que implementar manualmente:
+
+```text
+Equals()
+GetHashCode()
+operador ==
+operador !=
+```
+
+El `record` nos evita ese trabajo.
+
+---
+
+# 4. ¿Y `record struct`?
+
+Podríamos escribir:
+
+```csharp
+public readonly record struct Voltage(decimal Value);
+```
+
+Esto también tiene igualdad por valor.
+
+Pero hay una diferencia fundamental:
+
+```text
+record
+    ↓
+reference type
+
+record struct
+    ↓
+value type
+```
+
+`record struct` es un `struct`.
+
+Eso significa que:
+
+```csharp
+var voltage = Voltage.Create(220);
+```
+
+se comporta como un tipo por valor.
+
+Esto puede ser excelente para Value Objects **muy pequeños y muy simples**.
+
+Por ejemplo:
+
+```csharp
+public readonly record struct Percentage(decimal Value);
+```
+
+podría tener sentido.
+
+Pero nuestro dominio no solamente necesita almacenamiento.
+
+Queremos:
+
+```text
+validación
+fábricas
+reglas
+posiblemente comportamiento
+persistencia EF Core
+```
+
+Por eso no adoptaría `record struct` como regla general para ACSoft.
+
+---
+
+# 5. Una regla práctica para nuestro proyecto
+
+Para ACSoft utilizaría inicialmente:
+
+```text
+Value Objects
+       ↓
+sealed record
+```
+
+Por ejemplo:
+
+```csharp
+public sealed record Voltage
+```
+
+```csharp
+public sealed record Current
+```
+
+```csharp
+public sealed record Pressure
+```
+
+```csharp
+public sealed record Temperature
+```
+
+```csharp
+public sealed record Percentage
+```
+
+Esto nos proporciona un modelo consistente y sencillo.
+
+No necesitamos optimizar prematuramente por asignaciones de memoria.
+
+---
+
+# 6. Pero hay otro concepto más importante
+
+Hay dos tipos de Value Objects que debemos distinguir.
+
+## Tipo A — Wrapper de un valor
+
+Por ejemplo:
+
+```text
+Voltage
+Percentage
+Current
+Pressure
+Temperature
+```
+
+Conceptualmente:
+
+```text
+Voltage
+  └── Value
+```
+
+---
+
+## Tipo B — Compuesto
+
+Por ejemplo:
+
+```text
+MeasurementRange
+```
+
+Tiene:
+
+```text
+Minimum
+Maximum
+```
+
+Otro ejemplo futuro podría ser:
+
+```text
+DateRange
+```
+
+con:
+
+```text
+Start
+End
+```
+
+o:
+
+```text
+GpsCoordinate
+```
+
+con:
+
+```text
+Latitude
+Longitude
+```
+
+Estos también son Value Objects.
+
+Por lo tanto, no todos nuestros Value Objects van a tener una sola propiedad.
+
+---
+
+# 7. Hagamos ahora `Current`
+
+Ya que hemos definido la estrategia, podemos crear otro Value Object real de HVAC.
+
+```text
+AcSoft.Domain
+└── ValueObjects
+    ├── Voltage.cs
+    ├── Current.cs
+    ├── Percentage.cs
+    └── MeasurementRange.cs
+```
+
+`Current.cs`:
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record Current
+{
+    public decimal Value { get; }
+
+    private Current(decimal value)
+    {
+        Value = value;
+    }
+
+    public static Current Create(decimal value)
+    {
+        if (value < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                "La corriente no puede ser negativa.");
+        }
+
+        return new Current(value);
+    }
+}
+```
+
+Ahora:
+
+```csharp
+var current = Current.Create(12.5m);
+```
+
+representa:
+
+```text
+12.5 A
+```
+
+---
+
+# 8. Pero aquí aparece una oportunidad de mejora
+
+Observa que ahora tenemos:
+
+```csharp
+Voltage
+Current
+```
+
+y ambos contienen:
+
+```csharp
+public decimal Value { get; }
+```
+
+y ambos tienen:
+
+```csharp
+private (...)
+```
+
+y ambos validan:
+
+```text
+value >= 0
+```
+
+Podríamos pensar:
+
+> "Creemos una clase base `Measurement`."
+
+Por ejemplo:
+
+```csharp
+public abstract record Measurement
+{
+    public decimal Value { get; }
+
+    protected Measurement(decimal value)
+    {
+        Value = value;
+    }
+}
+```
+
+y luego:
+
+```csharp
+public sealed record Voltage : Measurement
+{
+}
+```
+
+Pero **yo no lo haría en este momento**.
+
+Esto es precisamente uno de los casos donde aplicar herencia solamente porque existe código parecido puede empeorar el diseño.
+
+Tenemos conceptos diferentes:
+
+```text
+Voltage ≠ Current ≠ Pressure
+```
+
+Aunque internamente tengan una propiedad `decimal`.
+
+La similitud técnica no significa necesariamente que exista una abstracción de dominio.
+
+---
+
+# 9. Esto conecta con lo que vimos sobre herencia
+
+Tenemos:
+
+```text
+Voltage
+Current
+Pressure
+Temperature
+```
+
+Todos podrían compartir:
+
+```text
+decimal Value
+```
+
+pero eso no significa que debamos crear:
+
+```text
+Measurement
+    ├── Voltage
+    ├── Current
+    ├── Pressure
+    └── Temperature
+```
+
+Podemos mantener:
+
+```text
+Voltage
+Current
+Pressure
+Temperature
+```
+
+independientes.
+
+Esto es perfectamente compatible con SOLID y DDD.
+
+---
+
+# 10. Un detalle importante: `0 A`
+
+Nuestro código permite:
+
+```csharp
+Current.Create(0);
+```
+
+¿Es correcto?
+
+Sí.
+
+Una corriente de:
+
+```text
+0 A
+```
+
+es físicamente posible.
+
+Por eso:
+
+```csharp
+if (value <= 0)
+```
+
+sería incorrecto si queremos permitir cero.
+
+Lo mismo ocurre con:
+
+```text
+0 V
+```
+
+dependiendo del contexto.
+
+Por eso las validaciones de Value Objects deben representar **invariantes del concepto**, no supuestos arbitrarios.
+
+---
+
+# 11. Ahora `Pressure`
+
+Para presión:
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record Pressure
+{
+    public decimal Value { get; }
+
+    private Pressure(decimal value)
+    {
+        Value = value;
+    }
+
+    public static Pressure Create(decimal value)
+    {
+        if (value < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                "La presión no puede ser negativa.");
+        }
+
+        return new Pressure(value);
+    }
+}
+```
+
+Uso:
+
+```csharp
+var dischargePressure = Pressure.Create(350);
+```
+
+Conceptualmente:
+
+```text
+350 PSI
+```
+
+---
+
+# 12. Pero aquí tenemos otro problema de dominio
+
+Ahora `Pressure` representa:
+
+```text
+350
+```
+
+pero no sabemos si son:
+
+```text
+PSI
+bar
+kPa
+Pa
+```
+
+Esto será importante en ACSoft.
+
+Tenemos dos alternativas.
+
+### Alternativa A
+
+Crear Value Objects diferentes:
+
+```text
+PressurePsi
+PressureBar
+PressureKpa
+```
+
+No me gusta mucho porque multiplicaría los tipos.
+
+### Alternativa B
+
+Crear:
+
+```text
+Pressure
+   Value
+   Unit
+```
+
+Por ejemplo:
+
+```csharp
+Pressure.Create(
+    350,
+    PressureUnit.Psi);
+```
+
+Esta opción puede ser más apropiada si ACSoft realmente necesita trabajar con diferentes unidades.
+
+Pero **todavía no implementaría esto**.
+
+---
+
+# 13. ¿Por qué?
+
+Porque tenemos que tomar una decisión de negocio:
+
+> ¿ACSoft almacenará todas las mediciones en una unidad estándar?
+
+Por ejemplo:
+
+```text
+Pressure → PSI
+Temperature → °C
+Current → A
+Voltage → V
+Mass → g
+```
+
+Si la respuesta es sí, el modelo se simplifica muchísimo.
+
+El técnico podría introducir:
+
+```text
+350 PSI
+```
+
+y nosotros almacenaríamos:
+
+```text
+350
+```
+
+sabiendo que `Pressure` siempre significa PSI.
+
+Pero si permitimos:
+
+```text
+350 PSI
+24 bar
+350 kPa
+```
+
+entonces necesitamos representar la unidad explícitamente y posiblemente hacer conversiones.
+
+Para un sistema HVAC, **yo favorecería inicialmente una unidad estándar por magnitud**, salvo que exista un requisito real para manejar múltiples unidades.
+
+---
+
+# 14. Nuestra estrategia de Value Objects queda entonces
+
+```text
+ValueObjects
+│
+├── Voltage
+│     └── decimal Value
+│
+├── Current
+│     └── decimal Value
+│
+├── Pressure
+│     └── decimal Value
+│
+├── Percentage
+│     └── decimal Value
+│
+└── MeasurementRange
+      ├── decimal Minimum
+      └── decimal Maximum
+```
+
+Y posteriormente:
+
+```text
+Temperature
+Capacitance
+Mass
+```
+
+---
+
+# 15. Pero falta algo MUY importante
+
+Hasta ahora estamos construyendo Value Objects aislados.
+
+El verdadero beneficio aparece cuando los usamos dentro de una entidad.
+
+Por ejemplo, imaginemos:
+
+```csharp
+public sealed class Equipment
+{
+    public Guid Id { get; private set; }
+
+    public Voltage NominalVoltage { get; private set; }
+}
+```
+
+Ahora el modelo dice:
+
+```text
+Equipment
+    └── NominalVoltage
+            └── Voltage
+```
+
+En lugar de:
+
+```csharp
+public decimal NominalVoltage { get; private set; }
+```
+
+Y ahí empezamos a ver realmente el beneficio de DDD.
+
+---
+
+# 16. Y aquí debemos tener cuidado con `ActivityAnswer`
+
+No quiero que hagamos esto:
+
+```csharp
+public decimal Value { get; private set; }
+```
+
+en `ActivityAnswer` para absolutamente todo.
+
+Porque tenemos:
+
+```text
+Voltaje
+Corriente
+Presión
+Temperatura
+Texto
+Booleano
+Porcentaje
+```
+
+El siguiente diseño de respuestas debe ser capaz de representar diferentes tipos sin terminar en algo horrible como:
+
+```csharp
+public string? StringValue;
+public decimal? NumericValue;
+public bool? BooleanValue;
+public decimal? ValueBefore;
+public decimal? ValueAfter;
+public string? Unit;
+```
+
+con veinte propiedades opcionales.
+
+Ese es precisamente el problema que resolveremos cuando volvamos a:
+
+```text
+Activity
+   ↓
+Question
+   ↓
+ActivityAnswer
+```
+
+---
+
+## Entonces, ¿qué falta antes de volver a Activity?
+
+Yo haría todavía **tres Value Objects fundamentales**:
+
+1. `Temperature`
+2. `Capacitance`
+3. `Mass`
+
+y después una parte especialmente importante:
+
+### **`Measurement`**
+
+No como una clase base para `Voltage`, `Current`, etc., sino para estudiar si necesitamos representar:
+
+```text
+valor + unidad
+```
+
+en las respuestas de las actividades.
+
+Después de eso pasamos a **EF Core 10 + Value Objects**, porque hay que decidir cómo persistir:
+
+```csharp
+Voltage
+Percentage
+MeasurementRange
+```
+
+sin destruir el encapsulamiento del dominio.
+
+Ese sería el siguiente salto importante antes de regresar a `ActivityAnswer`.
+
+
+paso a paso con [webapi parte 4-4 representar una medida en ActivityAnswer](/blog/webapi-4-4-csharp)

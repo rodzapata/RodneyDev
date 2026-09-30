@@ -1,0 +1,809 @@
+---
+title: "Crear webapi Parte 4-5 Diseñar Preguntas + Tipo de respuesta + ActivityAnswer"
+date: "2026-09-30"
+description: "Crear WebApi parte 4-5 Diseñar Preguntas + Tipo de respuesta + ActivityAnswer"
+slug: "webapi-4-5-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. Ahora sí llegamos a una de las partes más importantes del dominio de ACSoft: **cómo modelar preguntas y respuestas dinámicas** sin terminar con una entidad llena de propiedades opcionales.
+
+La idea será construirlo poco a poco.
+
+---
+
+# 1. Primero: `Question` no es una respuesta
+
+Tenemos dos conceptos diferentes.
+
+### Pregunta del catálogo
+
+```text
+Question
+────────────────────────────
+"¿Cuál es el voltaje R-S?"
+Tipo: Voltage
+Unidad: V
+Requiere rango: Sí
+```
+
+### Respuesta durante una orden
+
+```text
+ActivityAnswer
+────────────────────────────
+230 V
+Correcto
+```
+
+Por lo tanto:
+
+```text
+Activity
+   │
+   └── Question
+          │
+          └── define qué esperamos
+                         ↓
+                    ActivityAnswer
+                         │
+                         └── contiene qué ocurrió
+```
+
+Esto es muy importante para DDD.
+
+---
+
+# 2. `AnswerType`
+
+Primero definamos qué tipo de respuesta puede tener una pregunta.
+
+En:
+
+```text
+AcSoft.Domain
+└── Enums
+    └── AnswerType.cs
+```
+
+podemos crear:
+
+```csharp id="j5z8h1"
+namespace AcSoft.Domain.Enums;
+
+public enum AnswerType
+{
+    Status = 1,
+    Numeric = 2,
+    Measurement = 3,
+    Text = 4
+}
+```
+
+Pero quiero detenerme aquí porque hay una decisión importante.
+
+¿Necesitamos realmente `Boolean`?
+
+Anteriormente teníamos:
+
+```text
+Correcto
+No correcto
+```
+
+y ahora tenemos:
+
+```text
+Correcto
+No correcto
+No aplica
+```
+
+Por lo tanto, **ya no es un booleano**.
+
+En vez de:
+
+```csharp
+bool
+```
+
+podemos utilizar:
+
+```csharp
+Status
+```
+
+---
+
+# 3. `AnswerStatus`
+
+Creamos:
+
+```text
+AcSoft.Domain
+└── Enums
+    └── AnswerStatus.cs
+```
+
+```csharp id="lrxp4k"
+namespace AcSoft.Domain.Enums;
+
+public enum AnswerStatus
+{
+    Correct = 1,
+    Incorrect = 2,
+    NotApplicable = 3
+}
+```
+
+Ahora:
+
+```text
+Ajuste de tornillería
+        ↓
+      Status
+        ↓
+┌────────────────┐
+│ Correct        │
+│ Incorrect      │
+│ NotApplicable  │
+└────────────────┘
+```
+
+Esto representa perfectamente la regla que definimos.
+
+---
+
+# 4. ¿Qué significa `Numeric`?
+
+Una pregunta podría ser:
+
+> ¿Cuántos minutos tomó la actividad?
+
+Respuesta:
+
+```text
+35
+```
+
+Aquí no necesitamos necesariamente:
+
+```text
+Voltage
+Current
+Pressure
+```
+
+porque es simplemente un número.
+
+Por ejemplo:
+
+```text
+Cantidad de tornillos:
+8
+```
+
+podría ser:
+
+```text
+Numeric
+```
+
+---
+
+# 5. ¿Qué significa `Measurement`?
+
+Aquí tenemos:
+
+> Voltaje R-S
+
+Respuesta:
+
+```text
+230 V
+```
+
+o:
+
+> Corriente fase R
+
+Respuesta:
+
+```text
+12.1 A
+```
+
+o:
+
+> Presión de descarga
+
+Respuesta:
+
+```text
+350 PSI
+```
+
+Aquí existe una magnitud física.
+
+Por eso:
+
+```text
+Measurement
+```
+
+es diferente de:
+
+```text
+Numeric
+```
+
+---
+
+# 6. Pero hay un problema
+
+Si ponemos simplemente:
+
+```csharp id="z0h6px"
+AnswerType.Measurement
+```
+
+¿cómo sabemos si la respuesta debe ser:
+
+```text
+Voltage
+Current
+Pressure
+Temperature
+```
+
+?
+
+Necesitamos que la pregunta también defina la magnitud.
+
+Podríamos introducir:
+
+```csharp id="q7q9ga"
+MeasurementType
+```
+
+Por ejemplo:
+
+```csharp id="e7cy8w"
+namespace AcSoft.Domain.Enums;
+
+public enum MeasurementType
+{
+    Voltage = 1,
+    Current = 2,
+    Pressure = 3,
+    Temperature = 4,
+    Capacitance = 5,
+    Mass = 6
+}
+```
+
+Ahora una pregunta podría ser:
+
+```text
+Question
+────────────────────────────
+Text:
+"Medir voltaje R-S"
+
+AnswerType:
+Measurement
+
+MeasurementType:
+Voltage
+```
+
+---
+
+# 7. Pero aquí debemos evitar una trampa
+
+Podríamos terminar haciendo:
+
+```csharp id="cznjl8"
+public class Question
+{
+    public AnswerType AnswerType { get; set; }
+
+    public MeasurementType? MeasurementType { get; set; }
+
+    public decimal? Minimum { get; set; }
+
+    public decimal? Maximum { get; set; }
+
+    public decimal? Tolerance { get; set; }
+
+    public string? Unit { get; set; }
+
+    public bool? Required { get; set; }
+
+    public ...
+}
+```
+
+Y terminaríamos con una entidad enorme llena de combinaciones inválidas.
+
+Por ejemplo:
+
+```text
+AnswerType = Text
+MeasurementType = Voltage
+Minimum = 198
+Maximum = 242
+```
+
+¿Qué significa eso?
+
+No debería ser posible.
+
+Por eso debemos encapsular las reglas.
+
+---
+
+# 8. `Question` debe tener una configuración coherente
+
+Pensemos primero conceptualmente:
+
+```text
+Question
+│
+├── Text
+├── AnswerType
+│
+└── configuración específica
+```
+
+Por ejemplo:
+
+### Pregunta de estado
+
+```text
+Ajuste de tornillería
+    ↓
+AnswerType = Status
+```
+
+### Pregunta numérica
+
+```text
+Cantidad de filtros
+    ↓
+AnswerType = Numeric
+```
+
+### Pregunta de medición
+
+```text
+Voltaje R-S
+    ↓
+AnswerType = Measurement
+MeasurementType = Voltage
+ExpectedRange = 198–242
+```
+
+### Pregunta textual
+
+```text
+Observaciones
+    ↓
+AnswerType = Text
+```
+
+Esto es mucho más coherente.
+
+---
+
+# 9. Aquí entra nuestro `MeasurementRange`
+
+Recordemos:
+
+```csharp id="7ztf6b"
+var range =
+    MeasurementRange.FromTolerance(
+        220,
+        Percentage.Create(10));
+```
+
+Tenemos:
+
+```text
+198–242
+```
+
+Entonces una pregunta puede conceptualmente tener:
+
+```text
+MeasurementType = Voltage
+
+ExpectedRange
+    Minimum = 198
+    Maximum = 242
+```
+
+Pero recuerda una regla que ya definimos:
+
+> **Los parámetros y rangos dependen del equipo, no de la actividad genérica.**
+
+Esto es muy importante.
+
+---
+
+# 10. No pongamos el rango directamente en `Question`
+
+Por ejemplo:
+
+```text
+Question:
+"Medir voltaje"
+
+ExpectedRange:
+198–242
+```
+
+sería problemático.
+
+Porque un equipo puede ser:
+
+```text
+220 V
+```
+
+y otro:
+
+```text
+440 V
+```
+
+La pregunta es la misma:
+
+```text
+"Medir voltaje"
+```
+
+pero el rango depende del equipo.
+
+Por eso tenemos que separar:
+
+```text
+Question
+   ↓
+¿Qué medir?
+
+Equipment
+   ↓
+¿Qué valores son normales?
+
+Execution
+   ↓
+¿Qué se midió?
+```
+
+---
+
+# 11. Nuestro modelo empieza a verse así
+
+```text
+                 CATÁLOGO
+                    │
+                    ▼
+                Activity
+                    │
+                    ▼
+                 Question
+                    │
+          ┌─────────┴─────────┐
+          │                   │
+      AnswerType        MeasurementType
+          │                   │
+          ▼                   ▼
+       Status              Voltage
+       Numeric             Current
+       Measurement         Pressure
+       Text                ...
+```
+
+Y durante la ejecución:
+
+```text
+               WORK ORDER
+                    │
+                    ▼
+          WorkOrderActivity
+                    │
+                    ▼
+             ActivityAnswer
+                    │
+             ┌──────┴──────┐
+             ▼             ▼
+          Question       Value
+```
+
+---
+
+# 12. Ahora aparece el verdadero problema de `ActivityAnswer`
+
+¿Cómo hacemos esto?
+
+```text
+ActivityAnswer
+    ├── Status
+    ├── Numeric
+    ├── Measurement
+    └── Text
+```
+
+Una primera aproximación sería:
+
+```csharp id="m06q0w"
+public sealed class ActivityAnswer
+{
+    public AnswerStatus? Status { get; private set; }
+
+    public decimal? NumericValue { get; private set; }
+
+    public string? TextValue { get; private set; }
+
+    public decimal? MeasurementValue { get; private set; }
+}
+```
+
+Pero **no quiero que hagamos esto**.
+
+Porque podríamos tener:
+
+```text
+Status = Correct
+NumericValue = 25
+TextValue = "Hola"
+MeasurementValue = 230
+```
+
+todo al mismo tiempo.
+
+Eso representa un estado incoherente.
+
+---
+
+# 13. Necesitamos modelar "uno de varios tipos"
+
+Conceptualmente queremos:
+
+```text
+ActivityAnswer
+       │
+       └── AnswerValue
+              │
+              ├── StatusAnswerValue
+              ├── NumericAnswerValue
+              ├── MeasurementAnswerValue
+              └── TextAnswerValue
+```
+
+Pero aquí tenemos que tomar una decisión de DDD importante.
+
+No quiero que `ActivityAnswer` termine siendo una jerarquía excesiva.
+
+Podemos utilizar un **Value Object discriminado** para representar el valor de respuesta.
+
+---
+
+# 14. Una primera versión
+
+Podríamos definir:
+
+```csharp id="lqn6fz"
+public sealed record AnswerValue
+{
+    public AnswerType Type { get; }
+
+    public AnswerStatus? Status { get; }
+
+    public decimal? NumericValue { get; }
+
+    public string? TextValue { get; }
+
+    private AnswerValue(
+        AnswerType type,
+        AnswerStatus? status,
+        decimal? numericValue,
+        string? textValue)
+    {
+        Type = type;
+        Status = status;
+        NumericValue = numericValue;
+        TextValue = textValue;
+    }
+}
+```
+
+Pero todavía no me gusta.
+
+Estamos volviendo a:
+
+```text
+nullable property
+nullable property
+nullable property
+```
+
+---
+
+# 15. Hagámoslo de forma más orientada al dominio
+
+Podemos crear fábricas específicas:
+
+```csharp id="i2k6a8"
+AnswerValue.FromStatus(...)
+AnswerValue.FromNumeric(...)
+AnswerValue.FromText(...)
+AnswerValue.FromMeasurement(...)
+```
+
+Así el consumidor no puede crear fácilmente combinaciones arbitrarias.
+
+Por ejemplo:
+
+```csharp id="7fbn38"
+var answer =
+    AnswerValue.FromStatus(
+        AnswerStatus.Correct);
+```
+
+o:
+
+```csharp id="cbm1hf"
+var answer =
+    AnswerValue.FromText(
+        "Se encontró vibración.");
+```
+
+o:
+
+```csharp id="8qviy5"
+var answer =
+    AnswerValue.FromNumeric(8);
+```
+
+Y para una medición:
+
+```csharp id="y9j44h"
+var answer =
+    AnswerValue.FromMeasurement(
+        Voltage.Create(230));
+```
+
+Esto ya se parece mucho más al lenguaje del dominio.
+
+---
+
+# 16. Pero hay otro requisito que todavía no hemos resuelto
+
+Nuestra medición:
+
+```text
+230 V
+```
+
+puede necesitar:
+
+```text
+R-S
+R-T
+S-T
+```
+
+Y la corriente:
+
+```text
+12.1 A
+```
+
+puede necesitar:
+
+```text
+R
+S
+T
+```
+
+Por lo tanto, **`Measurement` no solamente tiene un valor**.
+
+Necesitamos saber el punto de medición.
+
+Por ejemplo:
+
+```text
+Corriente
+   │
+   ├── R = 12.1 A
+   ├── S = 11.8 A
+   └── T = 12.0 A
+```
+
+Esto significa que antes de escribir definitivamente `AnswerValue.FromMeasurement(...)`, debemos definir el concepto:
+
+# `MeasurementPoint`
+
+Por ejemplo:
+
+```text
+PhaseR
+PhaseS
+PhaseT
+PhaseRS
+PhaseRT
+PhaseST
+```
+
+Pero no todas las mediciones utilizan fases.
+
+Una presión podría simplemente ser:
+
+```text
+Discharge
+Suction
+```
+
+Una temperatura:
+
+```text
+ReturnAir
+SupplyAir
+Ambient
+```
+
+Por lo tanto, crear un enum gigantesco:
+
+```csharp
+MeasurementPoint
+```
+
+también puede terminar mezclando conceptos que no pertenecen juntos.
+
+---
+
+## Aquí debemos hacer una pausa de diseño
+
+Ya llegamos a un punto donde **no conviene seguir escribiendo clases por escribirlas**.
+
+El siguiente concepto que debemos resolver es cómo representar **mediciones múltiples de una misma pregunta**:
+
+```text
+Pregunta: Corriente compresor #1
+
+R = 12.1 A
+S = 11.8 A
+T = 12.0 A
+```
+
+y:
+
+```text
+Pregunta: Voltaje compresor #1
+
+R-S = 220 V
+R-T = 221 V
+S-T = 219 V
+```
+
+sin crear una clase diferente para cada combinación.
+
+La solución probablemente estará en separar:
+
+```text
+Measurement
+    ↓
+MeasurementValue
+    ↓
+MeasurementReading
+```
+
+y utilizar un identificador de **punto/posición de lectura**.
+
+**Ese será nuestro siguiente paso**, y después podremos construir `ActivityAnswer` sobre una base mucho más sólida.

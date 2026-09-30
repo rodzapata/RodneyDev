@@ -1,0 +1,925 @@
+---
+title: "Modelando DDD parte 7 Respuesta de Enum a ValueObjects"
+date: "2026-09-30"
+description: "Las respuestas de Enum a ValueObjects"
+slug: "modelando-DDD-7"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+Perfecto. Ahora vamos a cerrar una pieza importante: **`ValorRespuesta`** y la relación entre `ParametroRespuesta → ValorRespuesta → Medicion`.
+
+Quiero mantenerlo práctico para nuestro proyecto HVAC y no introducir polimorfismo innecesario todavía.
+
+La idea será:
+
+```text
+ParametroRespuesta
+        │
+        │ define qué se puede responder
+        ▼
+ValorRespuesta
+        │
+        │ pertenece a una medición
+        ▼
+Medicion
+        │
+        │ pertenece a una actividad realizada
+        ▼
+ActividadRealizada
+```
+
+Y vamos a hacer que **`ParametroRespuesta` sea responsable de validar el valor según su tipo**.
+
+---
+
+# 1. `ValorRespuesta` como Value Object
+
+Primero vamos a corregir algo de lo que veníamos haciendo.
+
+No necesitamos que `ValorRespuesta` sea una Entity con `Id`.
+
+Un valor de respuesta como:
+
+```text
+20.5 A
+```
+
+o:
+
+```text
+CORRECTO
+```
+
+no necesita identidad propia dentro del dominio.
+
+Lo que tiene identidad es la **medición**.
+
+Por eso podemos hacer:
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record ValorRespuesta
+{
+    public string Valor { get; }
+
+    private ValorRespuesta(string valor)
+    {
+        Valor = valor;
+    }
+
+    public static ValorRespuesta Crear(string valor)
+    {
+        if (string.IsNullOrWhiteSpace(valor))
+        {
+            throw new DomainException(
+                "El valor de la respuesta es obligatorio.");
+        }
+
+        return new ValorRespuesta(valor);
+    }
+
+    public override string ToString()
+        => Valor;
+}
+```
+
+Esto es un Value Object porque su identidad depende de su valor.
+
+Por ejemplo:
+
+```text
+ValorRespuesta("20.5")
+```
+
+es igual a otro:
+
+```text
+ValorRespuesta("20.5")
+```
+
+conceptualmente.
+
+---
+
+# 2. Pero todavía falta algo
+
+No quiero que cualquiera pueda hacer:
+
+```csharp
+ValorRespuesta.Crear("hola");
+```
+
+para un parámetro que espera:
+
+```text
+Decimal
+```
+
+La validación debe conocer el `ParametroRespuesta`.
+
+Por eso agregaremos comportamiento allí.
+
+---
+
+# 3. `ParametroRespuesta` crea el `ValorRespuesta`
+
+Nuestra clase queda así:
+
+```csharp
+using AcSoft.Domain.Enums;
+using AcSoft.Domain.Exceptions;
+using AcSoft.Domain.ValueObjects;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class ParametroRespuesta
+{
+    public Guid Id { get; private set; }
+
+    public string Nombre { get; private set; } = null!;
+
+    public TipoRespuesta TipoRespuesta { get; private set; }
+
+    public string? Unidad { get; private set; }
+
+    public bool Obligatorio { get; private set; }
+
+    public int Orden { get; private set; }
+
+    private readonly List<OpcionRespuesta> _opciones = [];
+
+    public IReadOnlyCollection<OpcionRespuesta> Opciones =>
+        _opciones.AsReadOnly();
+
+    private ParametroRespuesta()
+    {
+    }
+
+    public ParametroRespuesta(
+        string nombre,
+        TipoRespuesta tipoRespuesta,
+        string? unidad,
+        bool obligatorio,
+        int orden)
+    {
+        if (string.IsNullOrWhiteSpace(nombre))
+        {
+            throw new ArgumentException(
+                "El nombre es obligatorio.",
+                nameof(nombre));
+        }
+
+        if (orden < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(orden));
+        }
+
+        Id = Guid.NewGuid();
+        Nombre = nombre;
+        TipoRespuesta = tipoRespuesta;
+        Unidad = unidad;
+        Obligatorio = obligatorio;
+        Orden = orden;
+    }
+
+    public void AgregarOpcion(
+        OpcionRespuesta opcion)
+    {
+        ArgumentNullException.ThrowIfNull(opcion);
+
+        if (TipoRespuesta != TipoRespuesta.Opcion)
+        {
+            throw new DomainException(
+                "Solo un parámetro de tipo Opcion puede tener opciones.");
+        }
+
+        if (_opciones.Any(
+                x => x.Codigo.Equals(
+                    opcion.Codigo,
+                    StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new DomainException(
+                $"La opción '{opcion.Codigo}' ya existe.");
+        }
+
+        _opciones.Add(opcion);
+    }
+
+    public ValorRespuesta CrearValor(
+        string valor)
+    {
+        if (string.IsNullOrWhiteSpace(valor))
+        {
+            throw new DomainException(
+                $"El parámetro '{Nombre}' requiere un valor.");
+        }
+
+        switch (TipoRespuesta)
+        {
+            case TipoRespuesta.Decimal:
+
+                if (!decimal.TryParse(
+                        valor,
+                        out _))
+                {
+                    throw new DomainException(
+                        $"El valor '{valor}' no es un decimal válido.");
+                }
+
+                break;
+
+            case TipoRespuesta.Entero:
+
+                if (!int.TryParse(
+                        valor,
+                        out _))
+                {
+                    throw new DomainException(
+                        $"El valor '{valor}' no es un entero válido.");
+                }
+
+                break;
+
+            case TipoRespuesta.Opcion:
+
+                if (!_opciones.Any(
+                        x => x.Codigo.Equals(
+                            valor,
+                            StringComparison.OrdinalIgnoreCase)))
+                {
+                    throw new DomainException(
+                        $"La opción '{valor}' no está configurada para el parámetro '{Nombre}'.");
+                }
+
+                break;
+
+            case TipoRespuesta.Texto:
+
+                break;
+
+            default:
+
+                throw new DomainException(
+                    $"Tipo de respuesta '{TipoRespuesta}' no soportado.");
+        }
+
+        return ValorRespuesta.Crear(valor);
+    }
+}
+```
+
+Ahora tenemos una regla muy importante:
+
+```text
+ParametroRespuesta
+       │
+       └── CrearValor()
+              │
+              ├── Decimal → valida decimal
+              ├── Entero  → valida entero
+              ├── Opcion  → valida que exista
+              └── Texto   → acepta texto
+```
+
+---
+
+# 4. Ejemplo con presión
+
+Supongamos:
+
+```csharp
+var parametro = new ParametroRespuesta(
+    "Presión de descarga",
+    TipoRespuesta.Decimal,
+    "PSI",
+    true,
+    1);
+```
+
+Esto funciona:
+
+```csharp
+var valor = parametro.CrearValor("125.5");
+```
+
+Pero esto:
+
+```csharp
+var valor = parametro.CrearValor("Correcto");
+```
+
+lanza una excepción de dominio.
+
+Esto es exactamente lo que queremos.
+
+---
+
+# 5. Ejemplo con `Correcto / NoCorrecto / NoAplica`
+
+Creamos:
+
+```csharp
+var parametro = new ParametroRespuesta(
+    "Ajuste de tornillería",
+    TipoRespuesta.Opcion,
+    null,
+    true,
+    1);
+```
+
+Agregamos las opciones:
+
+```csharp
+parametro.AgregarOpcion(
+    new OpcionRespuesta(
+        "CORRECTO",
+        "Correcto",
+        1));
+
+parametro.AgregarOpcion(
+    new OpcionRespuesta(
+        "NO_CORRECTO",
+        "No correcto",
+        2));
+
+parametro.AgregarOpcion(
+    new OpcionRespuesta(
+        "NO_APLICA",
+        "No aplica",
+        3));
+```
+
+Ahora:
+
+```csharp
+var respuesta =
+    parametro.CrearValor("NO_CORRECTO");
+```
+
+es válida.
+
+Pero:
+
+```csharp
+var respuesta =
+    parametro.CrearValor("PENDIENTE");
+```
+
+no lo es.
+
+---
+
+# 6. Ahora `Medicion`
+
+Nuestra `Medicion` debe contener los valores de una determinada etapa.
+
+```csharp
+using AcSoft.Domain.Enums;
+using AcSoft.Domain.Exceptions;
+using AcSoft.Domain.ValueObjects;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class Medicion
+{
+    public Guid Id { get; private set; }
+
+    public EtapaMantenimiento Etapa { get; private set; }
+
+    private readonly List<ValorRespuestaItem> _valores = [];
+
+    public IReadOnlyCollection<ValorRespuestaItem> Valores =>
+        _valores.AsReadOnly();
+
+    private Medicion()
+    {
+    }
+
+    public Medicion(
+        EtapaMantenimiento etapa)
+    {
+        Id = Guid.NewGuid();
+        Etapa = etapa;
+    }
+
+    public void AgregarValor(
+        ValorRespuestaItem valor)
+    {
+        ArgumentNullException.ThrowIfNull(valor);
+
+        if (_valores.Any(
+                x => x.ParametroRespuestaId ==
+                     valor.ParametroRespuestaId))
+        {
+            throw new DomainException(
+                "Ya existe una respuesta para este parámetro en esta medición.");
+        }
+
+        _valores.Add(valor);
+    }
+}
+```
+
+Aquí apareció `ValorRespuestaItem`.
+
+¿Por qué?
+
+Porque necesitamos saber **qué parámetro está siendo respondido**.
+
+No basta con:
+
+```text
+20.5
+```
+
+Tenemos que saber:
+
+```text
+Parámetro = RS
+Valor = 20.5
+```
+
+---
+
+# 7. `ValorRespuestaItem`
+
+Esta clase representa:
+
+> El valor registrado para un parámetro específico.
+
+```csharp
+using AcSoft.Domain.ValueObjects;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class ValorRespuestaItem
+{
+    public Guid ParametroRespuestaId { get; private set; }
+
+    public ValorRespuesta Valor { get; private set; }
+
+    private ValorRespuestaItem()
+    {
+    }
+
+    public ValorRespuestaItem(
+        Guid parametroRespuestaId,
+        ValorRespuesta valor)
+    {
+        if (parametroRespuestaId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "El parámetro es obligatorio.",
+                nameof(parametroRespuestaId));
+        }
+
+        ArgumentNullException.ThrowIfNull(valor);
+
+        ParametroRespuestaId = parametroRespuestaId;
+        Valor = valor;
+    }
+}
+```
+
+Ahora la estructura es mucho más clara:
+
+```text
+Medicion
+│
+├── ValorRespuestaItem
+│      ├── ParametroRespuestaId = RS
+│      └── Valor = 20.1
+│
+├── ValorRespuestaItem
+│      ├── ParametroRespuestaId = RT
+│      └── Valor = 20.5
+│
+└── ValorRespuestaItem
+       ├── ParametroRespuestaId = ST
+       └── Valor = 20.3
+```
+
+---
+
+# 8. Pero hay una mejora DDD importante
+
+Actualmente alguien podría hacer:
+
+```csharp
+var valor = parametro.CrearValor("20.5");
+
+var item = new ValorRespuestaItem(
+    parametro.Id,
+    valor);
+
+medicion.AgregarValor(item);
+```
+
+Funciona, pero podemos hacer que `Medicion` sea más responsable.
+
+Por ejemplo:
+
+```csharp
+public void RegistrarRespuesta(
+    ParametroRespuesta parametro,
+    string valor)
+{
+    ArgumentNullException.ThrowIfNull(parametro);
+
+    var respuesta = parametro.CrearValor(valor);
+
+    var item = new ValorRespuestaItem(
+        parametro.Id,
+        respuesta);
+
+    AgregarValor(item);
+}
+```
+
+Entonces el código que utiliza nuestro dominio queda mucho más expresivo:
+
+```csharp
+medicion.RegistrarRespuesta(
+    parametroRS,
+    "20.1");
+```
+
+y:
+
+```csharp
+medicion.RegistrarRespuesta(
+    parametroRT,
+    "20.5");
+```
+
+y:
+
+```csharp
+medicion.RegistrarRespuesta(
+    parametroST,
+    "20.3");
+```
+
+Esto me gusta mucho más porque expresa lenguaje del negocio.
+
+---
+
+# 9. `Medicion` completa
+
+Entonces:
+
+```csharp
+using AcSoft.Domain.Enums;
+using AcSoft.Domain.Exceptions;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class Medicion
+{
+    public Guid Id { get; private set; }
+
+    public EtapaMantenimiento Etapa { get; private set; }
+
+    private readonly List<ValorRespuestaItem> _valores = [];
+
+    public IReadOnlyCollection<ValorRespuestaItem> Valores =>
+        _valores.AsReadOnly();
+
+    private Medicion()
+    {
+    }
+
+    public Medicion(
+        EtapaMantenimiento etapa)
+    {
+        Id = Guid.NewGuid();
+        Etapa = etapa;
+    }
+
+    public void RegistrarRespuesta(
+        ParametroRespuesta parametro,
+        string valor)
+    {
+        ArgumentNullException.ThrowIfNull(parametro);
+
+        if (_valores.Any(
+                x => x.ParametroRespuestaId == parametro.Id))
+        {
+            throw new DomainException(
+                $"El parámetro '{parametro.Nombre}' ya fue respondido.");
+        }
+
+        var respuesta =
+            parametro.CrearValor(valor);
+
+        var item = new ValorRespuestaItem(
+            parametro.Id,
+            respuesta);
+
+        _valores.Add(item);
+    }
+}
+```
+
+Ahora la responsabilidad queda bastante bien distribuida:
+
+```text
+ParametroRespuesta
+        │
+        │ valida
+        ▼
+   CrearValor()
+        │
+        ▼
+ValorRespuesta
+        │
+        ▼
+ValorRespuestaItem
+        │
+        ▼
+     Medicion
+```
+
+---
+
+# 10. Ahora `ActividadRealizada`
+
+La completamos:
+
+```csharp
+using AcSoft.Domain.Enums;
+using AcSoft.Domain.Exceptions;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class ActividadRealizada
+{
+    public Guid Id { get; private set; }
+
+    public Guid ActividadCatalogoId { get; private set; }
+
+    private readonly List<Medicion> _mediciones = [];
+
+    public IReadOnlyCollection<Medicion> Mediciones =>
+        _mediciones.AsReadOnly();
+
+    private ActividadRealizada()
+    {
+    }
+
+    public ActividadRealizada(
+        Guid actividadCatalogoId)
+    {
+        if (actividadCatalogoId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "La actividad de catálogo es obligatoria.",
+                nameof(actividadCatalogoId));
+        }
+
+        Id = Guid.NewGuid();
+        ActividadCatalogoId = actividadCatalogoId;
+    }
+
+    public void AgregarMedicion(
+        Medicion medicion)
+    {
+        ArgumentNullException.ThrowIfNull(medicion);
+
+        if (_mediciones.Any(
+                x => x.Etapa == medicion.Etapa))
+        {
+            throw new DomainException(
+                $"Ya existe una medición para la etapa '{medicion.Etapa}'.");
+        }
+
+        _mediciones.Add(medicion);
+    }
+}
+```
+
+---
+
+# 11. Nuestro ejemplo HVAC completo
+
+Ahora podemos imaginar el siguiente escenario.
+
+### Catálogo
+
+```text
+Actividad:
+Lectura de amperaje compresor #1
+
+Parámetros:
+
+RS → Decimal → A
+RT → Decimal → A
+ST → Decimal → A
+
+Etapas:
+
+Antes
+Después
+```
+
+El técnico inicia la actividad.
+
+Creamos:
+
+```csharp
+var actividad =
+    new ActividadRealizada(
+        actividadCatalogo.Id);
+```
+
+Creamos la medición antes:
+
+```csharp
+var antes =
+    new Medicion(
+        EtapaMantenimiento.Antes);
+```
+
+Registramos:
+
+```csharp
+antes.RegistrarRespuesta(
+    parametroRS,
+    "20.1");
+
+antes.RegistrarRespuesta(
+    parametroRT,
+    "20.5");
+
+antes.RegistrarRespuesta(
+    parametroST,
+    "20.3");
+```
+
+Agregamos a la actividad:
+
+```csharp
+actividad.AgregarMedicion(antes);
+```
+
+Luego el técnico realiza el mantenimiento.
+
+Después:
+
+```csharp
+var despues =
+    new Medicion(
+        EtapaMantenimiento.Despues);
+```
+
+Y:
+
+```csharp
+despues.RegistrarRespuesta(
+    parametroRS,
+    "18.7");
+
+despues.RegistrarRespuesta(
+    parametroRT,
+    "19.0");
+
+despues.RegistrarRespuesta(
+    parametroST,
+    "18.9");
+```
+
+Y finalmente:
+
+```csharp
+actividad.AgregarMedicion(despues);
+```
+
+El resultado conceptual:
+
+```text
+ActividadRealizada
+│
+├── ANTES
+│   │
+│   ├── RS = 20.1 A
+│   ├── RT = 20.5 A
+│   └── ST = 20.3 A
+│
+└── DESPUÉS
+    │
+    ├── RS = 18.7 A
+    ├── RT = 19.0 A
+    └── ST = 18.9 A
+```
+
+---
+
+# 12. Y ahora podemos hacer lo mismo con `Ajuste de tornillería`
+
+Creamos:
+
+```text
+Actividad:
+Ajuste de tornillería
+
+Parámetro:
+Resultado
+
+Tipo:
+Opcion
+
+Opciones:
+    CORRECTO
+    NO_CORRECTO
+    NO_APLICA
+```
+
+El técnico responde:
+
+```csharp
+medicion.RegistrarRespuesta(
+    parametroResultado,
+    "NO_APLICA");
+```
+
+Y el dominio valida que:
+
+```text
+NO_APLICA
+```
+
+esté realmente configurado entre las opciones permitidas.
+
+---
+
+# 13. Algo que todavía NO debemos hacer
+
+No agregaría todavía:
+
+```csharp
+public decimal? ValorDecimal
+public bool? ValorBoolean
+public string? ValorTexto
+```
+
+ni tampoco:
+
+```csharp
+Dictionary<string, object>
+```
+
+ni JSON dentro de `ValorRespuesta`.
+
+Nuestro modelo de dominio ya tiene un concepto claro:
+
+```text
+ValorRespuesta
+```
+
+y el `ParametroRespuesta` determina qué valores son válidos.
+
+**Después veremos cómo persistir esto en EF Core 10**, que es una decisión diferente a cómo queremos expresarlo en el dominio.
+
+---
+
+# 14. Hay una última pieza que nos falta
+
+Ahora mismo tenemos un problema:
+
+`ActividadRealizada` conoce:
+
+```csharp
+ActividadCatalogoId
+```
+
+pero no conoce directamente:
+
+```text
+qué parámetros necesita
+qué etapas necesita
+cuáles son obligatorias
+```
+
+Para saber si la actividad está completa, necesitamos que el Aggregate tenga acceso a la definición del catálogo, o que al crear `ActividadRealizada` se le entregue la configuración necesaria.
+
+Esto nos lleva al siguiente punto importante de DDD:
+
+```text
+ActividadCatalogo
+       │
+       │ define
+       ▼
+ActividadRealizada
+       │
+       ├── ¿requiere Antes?
+       ├── ¿requiere Después?
+       ├── ¿todos los parámetros fueron respondidos?
+       └── ¿la actividad está completa?
+```
+
+**El siguiente paso que haría es implementar `ActividadCatalogo` de forma completa y después crear `OrdenMantenimiento` como Aggregate Root**, para que no terminemos con entidades que pueden modificarse libremente desde cualquier parte. Ahí podremos definir correctamente quién tiene autoridad para crear `ActividadRealizada`, agregar mediciones y finalmente completar la orden.

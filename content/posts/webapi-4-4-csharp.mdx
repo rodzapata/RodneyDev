@@ -1,0 +1,759 @@
+---
+title: "Crear webapi Parte 4-4 Como representar una medida dentro de una ActitityAnswer"
+date: "2026-09-30"
+description: "Crear WebApi parte 4-4 Como representar una medida dentro de una ActitityAnswer"
+slug: "webapi-4-4-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. Continuemos con los tres Value Objects que nos faltan y después hacemos algo importante: **decidir cómo representar una medición dentro de `ActivityAnswer`**.
+
+## 1. `Temperature`
+
+Para ACSoft podemos representar la temperatura en una unidad estándar, inicialmente **°C**.
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record Temperature
+{
+    public decimal Value { get; }
+
+    private Temperature(decimal value)
+    {
+        Value = value;
+    }
+
+    public static Temperature Create(decimal value)
+    {
+        if (value < -273.15m)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                "La temperatura no puede ser inferior al cero absoluto.");
+        }
+
+        return new Temperature(value);
+    }
+}
+```
+
+Esto permite:
+
+```csharp
+var temperature = Temperature.Create(7.5m);
+```
+
+que representa:
+
+```text
+7.5 °C
+```
+
+Y evita:
+
+```csharp
+Temperature.Create(-300);
+```
+
+porque físicamente no tiene sentido.
+
+---
+
+# 2. `Capacitance`
+
+Para los capacitores de nuestros equipos podemos utilizar **µF** como unidad estándar.
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record Capacitance
+{
+    public decimal Value { get; }
+
+    private Capacitance(decimal value)
+    {
+        Value = value;
+    }
+
+    public static Capacitance Create(decimal value)
+    {
+        if (value < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                "La capacitancia no puede ser negativa.");
+        }
+
+        return new Capacitance(value);
+    }
+}
+```
+
+Uso:
+
+```csharp
+var capacitance = Capacitance.Create(45);
+```
+
+Representa:
+
+```text
+45 µF
+```
+
+---
+
+# 3. `Mass`
+
+Para carga de refrigerante podemos utilizar gramos como unidad estándar.
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record Mass
+{
+    public decimal Value { get; }
+
+    private Mass(decimal value)
+    {
+        Value = value;
+    }
+
+    public static Mass Create(decimal value)
+    {
+        if (value < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                "La masa no puede ser negativa.");
+        }
+
+        return new Mass(value);
+    }
+}
+```
+
+Entonces:
+
+```csharp
+var refrigerantCharge = Mass.Create(850);
+```
+
+representa:
+
+```text
+850 g
+```
+
+---
+
+# 4. Nuestro conjunto empieza a quedar bastante claro
+
+```text
+AcSoft.Domain
+│
+└── ValueObjects
+    │
+    ├── Voltage
+    ├── Current
+    ├── Pressure
+    ├── Temperature
+    ├── Capacitance
+    ├── Mass
+    ├── Percentage
+    └── MeasurementRange
+```
+
+Tenemos ahora conceptos del dominio y no simples números.
+
+---
+
+# 5. Pero aparece una pregunta importante
+
+Supongamos esta pregunta:
+
+> Medir corriente del compresor #1.
+
+Tenemos tres mediciones:
+
+```text
+R = 12.1 A
+S = 11.8 A
+T = 12.0 A
+```
+
+Podríamos tener:
+
+```csharp
+var r = Current.Create(12.1m);
+var s = Current.Create(11.8m);
+var t = Current.Create(12.0m);
+```
+
+Perfecto.
+
+Pero ahora tenemos otra pregunta:
+
+> ¿Dónde almacenamos que `12.1` corresponde a R?
+
+Necesitamos representar el **significado de la medición**.
+
+Esto nos lleva al siguiente concepto.
+
+---
+
+# 6. No creemos todavía un `Measurement<T>`
+
+Podríamos sentir la tentación de hacer:
+
+```csharp
+public sealed record Measurement<T>
+{
+    public T Value { get; }
+}
+```
+
+y luego:
+
+```csharp
+Measurement<Current>
+Measurement<Voltage>
+Measurement<Pressure>
+```
+
+Es técnicamente posible.
+
+Pero para nuestro dominio todavía sería una abstracción prematura.
+
+Tenemos que resolver primero qué significa una medición en ACSoft.
+
+---
+
+# 7. Una medición realmente tiene varios conceptos
+
+Por ejemplo:
+
+```text
+Corriente del compresor #1
+Fase R
+12.1 A
+Antes
+```
+
+Aquí tenemos:
+
+```text
+Magnitud       → Current
+Valor          → 12.1
+Punto          → R
+Momento        → Before
+Equipo         → Compresor #1
+```
+
+Esto es muy diferente de simplemente:
+
+```text
+decimal = 12.1
+```
+
+Y aquí empezamos a acercarnos a `ActivityAnswer`.
+
+---
+
+# 8. Recordemos nuestro modelo de actividades
+
+Tenemos conceptualmente:
+
+```text
+Activity
+    ↓
+Question
+    ↓
+WorkOrderActivity
+    ↓
+ActivityAnswer
+```
+
+Por ejemplo:
+
+```text
+Activity:
+    Medir corriente del compresor
+
+Question:
+    Corriente fase R
+
+Question:
+    Corriente fase S
+
+Question:
+    Corriente fase T
+```
+
+Y una ejecución:
+
+```text
+WorkOrderActivity
+    Moment = Before
+```
+
+contiene:
+
+```text
+ActivityAnswer
+    R = 12.1 A
+
+ActivityAnswer
+    S = 11.8 A
+
+ActivityAnswer
+    T = 12.0 A
+```
+
+Pero esto todavía tiene un problema.
+
+---
+
+# 9. ¿Y si queremos repetir la medición?
+
+Supongamos:
+
+```text
+Before:
+R = 12.1
+S = 11.8
+T = 12.0
+
+After:
+R = 10.2
+S = 10.1
+T = 10.3
+```
+
+Nuestra estructura anterior:
+
+```text
+WorkOrderActivity
+    Moment = Before
+
+WorkOrderActivity
+    Moment = After
+```
+
+funciona.
+
+Pero también puede ocurrir:
+
+```text
+After #1
+After #2
+After #3
+```
+
+por una nueva comprobación.
+
+Por eso habíamos llegado a la idea de:
+
+```text
+ExecutionMoment
+Sequence
+```
+
+por ejemplo:
+
+```text
+ActivityId              Moment      Sequence
+------------------------------------------------
+MedirCorriente          Before         1
+MedirCorriente          After          1
+MedirCorriente          After          2
+```
+
+Eso nos permite conservar el historial.
+
+---
+
+# 10. Ahora volvamos a `MeasurementRange`
+
+Supongamos:
+
+```text
+Voltaje nominal = 220 V
+Tolerancia = ±10 %
+```
+
+Nuestro dominio puede producir:
+
+```csharp
+var tolerance = Percentage.Create(10);
+
+var range = MeasurementRange.FromTolerance(
+    220,
+    tolerance);
+```
+
+Resultado:
+
+```text
+198 – 242
+```
+
+Luego:
+
+```csharp
+var measured = Voltage.Create(230);
+
+var isWithinRange =
+    range.Contains(measured.Value);
+```
+
+Resultado:
+
+```text
+true
+```
+
+Pero observa algo:
+
+**`MeasurementRange` no dice "Correcto".**
+
+Dice:
+
+```text
+230 está dentro del rango
+```
+
+La evaluación de negocio puede traducir eso a:
+
+```text
+Correcto
+```
+
+---
+
+# 11. Esto nos lleva a otro Value Object
+
+Ya habíamos identificado que algunas preguntas no son numéricas:
+
+> Ajuste de tornillería.
+
+Las respuestas deben ser:
+
+```text
+Correcto
+No correcto
+No aplica
+```
+
+Esto no debería ser:
+
+```csharp
+bool?
+```
+
+porque:
+
+```text
+true
+false
+null
+```
+
+no expresan claramente el dominio.
+
+Ya habíamos identificado este problema anteriormente.
+
+Podemos crear:
+
+```csharp
+public enum AnswerStatus
+{
+    Correct = 1,
+    Incorrect = 2,
+    NotApplicable = 3
+}
+```
+
+Pero aquí hay una distinción:
+
+**No todo debe ser Value Object.**
+
+Un enum es perfectamente adecuado para un conjunto cerrado de estados.
+
+Por eso no necesitamos convertir:
+
+```text
+Correcto
+No correcto
+No aplica
+```
+
+en un Value Object.
+
+---
+
+# 12. Ahora tenemos tres conceptos diferentes
+
+### Valor medido
+
+```text
+Voltage = 230 V
+```
+
+### Rango esperado
+
+```text
+198–242 V
+```
+
+### Resultado de evaluación
+
+```text
+Correcto
+```
+
+Son conceptos diferentes:
+
+```text
+           Measurement
+                │
+                ▼
+             230 V
+                │
+                ▼
+        MeasurementRange
+          198 – 242
+                │
+                ▼
+           Evaluation
+            Correcto
+```
+
+Esta separación será fundamental para nuestro diseño.
+
+---
+
+# 13. Una cuestión importante: `MeasurementRange` no debería conocer `Voltage`
+
+Nuestro actual:
+
+```csharp
+public sealed record MeasurementRange
+```
+
+trabaja con:
+
+```csharp
+decimal
+```
+
+Eso tiene una ventaja: puede representar:
+
+```text
+198–242 V
+42.75–47.25 µF
+830–870 g
+```
+
+Pero también tiene la desventaja de que permite mezclar magnitudes.
+
+Por ejemplo, técnicamente:
+
+```csharp
+var voltageRange =
+    MeasurementRange.Create(198, 242);
+
+var pressure =
+    Pressure.Create(350);
+
+voltageRange.Contains(pressure.Value);
+```
+
+compila.
+
+Eso no es ideal.
+
+Pero **no quiero resolverlo creando una jerarquía de herencia o genéricos todavía**.
+
+Primero debemos terminar de definir el modelo de mediciones.
+
+---
+
+# 14. Hay una alternativa muy interesante
+
+Podemos hacer que el rango también conozca la magnitud.
+
+Por ejemplo conceptualmente:
+
+```text
+MeasurementRange<Voltage>
+MeasurementRange<Current>
+MeasurementRange<Pressure>
+```
+
+Pero entonces aparecerían decisiones adicionales:
+
+```text
+¿Cómo persiste EF Core esto?
+¿Cómo serializamos esto en JSON?
+¿Cómo lo almacenamos en ActivityAnswer?
+¿Cómo soportamos respuestas dinámicas?
+```
+
+Y justamente ahí es donde nuestra aplicación tiene un requisito especial:
+
+> Las preguntas son dinámicas.
+
+No sabemos en tiempo de compilación si una pregunta será:
+
+```text
+Voltage
+Current
+Pressure
+Boolean
+Text
+```
+
+Por eso **no quiero introducir `Measurement<T>` todavía**.
+
+---
+
+# 15. El siguiente paso ya no es crear más Value Objects
+
+Aquí está el punto importante de nuestra arquitectura.
+
+Ya tenemos suficientes Value Objects para continuar.
+
+Ahora debemos pasar a:
+
+# `ActivityAnswer`
+
+y diseñar **cómo una respuesta dinámica puede contener diferentes tipos de valores sin convertir la entidad en un conjunto de 15 propiedades nullable**.
+
+Queremos poder representar algo como:
+
+```text
+Pregunta:
+Voltaje R-S
+
+Tipo:
+Voltage
+
+Valor:
+230 V
+
+Rango:
+198–242 V
+
+Resultado:
+Correcto
+```
+
+y:
+
+```text
+Pregunta:
+Ajuste de tornillería
+
+Tipo:
+Boolean / Status
+
+Valor:
+Correcto
+```
+
+y:
+
+```text
+Pregunta:
+Presión de descarga
+
+Tipo:
+Pressure
+
+Valor:
+350 PSI
+```
+
+y:
+
+```text
+Pregunta:
+Observación del técnico
+
+Tipo:
+Text
+
+Valor:
+"Se encontró vibración..."
+```
+
+Y además:
+
+```text
+Corriente compresor #1
+
+R = 12.1 A
+S = 11.8 A
+T = 12.0 A
+```
+
+---
+
+## La siguiente decisión de diseño
+
+Antes de escribir código de `ActivityAnswer`, vamos a definir algo fundamental:
+
+```text
+Question
+```
+
+debe decir **qué tipo de respuesta espera**.
+
+Por ejemplo:
+
+```text
+AnswerType
+────────────────────
+Boolean
+Numeric
+Text
+Measurement
+Status
+```
+
+Pero debemos diseñarlo con cuidado, porque **`Numeric` y `Measurement` no son exactamente lo mismo**.
+
+Una presión de:
+
+```text
+350
+```
+
+no tiene el mismo significado que:
+
+```text
+350 PSI
+```
+
+Y una corriente:
+
+```text
+12.1 A
+```
+
+puede necesitar además indicar:
+
+```text
+Phase = R
+```
+
+Por eso, el siguiente paso será diseñar **`Question` + `AnswerType` + `ActivityAnswer`**, aprovechando los Value Objects que acabamos de construir, en lugar de seguir creando Value Objects indefinidamente.
+
+
+paso a paso con [webapi parte 4-5 Diseñar Preguntas + Tipo de respuesta + ActivityAnswer](/blog/webapi-4-5-csharp)
+

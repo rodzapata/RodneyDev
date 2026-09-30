@@ -1,0 +1,724 @@
+---
+title: "Modelando DDD parte 6 Tipo de Respuesta diferente a Opcion de Respuesta"
+date: "2026-09-30"
+description: "Las respuestas que bolean ahora son: Correcto, No correcto, No aplica"
+slug: "modelando-DDD-6"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+Continuemos. Aquí llegamos a una parte importante del diseño: **hacer que las opciones de respuesta sean configurables por el catálogo**, en lugar de crear un `enum` nuevo cada vez que aparezca una pregunta diferente.
+
+## 1. Primero: separar `TipoRespuesta` de `OpcionRespuesta`
+
+Tenemos dos conceptos diferentes:
+
+**Tipo de respuesta:**
+
+> ¿Cómo se responde esta pregunta?
+
+Por ejemplo:
+
+```text
+Decimal
+Entero
+Texto
+Opción
+```
+
+**Opciones de respuesta:**
+
+> ¿Qué opciones puede seleccionar el técnico?
+
+Por ejemplo:
+
+```text
+Correcto
+No correcto
+No aplica
+```
+
+Por eso cambiaría nuestro enum a:
+
+```csharp
+namespace TribuSoft.Domain.Enums;
+
+public enum TipoRespuesta
+{
+    Decimal = 1,
+    Entero = 2,
+    Texto = 3,
+    Opcion = 4
+}
+```
+
+Observa que eliminé `SiNo`, `ResultadoInspeccion` y `Compuesta`.
+
+No porque esos conceptos no existan, sino porque podemos modelarlos mediante `Opcion`.
+
+---
+
+# 2. `OpcionRespuesta`
+
+Creamos una entidad:
+
+```csharp
+namespace TribuSoft.Domain.Entities;
+
+public sealed class OpcionRespuesta
+{
+    public Guid Id { get; private set; }
+
+    public string Codigo { get; private set; } = null!;
+
+    public string Nombre { get; private set; } = null!;
+
+    public int Orden { get; private set; }
+
+    public bool Activa { get; private set; }
+
+    private OpcionRespuesta()
+    {
+    }
+
+    public OpcionRespuesta(
+        string codigo,
+        string nombre,
+        int orden)
+    {
+        if (string.IsNullOrWhiteSpace(codigo))
+            throw new ArgumentException(
+                "El código es obligatorio.",
+                nameof(codigo));
+
+        if (string.IsNullOrWhiteSpace(nombre))
+            throw new ArgumentException(
+                "El nombre es obligatorio.",
+                nameof(nombre));
+
+        if (orden < 1)
+            throw new ArgumentOutOfRangeException(
+                nameof(orden));
+
+        Id = Guid.NewGuid();
+        Codigo = codigo;
+        Nombre = nombre;
+        Orden = orden;
+        Activa = true;
+    }
+
+    public void Desactivar()
+    {
+        Activa = false;
+    }
+
+    public void Activar()
+    {
+        Activa = true;
+    }
+}
+```
+
+Ahora podemos crear:
+
+```csharp
+new OpcionRespuesta(
+    "CORRECTO",
+    "Correcto",
+    1);
+
+new OpcionRespuesta(
+    "NO_CORRECTO",
+    "No correcto",
+    2);
+
+new OpcionRespuesta(
+    "NO_APLICA",
+    "No aplica",
+    3);
+```
+
+---
+
+# 3. Entonces `ParametroRespuesta` cambia
+
+Ahora `ParametroRespuesta` puede tener opciones.
+
+```csharp
+using TribuSoft.Domain.Enums;
+
+namespace TribuSoft.Domain.Entities;
+
+public sealed class ParametroRespuesta
+{
+    public Guid Id { get; private set; }
+
+    public string Nombre { get; private set; } = null!;
+
+    public TipoRespuesta TipoRespuesta { get; private set; }
+
+    public string? Unidad { get; private set; }
+
+    public bool Obligatorio { get; private set; }
+
+    public int Orden { get; private set; }
+
+    private readonly List<OpcionRespuesta> _opciones = [];
+
+    public IReadOnlyCollection<OpcionRespuesta> Opciones =>
+        _opciones.AsReadOnly();
+
+    private ParametroRespuesta()
+    {
+    }
+
+    public ParametroRespuesta(
+        string nombre,
+        TipoRespuesta tipoRespuesta,
+        string? unidad,
+        bool obligatorio,
+        int orden)
+    {
+        if (string.IsNullOrWhiteSpace(nombre))
+            throw new ArgumentException(
+                "El nombre es obligatorio.",
+                nameof(nombre));
+
+        if (orden < 1)
+            throw new ArgumentOutOfRangeException(
+                nameof(orden));
+
+        Id = Guid.NewGuid();
+        Nombre = nombre;
+        TipoRespuesta = tipoRespuesta;
+        Unidad = unidad;
+        Obligatorio = obligatorio;
+        Orden = orden;
+    }
+
+    public void AgregarOpcion(
+        OpcionRespuesta opcion)
+    {
+        ArgumentNullException.ThrowIfNull(opcion);
+
+        if (TipoRespuesta != TipoRespuesta.Opcion)
+        {
+            throw new DomainException(
+                "Solo los parámetros de tipo Opcion pueden tener opciones.");
+        }
+
+        if (_opciones.Any(
+                x => x.Codigo.Equals(
+                    opcion.Codigo,
+                    StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new DomainException(
+                $"La opción '{opcion.Codigo}' ya existe.");
+        }
+
+        _opciones.Add(opcion);
+    }
+}
+```
+
+Aquí aparece una regla de dominio muy buena:
+
+```csharp
+if (TipoRespuesta != TipoRespuesta.Opcion)
+```
+
+Una pregunta `Decimal` no puede tener:
+
+```text
+Correcto
+No correcto
+No aplica
+```
+
+porque no tiene sentido.
+
+---
+
+# 4. Ejemplo real: Ajuste de tornillería
+
+Ahora podemos crear nuestra actividad:
+
+```text
+Actividad:
+Ajuste de tornillería
+```
+
+Y su parámetro:
+
+```text
+Parámetro:
+Resultado
+
+Tipo:
+Opcion
+```
+
+Con:
+
+```text
+Correcto
+No correcto
+No aplica
+```
+
+Conceptualmente:
+
+```text
+ActividadCatalogo
+│
+└── ParametroRespuesta
+      │
+      ├── Tipo = Opcion
+      │
+      └── Opciones
+            ├── CORRECTO
+            ├── NO_CORRECTO
+            └── NO_APLICA
+```
+
+---
+
+# 5. Otro ejemplo: estado del filtro
+
+No necesitamos crear otro enum.
+
+Podemos tener:
+
+```text
+Actividad:
+Inspección de filtro
+
+Parámetro:
+Estado
+
+Tipo:
+Opcion
+
+Opciones:
+    LIMPIO
+    SUCIO
+    DETERIORADO
+    NO_APLICA
+```
+
+Y eso es exactamente lo que queríamos conseguir.
+
+---
+
+# 6. Incluso Sí / No / No aplica
+
+Otra actividad:
+
+> ¿El ventilador está funcionando?
+
+Puede tener:
+
+```text
+Tipo = Opcion
+```
+
+con:
+
+```text
+SI
+NO
+NO_APLICA
+```
+
+No necesitamos:
+
+```csharp
+enum EstadoVentilador
+```
+
+---
+
+# 7. ¿Y una respuesta decimal?
+
+Para:
+
+> Presión de descarga
+
+tenemos:
+
+```text
+ParametroRespuesta
+
+Nombre = Presión de descarga
+TipoRespuesta = Decimal
+Unidad = PSI
+```
+
+No necesita opciones.
+
+```text
+120.5
+```
+
+---
+
+# 8. ¿Y amperaje RS/RT/ST?
+
+Aquí hay algo importante.
+
+No necesitamos que:
+
+```text
+RS
+RT
+ST
+```
+
+sean tres columnas.
+
+Podemos tener una actividad:
+
+```text
+Lectura de amperaje compresor #1
+```
+
+con tres parámetros:
+
+```text
+RS → Decimal → A
+RT → Decimal → A
+ST → Decimal → A
+```
+
+Así:
+
+```text
+ActividadCatalogo
+│
+└── Parámetros
+      │
+      ├── RS
+      │    Tipo = Decimal
+      │    Unidad = A
+      │
+      ├── RT
+      │    Tipo = Decimal
+      │    Unidad = A
+      │
+      └── ST
+           Tipo = Decimal
+           Unidad = A
+```
+
+Y cuando se realiza:
+
+```text
+Medición ANTES
+
+RS = 20.1
+RT = 20.5
+ST = 20.3
+```
+
+Después:
+
+```text
+Medición DESPUÉS
+
+RS = 18.7
+RT = 19.0
+ST = 18.9
+```
+
+---
+
+# 9. Ahora tenemos que corregir `ValorRespuesta`
+
+Nuestra versión anterior:
+
+```csharp
+public string Valor { get; private set; }
+```
+
+ya no me parece suficiente.
+
+Porque ahora una respuesta puede ser:
+
+```text
+Decimal
+Opcion
+Entero
+Texto
+```
+
+Pero tampoco quiero crear:
+
+```csharp
+ValorBoolean
+ValorDecimal
+ValorEntero
+ValorTexto
+ValorOpcion
+```
+
+dentro de la misma entidad.
+
+Para este proyecto prefiero introducir un **Value Object**:
+
+```text
+ValorRespuesta
+```
+
+que represente el valor de una respuesta.
+
+La primera versión podría ser:
+
+```csharp
+namespace TribuSoft.Domain.ValueObjects;
+
+public sealed record ValorRespuesta(string Valor)
+{
+    public static ValorRespuesta Crear(string valor)
+    {
+        if (string.IsNullOrWhiteSpace(valor))
+            throw new DomainException(
+                "El valor de la respuesta es obligatorio.");
+
+        return new ValorRespuesta(valor);
+    }
+}
+```
+
+Pero aquí todavía tenemos un problema:
+
+```text
+"20.1"
+```
+
+y:
+
+```text
+"CORRECTO"
+```
+
+son ambos `string`.
+
+La validación del tipo tendría que hacerla el dominio usando `ParametroRespuesta.TipoRespuesta`.
+
+---
+
+# 10. Una solución más limpia
+
+En realidad, **el valor no debería validarse aislado**.
+
+Debe validarse contra el parámetro.
+
+Por ejemplo:
+
+```text
+Parametro:
+Presión de descarga
+Tipo:
+Decimal
+
+Valor:
+120.5
+```
+
+es válido.
+
+Pero:
+
+```text
+Presión de descarga
+Valor:
+"Correcto"
+```
+
+no es válido.
+
+Por eso propongo que `ValorRespuesta` sea creado desde `ParametroRespuesta`:
+
+```csharp
+public ValorRespuesta CrearValor(
+    string valor)
+{
+    // validar según TipoRespuesta
+}
+```
+
+Por ejemplo:
+
+```csharp
+public ValorRespuesta CrearValor(string valor)
+{
+    if (string.IsNullOrWhiteSpace(valor))
+        throw new DomainException(
+            "El valor es obligatorio.");
+
+    switch (TipoRespuesta)
+    {
+        case TipoRespuesta.Decimal:
+
+            if (!decimal.TryParse(
+                    valor,
+                    out _))
+            {
+                throw new DomainException(
+                    $"'{valor}' no es un valor decimal válido.");
+            }
+
+            break;
+
+        case TipoRespuesta.Entero:
+
+            if (!int.TryParse(
+                    valor,
+                    out _))
+            {
+                throw new DomainException(
+                    $"'{valor}' no es un entero válido.");
+            }
+
+            break;
+
+        case TipoRespuesta.Opcion:
+
+            if (!_opciones.Any(
+                    x => x.Codigo.Equals(
+                        valor,
+                        StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new DomainException(
+                    $"La opción '{valor}' no está configurada.");
+            }
+
+            break;
+
+        case TipoRespuesta.Texto:
+            break;
+    }
+
+    return new ValorRespuesta(
+        Id,
+        valor);
+}
+```
+
+Esto ya empieza a ser **comportamiento de dominio real**.
+
+---
+
+# 11. Pero hay un detalle que quiero mejorar
+
+No me gusta que `CrearValor()` reciba:
+
+```csharp
+string valor
+```
+
+para absolutamente todo.
+
+Para nuestro proyecto HVAC, podemos hacerlo más tipado posteriormente.
+
+Por ejemplo:
+
+```text
+CrearDecimal(120.5m)
+CrearEntero(5)
+CrearTexto("Observación")
+CrearOpcion("CORRECTO")
+```
+
+Pero **no quiero adelantarnos todavía**.
+
+Primero quiero que terminemos de definir el lenguaje del dominio.
+
+---
+
+# 12. Nuestro modelo hasta ahora
+
+Ya tenemos:
+
+```text
+DOMAIN
+│
+├── Entities
+│   │
+│   ├── ActividadCatalogo
+│   │
+│   ├── ParametroRespuesta
+│   │
+│   ├── OpcionRespuesta
+│   │
+│   ├── EtapaActividad
+│   │
+│   ├── ActividadRealizada
+│   │
+│   ├── Medicion
+│   │
+│   └── ValorRespuesta
+│
+├── Enums
+│   │
+│   ├── TipoRespuesta
+│   └── EtapaMantenimiento
+│
+├── ValueObjects
+│   │
+│   └── ...
+│
+└── Exceptions
+    │
+    └── DomainException
+```
+
+Y el flujo:
+
+```text
+                 CATÁLOGO
+                    │
+                    ▼
+          ┌─────────────────────┐
+          │ ActividadCatalogo   │
+          └──────────┬──────────┘
+                     │
+                     ▼
+             Parámetros
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+       Decimal                Opción
+          │                     │
+       120 PSI       Correcto/No correcto/
+                              No aplica
+```
+
+Luego, durante una orden:
+
+```text
+OrdenMantenimiento
+        │
+        ▼
+ActividadRealizada
+        │
+        ├── Medición ANTES
+        │       │
+        │       └── Valores
+        │
+        └── Medición DESPUÉS
+                │
+                └── Valores
+```
+
+### Siguiente paso
+
+Ahora sí estamos en un buen punto para construir **`ValorRespuesta` correctamente como Value Object y `Medicion` como Entity**, y después integrarlos dentro de `ActividadRealizada`.
+
+Ahí también podremos resolver algo muy importante: **cómo representar una respuesta `Opcion` sin convertir todo en strings**, y cómo validar en el dominio que el técnico no pueda registrar, por ejemplo, `"CORRECTO"` para una pregunta que espera un decimal.
+
+pasamos a ValueObject [respuestas de Enum a ValueObjects](/blog/modelando-DDD-7)  
+
+
