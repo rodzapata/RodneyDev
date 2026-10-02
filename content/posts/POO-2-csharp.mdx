@@ -1,0 +1,445 @@
+---
+title: "POO Paso a paso Parte 2"
+date: "2026-10-02"
+description: "POO parte 2 Encapsulacion"
+slug: "POO-2-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+# Paso 2. Encapsulación en C# 14 aplicada a AcSoft
+
+Continuemos con nuestra clase `WorkOrder` del proyecto AcSoft, utilizando .NET 10, C# 14, DDD y Clean Architecture.
+
+En este paso vamos a resolver un problema real: ¿cómo evitamos que una orden de mantenimiento cambie de estado o se complete cuando todavía no cumple las condiciones necesarias?
+
+La idea fundamental es que una orden de trabajo debe proteger sus propias reglas. No queremos que un controlador, un servicio o una aplicación Android pueda modificar directamente sus datos y dejarla en un estado inconsistente.
+
+## 1. ¿Qué es la encapsulación?
+
+La encapsulación consiste en controlar cómo se accede y se modifica el estado interno de un objeto.
+
+En C# contamos con herramientas como:
+
+* `public`: permite acceder desde otros tipos que tengan acceso al miembro.
+
+* `private`: restringe el acceso al tipo que declara el miembro.
+
+* `private set`: permite consultar una propiedad públicamente, pero limita la asignación a la propia clase.
+
+* `init`: permite establecer una propiedad durante la inicialización del objeto, pero no modificarla normalmente después.
+
+* Métodos públicos: ofrecen operaciones controladas para interactuar con el objeto.
+
+No se trata simplemente de ocultar variables. En el dominio de AcSoft, encapsular significa proteger las reglas del negocio mediante una API pública bien diseñada.
+
+## 2. El problema: una orden que cualquiera puede modificar
+
+Imagina esta implementación:
+
+C#
+
+```
+public class WorkOrder
+{
+    public Guid Id { get; set; }
+
+    public string Number { get; set; } = string.Empty;
+
+    public string Status { get; set; } = "Pendiente";
+
+    public bool MaintenanceCompleted { get; set; }
+}
+```
+
+Desde cualquier clase podríamos escribir:
+
+C#
+
+```
+order.Status = "Completada";
+order.MaintenanceCompleted = true;
+order.Number = "";
+```
+
+Esto presenta tres riesgos:
+
+1. El estado puede cambiar sin respetar el flujo de trabajo.
+
+2. Una orden puede declararse completada sin verificar sus actividades.
+
+3. Los datos importantes pueden quedar inválidos.
+
+Además, usar un `string` para representar el estado permite valores que no existen en el negocio.
+
+## 3. Primera mejora: controlar el acceso a las propiedades
+
+Comencemos con una implementación sencilla:
+
+C#
+
+```
+public sealed class WorkOrder
+{
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; }
+
+    public WorkOrderStatus Status { get; private set; }
+
+    private WorkOrder(string number)
+    {
+        Id = Guid.NewGuid();
+        Number = number;
+        Status = WorkOrderStatus.Pending;
+    }
+
+    public static WorkOrder Create(string number)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(number);
+
+        return new WorkOrder(number);
+    }
+}
+```
+
+Ahora el siguiente código es válido:
+
+C#
+
+```
+var order = WorkOrder.Create("OT-001");
+
+Console.WriteLine(order.Status);
+```
+
+Pero esto ya no compila:
+
+C#
+
+```
+order.Status = WorkOrderStatus.Completed;
+```
+
+¿Por qué? Porque el `set` de `Status` es privado.
+
+Sin embargo, el cambio de estado sigue siendo posible desde dentro de `WorkOrder`. Por eso vamos a crear métodos que representen las operaciones permitidas del negocio.
+
+
+## 4. Segunda mejora: controlar los cambios con métodos
+
+Agreguemos comportamiento a la clase. Por ahora, utilizaremos las reglas básicas de estado para concentrarnos en la encapsulación.
+
+C#
+
+```
+public void Start()
+{
+    if (Status != WorkOrderStatus.Pending)
+    {
+        throw new InvalidOperationException(
+            "Solo se puede iniciar una orden pendiente.");
+    }
+
+    Status = WorkOrderStatus.InProgress;
+}
+
+public void Complete()
+{
+    if (Status != WorkOrderStatus.InProgress)
+    {
+        throw new InvalidOperationException(
+            "Solo se puede completar una orden en proceso.");
+    }
+
+    Status = WorkOrderStatus.Completed;
+}
+```
+
+Podemos utilizar estos métodos de la siguiente manera:
+
+C#
+
+```
+var order = WorkOrder.Create("OT-001");
+
+order.Start();
+order.Complete();
+```
+
+En cambio, esta secuencia no está permitida:
+
+C#
+
+```
+var order = WorkOrder.Create("OT-002");
+
+order.Complete(); // Lanza InvalidOperationException.
+```
+
+La orden comienza en `Pending`, por lo que primero debe pasar a `InProgress`.
+
+Una precisión importante: todavía no hemos validado que las actividades de mantenimiento estén terminadas. Ese requisito deberá verificarse dentro del modelo de dominio antes de permitir la finalización real de una orden. No sería suficiente con comprobar únicamente su estado.
+
+## 5. Tercera mejora: encapsular la asignación de técnicos
+
+En AcSoft necesitamos asignar una orden a un técnico y, si es necesario, retirarle la asignación y asignarla a otra persona.
+
+Podríamos agregar esta propiedad:
+
+C#
+
+```
+public Guid? AssignedTechnicianId { get; private set; }
+```
+
+El tipo `Guid?` permite dos situaciones:
+
+* Contiene el identificador de un técnico asignado.
+
+* Es `null` cuando la orden no tiene un técnico asignado.
+
+Ahora podemos definir las operaciones:
+
+C#
+
+```
+public void AssignTechnician(Guid technicianId)
+{
+    if (technicianId == Guid.Empty)
+    {
+        throw new ArgumentException(
+            "El técnico es obligatorio.",
+            nameof(technicianId));
+    }
+
+    if (Status is WorkOrderStatus.Completed
+        or WorkOrderStatus.Cancelled)
+    {
+        throw new InvalidOperationException(
+            "No se puede asignar un técnico a una orden cerrada.");
+    }
+
+    AssignedTechnicianId = technicianId;
+}
+
+public void UnassignTechnician()
+{
+    if (Status is WorkOrderStatus.Completed
+        or WorkOrderStatus.Cancelled)
+    {
+        throw new InvalidOperationException(
+            "No se puede modificar la asignación de una orden cerrada.");
+    }
+
+    AssignedTechnicianId = null;
+}
+```
+
+Estos métodos se incorporarían dentro de `WorkOrder`, junto a `Start()` y `Complete()`.
+
+### ¿Cómo funcionaría?
+
+C#
+
+```
+var order = WorkOrder.Create("OT-003");
+
+Guid technician1 = Guid.NewGuid();
+Guid technician2 = Guid.NewGuid();
+
+// Asignar el primer técnico.
+order.AssignTechnician(technician1);
+
+// Retirar la asignación.
+order.UnassignTechnician();
+
+// Asignar otro técnico.
+order.AssignTechnician(technician2);
+```
+
+La orden sigue siendo la misma: no necesitamos eliminarla y crear otra para cambiar al responsable.
+
+Observa también que no hemos añadido un estado `TechnicianUnassigned` al enumerado `WorkOrderStatus`. La asignación del técnico y el estado de ejecución de la orden representan conceptos diferentes. Una orden puede estar pendiente y todavía no tener un técnico, por ejemplo.
+
+Este ejemplo permite reasignaciones, aunque en una versión completa tendremos que definir cuándo se puede hacer, registrar quién hizo el cambio y conservar el historial de asignaciones si el negocio lo requiere.
+
+
+## 6. Así quedaría la clase `WorkOrder` completa
+
+Para que puedas visualizar cómo se integran los conceptos, esta sería nuestra versión didáctica completa hasta este punto.
+
+Archivo: `AcSoft.Domain/WorkOrders/WorkOrder.cs`
+
+C#
+
+```
+namespace AcSoft.Domain.WorkOrders;
+
+public sealed class WorkOrder
+{
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; }
+
+    public Guid CustomerId { get; private set; }
+
+    public Guid EquipmentId { get; private set; }
+
+    public Guid? AssignedTechnicianId { get; private set; }
+
+    public WorkOrderStatus Status { get; private set; }
+
+    private WorkOrder(
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        Id = Guid.NewGuid();
+        Number = number;
+        CustomerId = customerId;
+        EquipmentId = equipmentId;
+        Status = WorkOrderStatus.Pending;
+    }
+
+    public static WorkOrder Create(
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(number);
+
+        if (customerId == Guid.Empty)
+            throw new ArgumentException(
+                "El cliente es obligatorio.",
+                nameof(customerId));
+
+        if (equipmentId == Guid.Empty)
+            throw new ArgumentException(
+                "El equipo es obligatorio.",
+                nameof(equipmentId));
+
+        return new WorkOrder(number, customerId, equipmentId);
+    }
+
+    public void AssignTechnician(Guid technicianId)
+    {
+        if (technicianId == Guid.Empty)
+            throw new ArgumentException(
+                "El técnico es obligatorio.",
+                nameof(technicianId));
+
+        EnsureNotClosed();
+
+        AssignedTechnicianId = technicianId;
+    }
+
+    public void UnassignTechnician()
+    {
+        EnsureNotClosed();
+
+        AssignedTechnicianId = null;
+    }
+
+    public void Start()
+    {
+        if (Status != WorkOrderStatus.Pending)
+            throw new InvalidOperationException(
+                "Solo se puede iniciar una orden pendiente.");
+
+        if (AssignedTechnicianId is null)
+            throw new InvalidOperationException(
+                "La orden necesita un técnico asignado.");
+
+        Status = WorkOrderStatus.InProgress;
+    }
+
+    public void Complete()
+    {
+        if (Status != WorkOrderStatus.InProgress)
+            throw new InvalidOperationException(
+                "Solo se puede completar una orden en proceso.");
+
+        // Pendiente de integrar la validación
+        // de las actividades obligatorias.
+
+        Status = WorkOrderStatus.Completed;
+    }
+
+    private void EnsureNotClosed()
+    {
+        if (Status is WorkOrderStatus.Completed
+            or WorkOrderStatus.Cancelled)
+        {
+            throw new InvalidOperationException(
+                "La orden está cerrada.");
+        }
+    }
+}
+```
+
+El enumerado correspondiente:
+
+C#
+
+```
+namespace AcSoft.Domain.WorkOrders;
+
+public enum WorkOrderStatus
+{
+    Pending,
+    InProgress,
+    Waiting,
+    Completed,
+    Cancelled
+}
+```
+
+Esta implementación es un ejercicio de encapsulación, no todavía una versión definitiva de tu dominio. Por ejemplo, `Complete()` necesita incorporar la validación de las actividades obligatorias, y la reasignación durante una intervención puede requerir reglas adicionales.
+
+## 7. ¿Cómo comprobamos que la encapsulación funciona?
+
+Podemos verificar el comportamiento con estas pruebas manuales:
+
+| Operación                                   | Resultado esperado                   |
+| ------------------------------------------- | ------------------------------------ |
+| Crear una orden con número vacío            | Rechazar la creación                 |
+| Iniciar una orden sin técnico               | Rechazar la operación                |
+| Asignar un técnico e iniciar                | Cambiar a `InProgress`               |
+| Completar una orden pendiente               | Rechazar la operación                |
+| Reasignar un técnico en una orden abierta   | Permitirlo según las reglas actuales |
+| Modificar `Status` directamente desde fuera | Error de compilación                 |
+
+Más adelante escribiremos pruebas automatizadas para estos casos, utilizando el proyecto de pruebas de dominio.
+
+## 8. Un último concepto importante: encapsulación no significa poner todo en una clase
+
+En AcSoft debemos distinguir responsabilidades:
+
+* `WorkOrder` protege las reglas de la orden de trabajo.
+
+* `MaintenanceActivity` o el modelo que definamos para las actividades representa el trabajo que debe ejecutarse.
+
+* Las respuestas de mantenimiento representan los resultados registrados por el técnico.
+
+* Un repositorio se encarga de recuperar y persistir las entidades; no debería decidir por su cuenta si una orden cumple las reglas del negocio.
+
+Por ejemplo, no sería recomendable añadir a `WorkOrder` toda la lógica de conexión a PostgreSQL, el envío de fotografías al servidor o la generación de informes. Eso mezclaría responsabilidades.
+
+La encapsulación nos ayuda a decidir qué debe controlar cada objeto y qué debe quedar fuera de él.
+
+## 9. Siguiente ejercicio
+
+¿Qué aspecto de AcSoft quieres utilizar para profundizar en la encapsulación?
+
+Validar que todas las actividades obligatorias estén terminadas antes de completar una orden.
+
+Controlar la asignación, desasignación y reasignación de técnicos.
+
+Proteger las respuestas de mantenimiento: Correcto, No correcto, No aplica y valores numéricos.
+
+Continuar con este ejercicio
+
+Mi recomendación didáctica es comenzar por las actividades obligatorias, porque nos permitirá conectar la encapsulación con una regla real de negocio y, posteriormente, aprender abstracción, composición e interfaces sobre un modelo que ya conocemos.

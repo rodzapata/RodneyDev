@@ -1,0 +1,375 @@
+---
+title: "POO Paso a paso Parte 1"
+date: "2026-10-02"
+description: "POO parte 1 Enfocado en AcSoft"
+slug: "POO-1-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+# Programación Orientada a Objetos (POO) en .NET 10 y C# 14 aplicada a AcSoft
+
+Rodney, vamos a estudiar la Programación Orientada a Objetos (POO) utilizando como base tu proyecto AcSoft, el sistema de mantenimiento de equipos de aire acondicionado que estamos desarrollando con .NET 10, C# 14, DDD y Clean Architecture.
+
+La idea no es aprender POO mediante ejemplos aislados de animales, vehículos o figuras geométricas. Vamos a utilizar situaciones reales de AcSoft: órdenes de trabajo, técnicos, equipos HVAC, actividades de mantenimiento y respuestas de los técnicos.
+
+Trabajaremos progresivamente, mostrando primero un diseño problemático y después cómo mejorarlo hasta obtener un diseño más profesional.
+
+## 1. ¿Qué aprenderemos y en qué orden?
+
+Paso 1. Clases y objetos
+
+Representar órdenes de trabajo, técnicos y equipos mediante objetos C#.
+
+Comenzamos aquí
+
+Paso 2. Encapsulación
+
+Proteger los datos y evitar que una orden cambie de estado de forma incorrecta.
+
+Paso 3. Abstracción
+
+Exponer operaciones del negocio sin revelar los detalles internos.
+
+Paso 4. Herencia y composición
+
+Determinar cuándo compartir comportamiento y cuándo modelar relaciones entre objetos.
+
+Paso 5. Polimorfismo e interfaces
+
+Diseñar diferentes tipos de respuestas de mantenimiento y servicios intercambiables.
+
+Paso 6. POO aplicada a DDD y Clean Architecture
+
+Entidades, objetos de valor, agregados, invariantes y dependencias entre capas.
+
+Vamos a respetar una decisión que ya tomaste para AcSoft: por ahora trabajaremos sin MediatR ni bibliotecas externas. Nos concentraremos en C# y en las capacidades propias de .NET.
+
+## 2. Paso 1: clases y objetos
+
+### 2.1. ¿Qué es una clase?
+
+Una clase es una definición que establece qué datos y comportamientos tendrán los objetos de un determinado tipo.
+
+En AcSoft podemos tener una clase `WorkOrder`, que represente una orden de trabajo.
+
+Una orden puede tener:
+
+* Un identificador.
+
+* Un número de orden.
+
+* Un cliente.
+
+* Un equipo de aire acondicionado.
+
+* Un estado.
+
+* Operaciones para asignar un técnico o iniciar el mantenimiento.
+
+Un objeto es una instancia concreta de esa clase.
+
+Por ejemplo:
+
+* `OT-20261002-001`: mantenimiento de un minisplit.
+
+* `OT-20261002-002`: mantenimiento de una unidad paquete.
+
+Ambas órdenes pueden crearse a partir de la misma clase `WorkOrder`, pero cada una tendrá sus propios datos.
+
+
+### 2.2. Primer ejemplo: un diseño problemático
+
+Imagina que comenzamos a desarrollar AcSoft de esta manera:
+
+C#
+
+```
+public class WorkOrder
+{
+    public Guid Id { get; set; }
+
+    public string Number { get; set; } = string.Empty;
+
+    public Guid CustomerId { get; set; }
+
+    public Guid EquipmentId { get; set; }
+
+    public string Status { get; set; } = "Pendiente";
+}
+```
+
+A primera vista parece correcto. Sin embargo, hay varios problemas.
+
+Problema 1: cualquier código puede modificar la orden.
+
+C#
+
+```
+var order = new WorkOrder();
+
+order.Status = "Finalizada";
+order.Status = "Cualquier cosa";
+order.CustomerId = Guid.Empty;
+```
+
+El compilador permite estas asignaciones, aunque puedan representar situaciones incorrectas para el negocio.
+
+Problema 2: el estado es un texto libre.
+
+Podemos escribir `"Pendiente"`, `"pendiente"`, `"Finalizada"` o `"Finalizda"`. El compilador no conoce los estados válidos del negocio.
+
+Problema 3: la clase solamente almacena datos.
+
+No define qué significa iniciar una orden, asignar un técnico o finalizar un mantenimiento. La lógica termina dispersándose en controladores y servicios.
+
+Este tipo de diseño se puede utilizar para transportar datos, pero no es suficiente como modelo de dominio si queremos proteger las reglas del negocio.
+
+## 3. Mejorando el diseño con POO
+
+Vamos a aplicar tres conceptos:
+
+1. Estado: los datos que necesita la orden.
+
+2. Comportamiento: las operaciones que puede realizar.
+
+3. Reglas de negocio: las condiciones que deben cumplirse para permitir esas operaciones.
+
+### 3.1. Crear un enumerado para el estado
+
+En lugar de guardar el estado como texto, podemos definir un `enum`.
+
+C#
+
+```
+namespace AcSoft.Domain.WorkOrders;
+
+public enum WorkOrderStatus
+{
+    Pending,
+    InProgress,
+    Waiting,
+    Completed,
+    Cancelled
+}
+```
+
+Ahora el código utiliza valores definidos por el programa:
+
+C#
+
+```
+WorkOrderStatus status = WorkOrderStatus.Pending;
+```
+
+Esto reduce los errores tipográficos y facilita las comparaciones.
+
+Importante: el `enum` define los estados disponibles, pero no impide por sí solo que una orden pase directamente de `Pending` a `Completed`. Esa regla debe implementarse en el comportamiento de la entidad.
+
+### 3.2. Encapsular la clase `WorkOrder`
+
+Esta es una versión didáctica que introduce los conceptos de POO. En los siguientes pasos podremos adaptarla al código real que ya tienes en AcSoft.
+
+C#
+
+```
+namespace AcSoft.Domain.WorkOrders;
+
+public sealed class WorkOrder
+{
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; }
+
+    public Guid CustomerId { get; private set; }
+
+    public Guid EquipmentId { get; private set; }
+
+    public WorkOrderStatus Status { get; private set; }
+
+    private WorkOrder(
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        Id = Guid.NewGuid();
+        Number = number;
+        CustomerId = customerId;
+        EquipmentId = equipmentId;
+        Status = WorkOrderStatus.Pending;
+    }
+
+    public static WorkOrder Create(
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(number);
+
+        if (customerId == Guid.Empty)
+            throw new ArgumentException(
+                "El cliente es obligatorio.",
+                nameof(customerId));
+
+        if (equipmentId == Guid.Empty)
+            throw new ArgumentException(
+                "El equipo es obligatorio.",
+                nameof(equipmentId));
+
+        return new WorkOrder(
+            number,
+            customerId,
+            equipmentId);
+    }
+
+    public void Start()
+    {
+        if (Status != WorkOrderStatus.Pending)
+        {
+            throw new InvalidOperationException(
+                "Solo se puede iniciar una orden pendiente.");
+        }
+
+        Status = WorkOrderStatus.InProgress;
+    }
+
+    public void Complete()
+    {
+        if (Status != WorkOrderStatus.InProgress)
+        {
+            throw new InvalidOperationException(
+                "Solo se puede completar una orden en proceso.");
+        }
+
+        Status = WorkOrderStatus.Completed;
+    }
+}
+```
+
+Nota: este ejemplo utiliza un constructor privado y una fábrica estática, igual que el enfoque que venimos trabajando para AcSoft. Los métodos Start y Complete son una primera aproximación a las reglas del dominio, no todavía el modelo completo de una orden de mantenimiento.
+
+### 3.3. ¿Qué conceptos de POO acabamos de aplicar?
+
+Encapsulación
+
+`private set`
+
+Desde el exterior podemos consultar el estado de la orden, pero no modificarlo directamente.
+
+Control de construcción
+
+Constructor privado y `Create()`
+
+La creación pasa por una operación que valida los datos obligatorios.
+
+Comportamiento
+
+`Start()` y `Complete()`
+
+La propia orden decide si una transición de estado está permitida.
+
+Validación del dominio
+
+Excepciones ante operaciones inválidas
+
+El objeto no acepta una transición que incumpla las reglas que hemos definido.
+
+## 4. Crear y utilizar objetos de AcSoft
+
+Veamos cómo se utiliza esta clase desde un código de aplicación.
+
+C#
+
+```
+using AcSoft.Domain.WorkOrders;
+
+Guid customerId = Guid.NewGuid();
+Guid equipmentId = Guid.NewGuid();
+
+WorkOrder order = WorkOrder.Create(
+    number: "OT-20261002-001",
+    customerId: customerId,
+    equipmentId: equipmentId);
+
+Console.WriteLine(order.Number);
+Console.WriteLine(order.Status);
+
+// Iniciar el mantenimiento.
+order.Start();
+
+Console.WriteLine(order.Status);
+
+// Completar el mantenimiento.
+order.Complete();
+
+Console.WriteLine(order.Status);
+```
+
+El resultado conceptual sería:
+
+```
+OT-20261002-001
+Pending
+InProgress
+Completed
+```
+
+Observa que no hemos hecho esto:
+
+C#
+
+```
+order.Status = WorkOrderStatus.Completed;
+```
+
+Esa asignación no compila porque `Status` tiene un setter privado. Para cambiar el estado, debemos invocar una operación de la entidad que aplique sus reglas.
+
+Esta es una de las ideas centrales de la POO aplicada a DDD: un objeto del dominio no debería ser únicamente una bolsa de propiedades; también debe proteger las reglas que le corresponden.
+
+## 5. Comprueba lo aprendido
+
+Pregunta 1. ¿Qué representa `WorkOrder`?
+
+Una instancia específica de una orden.
+
+La definición de los datos y comportamientos de las órdenes.
+
+Una base de datos.
+
+Pregunta 2. ¿Por qué usamos `private set` en `Status`?
+
+Para impedir cualquier cambio de estado, incluso desde la propia clase.
+
+Para permitir que cualquier controlador modifique el estado.
+
+Para impedir modificaciones directas desde fuera de la clase y controlar los cambios mediante sus operaciones.
+
+Pregunta 3. Si una orden está en `Pending`, ¿qué ocurre al llamar a `Complete()` en nuestra implementación?
+
+La orden se completa inmediatamente.
+
+Se lanza una `InvalidOperationException` porque la orden no está en proceso.
+
+C# cambia automáticamente el estado a `InProgress`.
+
+Comprobar respuestas
+
+## 6. ¿Cuál es el siguiente paso?
+
+Mi propuesta es continuar con la encapsulación en profundidad, aplicada a la clase real `WorkOrder` de AcSoft.
+
+En ese paso vamos a estudiar:
+
+* Por qué no conviene dejar propiedades públicas con `set`.
+
+* La diferencia entre `private set`, `init`, propiedades de solo lectura y campos privados.
+
+* Cómo evitar que una orden se complete sin que se hayan terminado las actividades obligatorias.
+
+* Cómo modelar la asignación y reasignación de técnicos sin permitir transiciones inválidas.
+
+* Cuándo una regla debe estar en `WorkOrder` y cuándo debe pertenecer a otro objeto del dominio.
+
+Después avanzaremos a abstracción, composición, herencia, interfaces y polimorfismo, siempre con ejemplos de tu sistema HVAC y respetando la arquitectura que estamos construyendo.
