@@ -1,0 +1,672 @@
+---
+title: "Crear webapi Parte 5-0 Modelar MeasurementReading"
+date: "2026-10-05"
+description: "Crear WebApi parte 5-0 modelar MeasurementReading"
+slug: "webapi-5-0-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. Pasemos al **Paso 5: modelar las mediciones múltiples**. Aquí vamos a resolver uno de los requisitos más importantes de ACSoft: una misma pregunta puede generar varias lecturas.
+
+# Paso 5 — Modelar `MeasurementReading`
+
+El problema que queremos resolver es este:
+
+```text
+Actividad:
+Medir corriente del compresor #1
+
+Antes:
+
+R = 12.1 A
+S = 11.8 A
+T = 12.0 A
+```
+
+Y después:
+
+```text
+Después:
+
+R = 10.2 A
+S = 10.1 A
+T = 10.3 A
+```
+
+No queremos crear:
+
+```csharp
+decimal PhaseR;
+decimal PhaseS;
+decimal PhaseT;
+```
+
+porque eso nos limitaría a un caso concreto.
+
+---
+
+## 5.1. Separar "qué medimos" de "dónde medimos"
+
+Tenemos:
+
+```text
+Current
+    ↓
+12.1 A
+```
+
+y:
+
+```text
+MeasurementPoint
+    ↓
+R
+```
+
+Por lo tanto una lectura completa sería:
+
+```text
+MeasurementReading
+├── Point
+└── Value
+```
+
+Conceptualmente:
+
+```text
+MeasurementReading
+    ├── R
+    └── 12.1 A
+```
+
+Otra:
+
+```text
+MeasurementReading
+    ├── S
+    └── 11.8 A
+```
+
+---
+
+# 5.2. `MeasurementPoint`
+
+Aquí recomiendo **no crear todavía un enum universal** como:
+
+```csharp
+MeasurementPoint.R
+MeasurementPoint.S
+MeasurementPoint.Discharge
+MeasurementPoint.ReturnAir
+```
+
+porque mezclaríamos conceptos diferentes.
+
+Una solución sencilla para nuestro primer diseño es utilizar un identificador textual controlado por la definición de la pregunta:
+
+```text
+"R"
+"S"
+"T"
+"R-S"
+"R-T"
+"S-T"
+```
+
+Más adelante, si el dominio demuestra que necesitamos tipos de puntos específicos, podemos crear Value Objects o catálogos especializados.
+
+---
+
+# 5.3. Creamos `MeasurementReading`
+
+En:
+
+```text
+AcSoft.Domain
+└── ValueObjects
+    └── MeasurementReading.cs
+```
+
+podemos empezar con:
+
+```csharp id="f6kq21"
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record MeasurementReading
+{
+    public string Point { get; }
+    public decimal Value { get; }
+
+    private MeasurementReading(
+        string point,
+        decimal value)
+    {
+        Point = point;
+        Value = value;
+    }
+
+    public static MeasurementReading Create(
+        string point,
+        decimal value)
+    {
+        if (string.IsNullOrWhiteSpace(point))
+        {
+            throw new ArgumentException(
+                "El punto de medición es obligatorio.",
+                nameof(point));
+        }
+
+        return new MeasurementReading(
+            point,
+            value);
+    }
+}
+```
+
+Pero aquí tenemos un problema:
+
+```text
+Value = 12.1
+```
+
+¿12.1 qué?
+
+No sabemos.
+
+Por eso **no deberíamos utilizar este modelo como definitivo**.
+
+---
+
+# 5.4. Ya tenemos nuestros Value Objects de magnitudes
+
+Tenemos:
+
+```text
+Voltage
+Current
+Pressure
+Temperature
+Capacitance
+Mass
+```
+
+Por lo tanto sería mejor que `MeasurementReading` no almacene directamente:
+
+```csharp
+decimal Value
+```
+
+sino que almacene el concepto de medición.
+
+Pero necesitamos soportar diferentes magnitudes.
+
+Una primera solución sería:
+
+```csharp
+public sealed record MeasurementReading
+{
+    public string Point { get; }
+    public MeasurementValue Value { get; }
+}
+```
+
+y crear:
+
+```text
+MeasurementValue
+```
+
+---
+
+# 5.5. `MeasurementValue`
+
+Aquí queremos representar:
+
+```text
+Voltage
+Current
+Pressure
+Temperature
+...
+```
+
+Podríamos intentar:
+
+```csharp
+public sealed record MeasurementValue
+{
+    public MeasurementType Type { get; }
+    public decimal Value { get; }
+}
+```
+
+Por ejemplo:
+
+```text
+MeasurementType = Current
+Value = 12.1
+```
+
+Esto funciona conceptualmente.
+
+Pero tenemos un problema: hemos perdido el beneficio de nuestros Value Objects.
+
+Podríamos hacer accidentalmente:
+
+```text
+MeasurementType = Current
+Value = -500
+```
+
+sin pasar por:
+
+```csharp
+Current.Create(...)
+```
+
+No queremos eso.
+
+---
+
+# 5.6. Por eso vamos a separar dos niveles
+
+Tenemos:
+
+### Magnitud
+
+```text
+Current
+Voltage
+Pressure
+Temperature
+```
+
+que controla la validez del valor.
+
+Y:
+
+### Lectura
+
+```text
+MeasurementReading
+```
+
+que indica **dónde** se tomó ese valor.
+
+Así:
+
+```text
+MeasurementReading
+        │
+        ├── Point = "R"
+        │
+        └── Value = Current(12.1)
+```
+
+Conceptualmente:
+
+```text
+┌──────────────────────────┐
+│ MeasurementReading       │
+│                          │
+│ Point: R                 │
+│                          │
+│ Value:                   │
+│    Current               │
+│    12.1 A                │
+└──────────────────────────┘
+```
+
+---
+
+# 5.7. ¿Cómo representar distintos tipos?
+
+Aquí tenemos una decisión de C#.
+
+Podríamos utilizar una interfaz:
+
+```csharp
+public interface IMeasurementValue
+{
+    decimal Value { get; }
+}
+```
+
+y:
+
+```csharp
+Voltage
+Current
+Pressure
+Temperature
+```
+
+implementarían esa interfaz.
+
+Pero **no recomiendo introducir esa abstracción todavía**.
+
+¿Por qué?
+
+Porque estamos intentando resolver un problema de modelado antes de saber cómo persistiremos y serializaremos las respuestas dinámicas.
+
+Para ACSoft, primero debemos definir el **modelo conceptual**, y después decidiremos la implementación técnica.
+
+---
+
+# 5.8. Entonces hagamos primero el modelo conceptual
+
+Una pregunta de medición puede tener:
+
+```text
+Question
+    │
+    ├── MeasurementType = Current
+    │
+    └── múltiples readings
+```
+
+Por ejemplo:
+
+```text
+Question:
+"Corriente compresor #1"
+
+MeasurementType:
+Current
+
+Readings:
+    R → 12.1 A
+    S → 11.8 A
+    T → 12.0 A
+```
+
+Mientras otra pregunta:
+
+```text
+Question:
+"Voltaje compresor #1"
+
+MeasurementType:
+Voltage
+
+Readings:
+    R-S → 220 V
+    R-T → 221 V
+    S-T → 219 V
+```
+
+La estructura común es:
+
+```text
+Question
+    ↓
+MeasurementType
+    ↓
+Collection<MeasurementReading>
+```
+
+Esto es mucho más importante que la clase C# concreta en este momento.
+
+---
+
+# 5.9. ¿Dónde vive esta colección?
+
+Aquí hay una decisión de DDD.
+
+No debería estar en `Question`.
+
+`Question` es una definición del catálogo.
+
+Por ejemplo:
+
+```text
+Question
+───────────────
+"Corriente del compresor"
+MeasurementType = Current
+```
+
+No contiene:
+
+```text
+R = 12.1
+S = 11.8
+T = 12.0
+```
+
+porque esos valores pertenecen a **una ejecución concreta**.
+
+Por lo tanto:
+
+```text
+Question
+    ↓ definición
+
+ActivityAnswer
+    ↓ ejecución
+
+MeasurementReading[]
+    ↓ valores obtenidos
+```
+
+---
+
+# 5.10. Nuestro modelo comienza a quedar así
+
+```text
+ACTIVITY CATALOG
+────────────────────────
+
+Activity
+   │
+   └── Question
+          │
+          ├── AnswerType
+          │
+          └── MeasurementType
+
+
+WORK ORDER EXECUTION
+────────────────────────
+
+WorkOrderActivity
+   │
+   └── ActivityAnswer
+          │
+          └── MeasurementReading[]
+```
+
+Y para nuestra medición:
+
+```text
+ActivityAnswer
+│
+├── QuestionId
+├── Moment
+│
+└── Readings
+      │
+      ├── R   → 12.1 A
+      ├── S   → 11.8 A
+      └── T   → 12.0 A
+```
+
+---
+
+# 5.11. Ahora aparece algo que debemos agregar: el momento
+
+Recordemos que ACSoft necesita:
+
+```text
+Before
+During
+After
+```
+
+Tenemos:
+
+```csharp
+public enum ExecutionMoment
+{
+    Before = 1,
+    During = 2,
+    After = 3
+}
+```
+
+Pero hay una distinción importante:
+
+`ExecutionMoment` pertenece a la **ejecución de la actividad**, no a cada lectura.
+
+Por ejemplo:
+
+```text
+WorkOrderActivity
+    Moment = Before
+
+ActivityAnswer
+    Corriente compresor
+
+Readings:
+    R = 12.1 A
+    S = 11.8 A
+    T = 12.0 A
+```
+
+No queremos:
+
+```text
+R = 12.1 A Before
+S = 11.8 A Before
+T = 12.0 A Before
+```
+
+aunque técnicamente podríamos almacenarlo.
+
+El momento ya está determinado por la ejecución.
+
+---
+
+# 5.12. ¿Y si repetimos `After`?
+
+Aquí entra nuestro `Sequence`.
+
+Por ejemplo:
+
+```text
+WorkOrderActivity
+────────────────────────
+Activity: Medir corriente
+Moment: After
+Sequence: 1
+
+R = 10.2
+S = 10.1
+T = 10.3
+```
+
+Y luego:
+
+```text
+WorkOrderActivity
+────────────────────────
+Activity: Medir corriente
+Moment: After
+Sequence: 2
+
+R = 10.0
+S = 10.1
+T = 10.2
+```
+
+Esto permite conservar ambas ejecuciones.
+
+---
+
+# 5.13. Por tanto, la estructura final que estamos buscando
+
+```text
+WorkOrder
+   │
+   └── WorkOrderActivity
+          │
+          ├── ActivityId
+          ├── Moment
+          ├── Sequence
+          │
+          └── ActivityAnswer
+                 │
+                 ├── QuestionId
+                 │
+                 └── Value
+                       │
+                       └── MeasurementReading[]
+```
+
+Para el ejemplo:
+
+```text
+OT-001
+ │
+ └── Medir corriente compresor
+       │
+       ├── Before / 1
+       │    └── Pregunta: Corriente
+       │          ├── R → 12.1 A
+       │          ├── S → 11.8 A
+       │          └── T → 12.0 A
+       │
+       └── After / 1
+            └── Pregunta: Corriente
+                  ├── R → 10.2 A
+                  ├── S → 10.1 A
+                  └── T → 10.3 A
+```
+
+Esto ya soporta correctamente el escenario que planteaste desde el principio.
+
+---
+
+# 5.14. Una decisión que debemos tomar ahora
+
+Tenemos dos posibilidades para representar `MeasurementReading`.
+
+### Opción A — Value Object fuertemente tipado
+
+```text
+MeasurementReading
+    Point
+    Current
+```
+
+pero necesitaríamos diferentes tipos:
+
+```text
+CurrentReading
+VoltageReading
+PressureReading
+...
+```
+
+No me gusta.
+
+### Opción B — Lectura genérica con un `MeasurementValue`
+
+```text
+MeasurementReading
+    Point
+    MeasurementValue
+```
+
+donde `MeasurementValue` representa una magnitud y su valor.
+
+Esta opción es más apropiada para nuestro sistema de preguntas dinámicas.
+
+**Me inclino por B**, pero antes de implementarla debemos resolver una última cuestión: cómo hacer que `MeasurementValue` pueda contener `Voltage`, `Current`, `Pressure`, etc., **sin introducir una jerarquía innecesaria ni perder las validaciones de nuestros Value Objects**.
+
+Ese será el siguiente paso: **diseñar `MeasurementValue` y después convertirlo en una implementación limpia en C# 14**.
+
+paso a paso con [webapi parte 5-1 Modelar MeasurementValue](/blog/webapi-5-1-csharp)

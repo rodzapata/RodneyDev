@@ -1,0 +1,401 @@
+---
+title: "Crear webapi Parte 5-1 Modelar MeasurementValue"
+date: "2026-10-05"
+description: "Crear WebApi parte 5-1 modelar MeasurementValue"
+slug: "webapi-5-1-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. Continuemos exactamente donde quedamos: **`MeasurementValue`**, que será el Value Object que nos permitirá representar voltaje, corriente, presión, temperatura, etc., sin llenar `ActivityAnswer` de propiedades nullable.
+
+### Paso 5.1 — Crear `MeasurementValue`
+
+Partimos de nuestro enum:
+
+```csharp
+namespace AcSoft.Domain.Enums;
+
+public enum MeasurementType
+{
+    Voltage = 1,
+    Current = 2,
+    Pressure = 3,
+    Temperature = 4,
+    Capacitance = 5,
+    Mass = 6
+}
+```
+
+Ahora creamos:
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record MeasurementValue
+{
+    public MeasurementType Type { get; }
+
+    public decimal Value { get; }
+
+    private MeasurementValue(
+        MeasurementType type,
+        decimal value)
+    {
+        Type = type;
+        Value = value;
+    }
+
+    public static MeasurementValue FromVoltage(Voltage voltage)
+    {
+        ArgumentNullException.ThrowIfNull(voltage);
+
+        return new MeasurementValue(
+            MeasurementType.Voltage,
+            voltage.Value);
+    }
+
+    public static MeasurementValue FromCurrent(Current current)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+
+        return new MeasurementValue(
+            MeasurementType.Current,
+            current.Value);
+    }
+
+    public static MeasurementValue FromPressure(Pressure pressure)
+    {
+        ArgumentNullException.ThrowIfNull(pressure);
+
+        return new MeasurementValue(
+            MeasurementType.Pressure,
+            pressure.Value);
+    }
+
+    public static MeasurementValue FromTemperature(Temperature temperature)
+    {
+        ArgumentNullException.ThrowIfNull(temperature);
+
+        return new MeasurementValue(
+            MeasurementType.Temperature,
+            temperature.Value);
+    }
+
+    public static MeasurementValue FromCapacitance(Capacitance capacitance)
+    {
+        ArgumentNullException.ThrowIfNull(capacitance);
+
+        return new MeasurementValue(
+            MeasurementType.Capacitance,
+            capacitance.Value);
+    }
+
+    public static MeasurementValue FromMass(Mass mass)
+    {
+        ArgumentNullException.ThrowIfNull(mass);
+
+        return new MeasurementValue(
+            MeasurementType.Mass,
+            mass.Value);
+    }
+}
+```
+
+### ¿Qué conseguimos con esto?
+
+Por ejemplo:
+
+```csharp
+var voltage = Voltage.Create(230m);
+
+var measurement = MeasurementValue.FromVoltage(voltage);
+```
+
+Tenemos:
+
+```text
+Type  = Voltage
+Value = 230
+```
+
+O:
+
+```csharp
+var current = Current.Create(12.1m);
+
+var measurement = MeasurementValue.FromCurrent(current);
+```
+
+Tenemos:
+
+```text
+Type  = Current
+Value = 12.1
+```
+
+Y para presión:
+
+```csharp
+var pressure = Pressure.Create(125m);
+
+var measurement = MeasurementValue.FromPressure(pressure);
+```
+
+Tenemos:
+
+```text
+Type  = Pressure
+Value = 125
+```
+
+### ¿Por qué no hacemos simplemente esto?
+
+```csharp
+new MeasurementValue(
+    MeasurementType.Current,
+    -50);
+```
+
+No podemos hacerlo porque el constructor es `private`.
+
+La única forma normal de crear una corriente es:
+
+```csharp
+Current.Create(12.1m)
+```
+
+y `Current` valida:
+
+```csharp
+if (value < 0)
+{
+    throw new ArgumentOutOfRangeException(...);
+}
+```
+
+Por lo tanto:
+
+```csharp
+MeasurementValue.FromCurrent(
+    Current.Create(12.1m));
+```
+
+mantiene las reglas del dominio.
+
+---
+
+# Paso 5.2 — Ahora sí podemos crear `MeasurementReading`
+
+Antes teníamos:
+
+```csharp
+Point
+Value
+```
+
+pero `Value` era simplemente un `decimal`, lo cual no era suficiente.
+
+Ahora será:
+
+```text
+MeasurementReading
+    ├── Point
+    └── MeasurementValue
+            ├── Type
+            └── Value
+```
+
+Creamos:
+
+```csharp
+using AcSoft.Domain.ValueObjects;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed record MeasurementReading
+{
+    public string Point { get; }
+
+    public MeasurementValue Value { get; }
+
+    private MeasurementReading(
+        string point,
+        MeasurementValue value)
+    {
+        Point = point;
+        Value = value;
+    }
+
+    public static MeasurementReading Create(
+        string point,
+        MeasurementValue value)
+    {
+        if (string.IsNullOrWhiteSpace(point))
+        {
+            throw new ArgumentException(
+                "El punto de medición es obligatorio.",
+                nameof(point));
+        }
+
+        ArgumentNullException.ThrowIfNull(value);
+
+        return new MeasurementReading(
+            point.Trim(),
+            value);
+    }
+}
+```
+
+Ahora podemos representar perfectamente la medición del compresor:
+
+```csharp
+var r = MeasurementReading.Create(
+    "R",
+    MeasurementValue.FromCurrent(
+        Current.Create(12.1m)));
+
+var s = MeasurementReading.Create(
+    "S",
+    MeasurementValue.FromCurrent(
+        Current.Create(11.8m)));
+
+var t = MeasurementReading.Create(
+    "T",
+    MeasurementValue.FromCurrent(
+        Current.Create(12.0m)));
+```
+
+Conceptualmente tenemos:
+
+```text
+R → Current → 12.1 A
+S → Current → 11.8 A
+T → Current → 12.0 A
+```
+
+Y esto es mucho mejor que:
+
+```csharp
+string point;
+decimal value;
+string unit;
+```
+
+porque ahora el dominio conoce qué significa ese valor.
+
+---
+
+# Paso 5.3 — ¿Y cómo queda nuestra respuesta?
+
+Ahora podemos empezar a construir:
+
+```text
+ActivityAnswer
+    │
+    ├── Status
+    │
+    ├── NumericValue
+    │
+    ├── TextValue
+    │
+    └── Measurements
+```
+
+Pero **no debemos volver a caer en el problema de tener todo nullable**.
+
+Por ejemplo, esto:
+
+```csharp
+public AnswerStatus? Status { get; }
+public decimal? NumericValue { get; }
+public string? TextValue { get; }
+public List<MeasurementReading>? Measurements { get; }
+```
+
+permite estados absurdos:
+
+```text
+Status = Correct
+NumericValue = 230
+TextValue = "Bien"
+Measurements = [230 V]
+```
+
+Una respuesta no debería poder contener simultáneamente cuatro tipos diferentes de respuesta.
+
+Por eso nuestro siguiente paso será separar:
+
+```text
+ActivityAnswer
+       │
+       └── AnswerValue
+              │
+              ├── Status
+              ├── Numeric
+              ├── Text
+              └── Measurements
+```
+
+Y `AnswerValue` será otro **Value Object/discriminated-union-like** que garantizará que una respuesta tenga **un único tipo coherente**.
+
+---
+
+## Ejemplo del resultado final que buscamos
+
+Para la pregunta:
+
+> ¿Cuál es la corriente del compresor?
+
+Podremos tener:
+
+```text
+Activity
+└── Medir corriente del compresor
+
+WorkOrderActivity
+├── Moment: Before
+├── Sequence: 1
+└── ActivityAnswer
+    └── Measurements
+        ├── R → 12.1 A
+        ├── S → 11.8 A
+        └── T → 12.0 A
+```
+
+Después:
+
+```text
+WorkOrderActivity
+├── Moment: After
+├── Sequence: 1
+└── ActivityAnswer
+    └── Measurements
+        ├── R → 10.2 A
+        ├── S → 10.1 A
+        └── T → 10.3 A
+```
+
+Esto encaja muy bien con el funcionamiento real de **ACSoft**, porque la misma actividad puede ejecutarse varias veces y en diferentes momentos.
+
+### Siguiente paso
+
+Ahora debemos construir **`AnswerValue`**, que es probablemente la pieza más importante de este diseño porque nos permitirá representar correctamente:
+
+* `Correcto`
+* `No correcto`
+* `No aplica`
+* valores numéricos
+* texto
+* mediciones simples
+* mediciones múltiples R/S/T
+
+sin terminar con una clase llena de propiedades `nullable`.
+
+Después de eso conectaremos:
+
+**`ActivityAnswer → AnswerValue → MeasurementReading`**
+
+y finalmente construiremos `WorkOrderActivity`.
