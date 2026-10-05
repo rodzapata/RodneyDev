@@ -1,0 +1,312 @@
+---
+title: "Excepciones en CSharp mas usada en .net 10 "
+date: "2026-10-05"
+description: "Excepciones en CSharp"
+slug: "excepciones-2-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+En tu proyecto AcSoft, usando .NET 10, C# 14, DDD y Clean Architecture, es importante distinguir cuándo debes lanzar una `DomainException`, una `ArgumentException` o una `InvalidOperationException`.
+
+Aunque las tres permiten comunicar errores, no representan el mismo tipo de problema.
+
+La idea principal es identificar si el error proviene de un dato inválido, de una regla de negocio incumplida o de una operación que no puede ejecutarse en el estado actual del objeto.
+
+## 1. Diferencias principales
+
+| Excepción                   | ¿Cuándo utilizarla?                                                                          | Ejemplo en AcSoft                                                          |
+| --------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `ArgumentException`         | Un argumento recibido por un método es inválido.                                             | Se intenta crear una orden con un número vacío.                            |
+| `InvalidOperationException` | El objeto está en un estado que no permite ejecutar la operación.                            | Se intenta cerrar una orden que ya está cerrada.                           |
+| `DomainException`           | Se incumple una regla de negocio del dominio y quieres representar ese error explícitamente. | Se intenta finalizar una orden sin completar las actividades obligatorias. |
+
+Importante: `DomainException` no es una excepción estándar de .NET. Es una clase que tú defines para representar las reglas de negocio de tu dominio.
+
+Además, hay una diferencia de intención: `ArgumentException` suele señalar un argumento inválido, mientras que `InvalidOperationException` señala que la operación no corresponde al estado actual del objeto. No debes elegir una excepción únicamente porque ambas podrían funcionar técnicamente.
+
+## 2. `ArgumentException`: el argumento es inválido
+
+Se utiliza cuando un método recibe un parámetro que no cumple las condiciones esperadas.
+
+Imagina que en AcSoft creamos una orden de servicio y su número debe tener un valor válido.
+
+C#
+
+```
+public sealed class WorkOrder
+{
+    public string Number { get; private set; }
+
+    private WorkOrder(string number)
+    {
+        Number = number;
+    }
+
+    public static WorkOrder Create(string number)
+    {
+        if (string.IsNullOrWhiteSpace(number))
+        {
+            throw new ArgumentException(
+                "El número de la orden es obligatorio.",
+                nameof(number));
+        }
+
+        return new WorkOrder(number);
+    }
+}
+```
+
+Si alguien intenta ejecutar:
+
+C#
+
+```
+var workOrder = WorkOrder.Create("");
+```
+
+Se lanza una `ArgumentException`, porque el argumento `number` no cumple las condiciones requeridas.
+
+### ¿Cuándo conviene usarla?
+
+* Cuando un argumento es nulo, vacío o tiene un formato inválido.
+
+* Cuando un valor está fuera de los límites admitidos por un método.
+
+* Cuando el problema es principalmente la validez del parámetro, no una regla de negocio más amplia.
+
+También existe `ArgumentNullException`, que es más específica cuando el argumento obligatorio es `null`.
+
+C#
+
+```
+ArgumentNullException.ThrowIfNull(request);
+```
+
+Matiz importante para DDD: que un dato sea inválido no significa automáticamente que debas usar `ArgumentException`. Si la validación expresa una regla de negocio relevante, puede ser más apropiado usar `DomainException`. La decisión depende de qué significa el error, no solo del dato involucrado.
+
+
+## 3. `InvalidOperationException`: el estado no permite ejecutar la operación
+
+Esta excepción se utiliza cuando los argumentos pueden ser perfectamente válidos, pero el objeto no está en condiciones de realizar la operación solicitada.
+
+En AcSoft, supongamos que una orden de mantenimiento tiene estos estados:
+
+C#
+
+```
+public enum WorkOrderStatus
+{
+    Pending,
+    InProgress,
+    Waiting,
+    Completed,
+    Cancelled
+}
+```
+
+Queremos permitir que una orden se cierre únicamente cuando esté en ejecución.
+
+C#
+
+```
+public sealed class WorkOrder
+{
+    public WorkOrderStatus Status { get; private set; }
+
+    public void Complete()
+    {
+        if (Status != WorkOrderStatus.InProgress)
+        {
+            throw new InvalidOperationException(
+                "Solo se puede completar una orden en ejecución.");
+        }
+
+        Status = WorkOrderStatus.Completed;
+    }
+}
+```
+
+Por ejemplo:
+
+C#
+
+```
+var workOrder = new WorkOrder();
+
+// Si la orden está Pending:
+workOrder.Complete();
+```
+
+La operación falla porque la orden está pendiente, no porque el método haya recibido un argumento incorrecto.
+
+### ¿Cuándo conviene usarla?
+
+* Cuando se llama a un método en un momento no permitido.
+
+* Cuando el estado actual del objeto impide la operación.
+
+* Cuando se intenta ejecutar una acción que requiere una condición previa que todavía no se cumple.
+
+Sin embargo, hay un matiz importante: en DDD, si la transición de estado está definida por una regla de negocio explícita, también puede ser conveniente usar una `DomainException`. Por eso, aunque `InvalidOperationException` es técnicamente válida, no siempre es la mejor decisión para el dominio de AcSoft.
+
+## 4. `DomainException`: se incumple una regla de negocio
+
+Esta excepción resulta útil cuando quieres expresar que una operación viola una regla propia de tu negocio, independientemente de detalles técnicos como la base de datos o HTTP.
+
+Pensemos en esta regla de AcSoft:
+
+> Una orden de mantenimiento no se puede completar mientras tenga actividades obligatorias pendientes.
+
+Esta regla no es simplemente una validación de formato ni un problema técnico. Es una condición que protege la integridad del proceso de mantenimiento.
+
+Primero, creamos nuestra excepción de dominio.
+
+Archivo: `AcSoft.Domain/Exceptions/DomainException.cs`
+
+C#
+
+```
+namespace AcSoft.Domain.Exceptions;
+
+public sealed class DomainException : Exception
+{
+    public DomainException(string message)
+        : base(message)
+    {
+    }
+}
+```
+
+Después, la utilizamos en `WorkOrder`.
+
+C#
+
+```
+using AcSoft.Domain.Exceptions;
+
+public sealed class WorkOrder
+{
+    public WorkOrderStatus Status { get; private set; }
+
+    public void Complete(bool hasPendingRequiredActivities)
+    {
+        if (Status != WorkOrderStatus.InProgress)
+        {
+            throw new DomainException(
+                "La orden debe estar en ejecución para completarse.");
+        }
+
+        if (hasPendingRequiredActivities)
+        {
+            throw new DomainException(
+                "No se puede completar la orden porque existen " +
+                "actividades obligatorias pendientes.");
+        }
+
+        Status = WorkOrderStatus.Completed;
+    }
+}
+```
+
+Este ejemplo es ilustrativo: en una implementación real de DDD, convendría que el agregado `WorkOrder` tuviera acceso a la información necesaria para hacer cumplir la regla sin depender de un booleano arbitrario suministrado por el controlador. La solución concreta depende de cómo hayas modelado las actividades y sus respuestas.
+
+### ¿Por qué una excepción propia?
+
+Porque puedes identificar los errores de negocio de forma explícita y tratarlos de manera consistente en la capa API.
+
+Por ejemplo, una respuesta HTTP podría ser:
+
+http
+
+```
+HTTP/1.1 400 Bad Request
+Content-Type: application/problem+json
+```
+
+JSON
+
+```
+{
+  "title": "Regla de negocio incumplida",
+  "status": 400,
+  "detail": "No se puede completar la orden porque existen actividades obligatorias pendientes."
+}
+```
+
+La excepción por sí sola no genera esta respuesta HTTP. Necesitas un middleware o un mecanismo de manejo de excepciones que la traduzca a `ProblemDetails`.
+
+## 5. Cómo elegir entre las tres en AcSoft
+
+Veamos situaciones concretas de tu sistema.
+
+| Situación                                                                                         | Excepción orientativa       | Motivo                                                                               |
+| ------------------------------------------------------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------ |
+| El número de la orden está vacío.                                                                 | `ArgumentException`         | Argumento inválido.                                                                  |
+| El identificador requerido es `null`.                                                             | `ArgumentNullException`     | Argumento nulo.                                                                      |
+| Se intenta completar una orden que está cancelada.                                                | `DomainException`           | Transición de estado prohibida por una regla de negocio.                             |
+| Se intenta asignar un técnico cuando la orden ya está cerrada.                                    | `DomainException`           | La asignación viola una regla del proceso.                                           |
+| Una operación interna se invoca en un estado que el código debería haber garantizado previamente. | `InvalidOperationException` | Estado incompatible con la operación, posiblemente por un error de programación.     |
+| Una orden no puede finalizarse porque faltan respuestas obligatorias.                             | `DomainException`           | Regla de negocio incumplida.                                                         |
+| La configuración requerida para iniciar un servicio no existe.                                    | Depende del caso            | Puede ser un error de configuración, de argumentos o de una precondición de negocio. |
+
+La columna presenta opciones orientativas, no reglas absolutas. Por ejemplo, una precondición de estado puede representarse con `InvalidOperationException` en un modelo sencillo, o con `DomainException` si necesitas identificar y manejar esa violación como un error de negocio.
+
+
+## 6. ¿Dónde debe ir cada excepción en Clean Architecture?
+
+Para AcSoft, te recomiendo organizarlo así:
+
+Domain
+
+Reglas de negocio y excepciones propias del dominio.
+
+* `DomainException`
+
+* Entidades como `WorkOrder`
+
+* Value Objects y reglas de invariantes
+
+Application
+
+Coordina los casos de uso.
+
+* Validación de solicitudes de entrada.
+
+* Obtención de datos mediante repositorios.
+
+* Invocación de métodos del dominio.
+
+* Manejo o propagación de errores de negocio.
+
+API
+
+Traduce los errores a respuestas HTTP.
+
+* Middleware de excepciones.
+
+* `ProblemDetails`.
+
+* Códigos HTTP apropiados.
+
+Una precisión importante: `ArgumentException` e `InvalidOperationException` pertenecen a .NET y puedes utilizarlas desde cualquier capa cuando corresponda. No necesitas crear clases propias para ellas.
+
+En cambio, si decides que las violaciones de reglas de negocio de AcSoft deben identificarse explícitamente, coloca `DomainException` en el proyecto `AcSoft.Domain`, para que las entidades puedan utilizarla sin depender de Application o API.
+
+## 7. Una regla práctica para recordar
+
+Cuando estés escribiendo código, hazte estas preguntas en orden:
+
+1. ¿El argumento recibido es inválido? Considera `ArgumentException` o una excepción más específica, como `ArgumentNullException`.
+
+2. ¿La operación es incompatible con el estado actual del objeto? Considera `InvalidOperationException` si representa una precondición técnica o de programación.
+
+3. ¿Se está violando una regla de negocio de AcSoft? Considera `DomainException` para expresar esa violación de manera explícita.
+
+Mi recomendación para tu proyecto es utilizar `DomainException` para reglas como impedir que se cierre una orden con actividades obligatorias pendientes, que se reasigne una orden ya cerrada o que se realice una transición de estado prohibida.
+
+No conviertas todas las excepciones en `DomainException`: conserva las excepciones estándar cuando describan mejor el problema. Y recuerda que las excepciones deben representar situaciones excepcionales, no reemplazar el flujo normal de ejecución.
+
+Siguiente paso práctico: aplicar estas tres excepciones directamente a tu clase `WorkOrder.cs`, implementando los métodos de asignación, desasignación, inicio, espera, reanudación, finalización y cancelación, respetando las reglas de negocio que ya estamos definiendo para AcSoft.
