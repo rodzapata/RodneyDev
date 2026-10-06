@@ -1,0 +1,573 @@
+---
+title: "Crear webapi Parte 5-3 crear ActivityAnswer"
+date: "2026-10-06"
+description: "Crear WebApi parte 5-3 crear ActivityAnswer"
+slug: "webapi-5-3-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. Ahora vamos a crear **`ActivityAnswer`**, que será la entidad que conecta una **pregunta de mantenimiento** con la **respuesta real registrada por el técnico**.
+
+## Paso 5.5 — Crear `ActivityAnswer`
+
+Hasta ahora tenemos:
+
+```text
+Question
+    ↓
+ActivityAnswer
+    ↓
+AnswerValue
+```
+
+La responsabilidad de cada pieza será:
+
+* **`Question`** → define qué debe responderse.
+* **`ActivityAnswer`** → representa la respuesta concreta del técnico.
+* **`AnswerValue`** → contiene el valor de esa respuesta.
+* **`MeasurementReading`** → representa cada medición individual.
+* **`MeasurementValue`** → representa el tipo y valor de la medición.
+
+---
+
+# 1. Crear `ActivityAnswer`
+
+En:
+
+```text
+AcSoft.Domain
+└── Entities
+    └── ActivityAnswer.cs
+```
+
+Inicialmente:
+
+```csharp
+using AcSoft.Domain.ValueObjects;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class ActivityAnswer
+{
+    private ActivityAnswer() { }
+
+    private ActivityAnswer(
+        Guid id,
+        Guid questionId,
+        AnswerValue value)
+    {
+        Id = id;
+        QuestionId = questionId;
+        Value = value;
+    }
+
+    public Guid Id { get; private set; }
+
+    public Guid QuestionId { get; private set; }
+
+    public AnswerValue Value { get; private set; } = null!;
+
+    public static ActivityAnswer Create(
+        Guid questionId,
+        AnswerValue value)
+    {
+        if (questionId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "La pregunta es obligatoria.",
+                nameof(questionId));
+        }
+
+        ArgumentNullException.ThrowIfNull(value);
+
+        return new ActivityAnswer(
+            Guid.NewGuid(),
+            questionId,
+            value);
+    }
+}
+```
+
+Tenemos ahora:
+
+```text
+ActivityAnswer
+│
+├── Id
+├── QuestionId
+└── Value
+```
+
+---
+
+# 2. ¿Por qué `QuestionId` y no toda la pregunta?
+
+Esto es importante en DDD.
+
+No queremos hacer esto:
+
+```csharp
+public Question Question { get; private set; }
+```
+
+dentro del dominio de la respuesta simplemente porque necesitamos identificar la pregunta.
+
+La respuesta pertenece a una ejecución de una actividad.
+
+Por ejemplo:
+
+```text
+Question
+ID = 101
+Texto = "¿Se realizó ajuste de tornillería?"
+```
+
+Cuando el técnico responde:
+
+```text
+ActivityAnswer
+QuestionId = 101
+Value = Correct
+```
+
+La respuesta no necesita copiar toda la definición de la pregunta.
+
+---
+
+# 3. Ejemplo real de ACSoft
+
+Supongamos que tenemos:
+
+```text
+QuestionId = 101
+
+Pregunta:
+"¿Se realizó ajuste de tornillería?"
+```
+
+El técnico responde:
+
+```csharp
+var answer = ActivityAnswer.Create(
+    questionId: questionId,
+    value: AnswerValue.FromStatus(
+        AnswerStatus.Correct));
+```
+
+Conceptualmente:
+
+```text
+ActivityAnswer
+│
+├── QuestionId = 101
+│
+└── Value
+     │
+     ├── Type = Status
+     └── Status = Correct
+```
+
+---
+
+# 4. Una pregunta numérica
+
+Supongamos:
+
+> ¿Cuál es la temperatura de descarga?
+
+Podemos tener:
+
+```csharp
+var answer = ActivityAnswer.Create(
+    questionId,
+    AnswerValue.FromNumeric(85.5m));
+```
+
+Resultado:
+
+```text
+ActivityAnswer
+│
+├── QuestionId
+│
+└── Value
+     │
+     ├── Type = Numeric
+     └── NumericValue = 85.5
+```
+
+---
+
+# 5. Una pregunta de mediciones
+
+Ahora viene el caso más importante.
+
+Pregunta:
+
+> Medir corriente del compresor.
+
+Creamos:
+
+```csharp
+var measurements = new[]
+{
+    MeasurementReading.Create(
+        "R",
+        MeasurementValue.FromCurrent(
+            Current.Create(12.1m))),
+
+    MeasurementReading.Create(
+        "S",
+        MeasurementValue.FromCurrent(
+            Current.Create(11.8m))),
+
+    MeasurementReading.Create(
+        "T",
+        MeasurementValue.FromCurrent(
+            Current.Create(12.0m)))
+};
+```
+
+Luego:
+
+```csharp
+var answer = ActivityAnswer.Create(
+    questionId,
+    AnswerValue.FromMeasurements(measurements));
+```
+
+El resultado conceptual:
+
+```text
+ActivityAnswer
+│
+├── QuestionId
+│
+└── Value
+     │
+     ├── Type = Measurement
+     │
+     └── Measurements
+          │
+          ├── R → Current → 12.1 A
+          ├── S → Current → 11.8 A
+          └── T → Current → 12.0 A
+```
+
+Esto representa perfectamente una medición trifásica.
+
+---
+
+# 6. Pero tenemos que hacer una mejora
+
+Hay algo que todavía no hemos modelado.
+
+Supongamos que la misma actividad tiene **dos preguntas**:
+
+```text
+Actividad:
+Mantenimiento preventivo del compresor
+
+Pregunta 1:
+"Medir corriente del compresor"
+
+Pregunta 2:
+"Verificar estado del ventilador"
+```
+
+Podemos tener:
+
+```text
+ActivityAnswer
+├── QuestionId = 101
+└── Value = 12.1 / 11.8 / 12.0 A
+
+ActivityAnswer
+├── QuestionId = 102
+└── Value = Correct
+```
+
+Perfecto.
+
+Pero recuerde que anteriormente establecimos que una actividad puede ejecutarse:
+
+```text
+BEFORE
+AFTER
+```
+
+y que incluso puede repetirse.
+
+Por ejemplo:
+
+```text
+Medir corriente
+    BEFORE
+    AFTER
+```
+
+Por eso **`ActivityAnswer` no debería encargarse de `Before` / `After`**.
+
+Eso pertenece a:
+
+```text
+WorkOrderActivity
+```
+
+La estructura correcta será:
+
+```text
+WorkOrder
+   │
+   └── WorkOrderActivity
+          │
+          ├── ActivityId
+          ├── Moment
+          ├── Sequence
+          │
+          └── ActivityAnswer[]
+                  │
+                  ├── QuestionId
+                  └── AnswerValue
+```
+
+Esto es muy importante.
+
+---
+
+# 7. Ejemplo completo
+
+Supongamos:
+
+```text
+Actividad:
+Mantenimiento eléctrico del compresor
+```
+
+Tiene dos preguntas:
+
+```text
+Q1 → Medir corriente del compresor
+Q2 → Verificar ajuste de terminales
+```
+
+### Antes
+
+```text
+WorkOrderActivity
+│
+├── ActivityId = 50
+├── Moment = Before
+├── Sequence = 1
+│
+└── Answers
+    │
+    ├── Q1
+    │    └── R=12.1A, S=11.8A, T=12.0A
+    │
+    └── Q2
+         └── Correct
+```
+
+### Después
+
+```text
+WorkOrderActivity
+│
+├── ActivityId = 50
+├── Moment = After
+├── Sequence = 1
+│
+└── Answers
+    │
+    ├── Q1
+    │    └── R=10.2A, S=10.1A, T=10.3A
+    │
+    └── Q2
+         └── Correct
+```
+
+Y ahora nuestro modelo tiene una separación muy limpia:
+
+```text
+Pregunta
+   ↓
+¿Qué debe responderse?
+
+ActivityAnswer
+   ↓
+¿Qué respondió el técnico?
+
+AnswerValue
+   ↓
+¿Cuál fue el valor?
+
+WorkOrderActivity
+   ↓
+¿En qué ejecución/momento ocurrió?
+```
+
+---
+
+# 8. ¿Dónde guardamos la respuesta?
+
+Por ahora `ActivityAnswer` solamente tiene:
+
+```csharp
+public Guid QuestionId { get; private set; }
+
+public AnswerValue Value { get; private set; }
+```
+
+Eso está bien.
+
+**No agreguemos todavía:**
+
+```csharp
+BeforeValue
+AfterValue
+TechnicianId
+EquipmentId
+WorkOrderId
+ActivityId
+```
+
+porque estaríamos mezclando responsabilidades.
+
+La relación con la ejecución la tendremos desde `WorkOrderActivity`.
+
+---
+
+# 9. Una pequeña mejora que recomiendo ahora
+
+Tenemos que permitir que una respuesta pueda ser modificada.
+
+En una aplicación móvil offline-first, el técnico podría registrar:
+
+```text
+12.1 A
+```
+
+y posteriormente corregir:
+
+```text
+12.3 A
+```
+
+Por eso agregaremos un método:
+
+```csharp
+public void ChangeValue(AnswerValue value)
+{
+    ArgumentNullException.ThrowIfNull(value);
+
+    Value = value;
+}
+```
+
+La clase completa queda:
+
+```csharp
+using AcSoft.Domain.ValueObjects;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class ActivityAnswer
+{
+    private ActivityAnswer() { }
+
+    private ActivityAnswer(
+        Guid id,
+        Guid questionId,
+        AnswerValue value)
+    {
+        Id = id;
+        QuestionId = questionId;
+        Value = value;
+    }
+
+    public Guid Id { get; private set; }
+
+    public Guid QuestionId { get; private set; }
+
+    public AnswerValue Value { get; private set; } = null!;
+
+    public static ActivityAnswer Create(
+        Guid questionId,
+        AnswerValue value)
+    {
+        if (questionId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "La pregunta es obligatoria.",
+                nameof(questionId));
+        }
+
+        ArgumentNullException.ThrowIfNull(value);
+
+        return new ActivityAnswer(
+            Guid.NewGuid(),
+            questionId,
+            value);
+    }
+
+    public void ChangeValue(AnswerValue value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+
+        Value = value;
+    }
+}
+```
+
+### Lo importante que hemos conseguido
+
+Nuestro dominio ya permite representar:
+
+```text
+Correcto
+No correcto
+No aplica
+
+12.5
+
+"Se encontró fuga de refrigerante"
+
+220 V
+
+12.1 A / 11.8 A / 12.0 A
+
+125 PSI
+
+45 µF
+
+850 g
+```
+
+sin crear una clase diferente para cada tipo de respuesta.
+
+---
+
+## Siguiente paso: `WorkOrderActivity`
+
+Ahora sí estamos listos para crear una de las entidades más importantes de ACSoft:
+
+```text
+WorkOrder
+    │
+    └── WorkOrderActivity
+            │
+            ├── ActivityId
+            ├── Moment
+            ├── Sequence
+            └── ActivityAnswer[]
+```
+
+Ahí vamos a resolver definitivamente **cómo una misma actividad puede ejecutarse varias veces, antes/después y con múltiples preguntas**, que es fundamental para el mantenimiento HVAC.
+
+
+paso a paso con [webapi parte 5-4 crear ActivityAnswer](/blog/webapi-5-4-csharp)
+

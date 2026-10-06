@@ -1,0 +1,508 @@
+---
+title: "Crear webapi Parte 5-2 Construir AnswerValue"
+date: "2026-10-05"
+description: "Crear WebApi parte 5-2 construir AnswerValue"
+slug: "webapi-5-2-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. Ahora vamos con el siguiente paso: **crear `AnswerValue`**. Esta pieza nos permitirá que una respuesta tenga **un solo tipo de valor coherente**.
+
+## Paso 5.4 — `AnswerValue`
+
+Primero recordemos los tipos de respuesta:
+
+```csharp
+public enum AnswerType
+{
+    Status = 1,
+    Numeric = 2,
+    Measurement = 3,
+    Text = 4
+}
+```
+
+Y los estados:
+
+```csharp
+public enum AnswerStatus
+{
+    Correct = 1,
+    Incorrect = 2,
+    NotApplicable = 3
+}
+```
+
+### 1. Crear `AnswerValue`
+
+En:
+
+```text
+AcSoft.Domain
+└── ValueObjects
+    └── AnswerValue.cs
+```
+
+usaremos un `sealed record`:
+
+```csharp id="48172"
+using AcSoft.Domain.Enums;
+
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record AnswerValue
+{
+    public AnswerType Type { get; }
+
+    public AnswerStatus? Status { get; }
+
+    public decimal? NumericValue { get; }
+
+    public string? TextValue { get; }
+
+    public IReadOnlyCollection<MeasurementReading> Measurements { get; }
+
+    private AnswerValue(
+        AnswerType type,
+        AnswerStatus? status = null,
+        decimal? numericValue = null,
+        string? textValue = null,
+        IReadOnlyCollection<MeasurementReading>? measurements = null)
+    {
+        Type = type;
+        Status = status;
+        NumericValue = numericValue;
+        TextValue = textValue;
+        Measurements = measurements ?? [];
+    }
+
+    public static AnswerValue FromStatus(
+        AnswerStatus status)
+    {
+        return new AnswerValue(
+            AnswerType.Status,
+            status: status);
+    }
+
+    public static AnswerValue FromNumeric(
+        decimal value)
+    {
+        return new AnswerValue(
+            AnswerType.Numeric,
+            numericValue: value);
+    }
+
+    public static AnswerValue FromText(
+        string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new ArgumentException(
+                "El texto de respuesta es obligatorio.",
+                nameof(value));
+        }
+
+        return new AnswerValue(
+            AnswerType.Text,
+            textValue: value.Trim());
+    }
+
+    public static AnswerValue FromMeasurements(
+        IEnumerable<MeasurementReading> measurements)
+    {
+        ArgumentNullException.ThrowIfNull(measurements);
+
+        var items = measurements.ToArray();
+
+        if (items.Length == 0)
+        {
+            throw new ArgumentException(
+                "Debe existir al menos una medición.",
+                nameof(measurements));
+        }
+
+        return new AnswerValue(
+            AnswerType.Measurement,
+            measurements: items);
+    }
+}
+```
+
+A primera vista puede parecer que volvimos a tener propiedades nullable.
+
+Pero hay una diferencia **muy importante**.
+
+El objeto no puede ser construido libremente desde afuera:
+
+```csharp
+new AnswerValue(...)
+```
+
+porque el constructor es `private`.
+
+La creación está controlada mediante:
+
+```csharp
+FromStatus()
+FromNumeric()
+FromText()
+FromMeasurements()
+```
+
+Por tanto, la intención del dominio queda mucho más clara.
+
+---
+
+# 2. Ejemplo: respuesta de estado
+
+Para una pregunta como:
+
+> ¿Se realizó ajuste de tornillería?
+
+podemos responder:
+
+```csharp
+var answer = AnswerValue.FromStatus(
+    AnswerStatus.Correct);
+```
+
+Tenemos:
+
+```text
+Type   = Status
+Status = Correct
+```
+
+O:
+
+```csharp
+var answer = AnswerValue.FromStatus(
+    AnswerStatus.NotApplicable);
+```
+
+Tenemos:
+
+```text
+Type   = Status
+Status = NotApplicable
+```
+
+Esto cubre exactamente el requisito que definimos anteriormente:
+
+```text
+Correcto
+No correcto
+No aplica
+```
+
+---
+
+# 3. Respuesta numérica
+
+Para:
+
+> ¿Cuál es la temperatura de descarga?
+
+podemos tener:
+
+```csharp
+var answer = AnswerValue.FromNumeric(85.5m);
+```
+
+Resultado conceptual:
+
+```text
+Type         = Numeric
+NumericValue = 85.5
+```
+
+Pero aquí aparece algo importante:
+
+**¿Deberíamos permitir cualquier número?**
+
+Por ejemplo:
+
+```csharp
+AnswerValue.FromNumeric(-999999m);
+```
+
+Desde el punto de vista de `AnswerValue`, puede ser válido.
+
+Eso no necesariamente significa que sea válido para una pregunta concreta.
+
+La regla:
+
+```text
+Temperatura permitida:
+20 °C – 100 °C
+```
+
+pertenece a la **configuración/parámetro de la pregunta para determinado equipo**, no al `AnswerValue`.
+
+Esta separación es muy importante para nuestro diseño DDD.
+
+---
+
+# 4. Respuesta de texto
+
+Por ejemplo:
+
+> Observaciones adicionales
+
+```csharp
+var answer = AnswerValue.FromText(
+    "Se encontró suciedad en el serpentín.");
+```
+
+Resultado:
+
+```text
+Type      = Text
+TextValue = "Se encontró suciedad en el serpentín."
+```
+
+---
+
+# 5. Respuesta con múltiples mediciones
+
+Aquí es donde nuestro diseño empieza a ser realmente útil.
+
+Para:
+
+> Medir corriente del compresor
+
+podemos construir:
+
+```csharp
+var measurements = new[]
+{
+    MeasurementReading.Create(
+        "R",
+        MeasurementValue.FromCurrent(
+            Current.Create(12.1m))),
+
+    MeasurementReading.Create(
+        "S",
+        MeasurementValue.FromCurrent(
+            Current.Create(11.8m))),
+
+    MeasurementReading.Create(
+        "T",
+        MeasurementValue.FromCurrent(
+            Current.Create(12.0m)))
+};
+```
+
+Y después:
+
+```csharp
+var answer = AnswerValue.FromMeasurements(
+    measurements);
+```
+
+Conceptualmente:
+
+```text
+AnswerValue
+│
+├── Type = Measurement
+│
+└── Measurements
+    ├── R → Current → 12.1 A
+    ├── S → Current → 11.8 A
+    └── T → Current → 12.0 A
+```
+
+Esto es mucho más flexible que tener:
+
+```csharp
+decimal? valueR;
+decimal? valueS;
+decimal? valueT;
+```
+
+porque mañana podríamos necesitar:
+
+```text
+L1
+L2
+L3
+```
+
+o:
+
+```text
+Entrada
+Salida
+```
+
+o:
+
+```text
+Alta
+Media
+Baja
+```
+
+sin modificar la estructura de `AnswerValue`.
+
+---
+
+# 6. Algo importante: `AnswerValue` no evalúa
+
+Este punto es fundamental para nuestro dominio.
+
+Supongamos:
+
+```text
+Voltaje nominal: 220 V
+Tolerancia: ±10 %
+
+Rango:
+198 V – 242 V
+```
+
+Tenemos:
+
+```csharp
+var voltage = Voltage.Create(230m);
+
+var measurement = MeasurementValue.FromVoltage(
+    voltage);
+```
+
+`MeasurementValue` sabe:
+
+```text
+Voltage
+230
+```
+
+Pero **no debería decidir**:
+
+```text
+Correcto
+```
+
+La evaluación debería ocurrir en otro concepto del dominio.
+
+Por ejemplo, posteriormente podremos tener algo como:
+
+```text
+MeasurementRange
+        ↓
+Evaluation
+        ↓
+Correct / Incorrect
+```
+
+Así mantenemos responsabilidades separadas:
+
+```text
+Voltage
+   ↓
+Representa un voltaje válido
+
+MeasurementValue
+   ↓
+Representa una medición y su tipo
+
+MeasurementRange
+   ↓
+Representa el rango permitido
+
+AnswerValue
+   ↓
+Representa la respuesta
+
+Evaluation
+   ↓
+Determina si la medición cumple el rango
+```
+
+Esto evita convertir `AnswerValue` en una clase gigantesca.
+
+---
+
+# 7. Nuestro modelo ya está tomando esta forma
+
+Ahora tenemos:
+
+```text
+                     DOMAIN
+                        │
+          ┌─────────────┴─────────────┐
+          │                           │
+      Question                   WorkOrderActivity
+          │                           │
+          │                       ActivityAnswer
+          │                           │
+          │                       AnswerValue
+          │                           │
+          │             ┌─────────────┼──────────────┐
+          │             │             │              │
+          │          Status        Numeric         Text
+          │                           │
+          │                      Measurement
+          │                           │
+          │                  MeasurementReading
+          │                           │
+          │                   MeasurementValue
+          │                           │
+          │          ┌────────────────┼──────────────┐
+          │          │        │       │       │      │
+          │       Voltage Current Pressure ... Temperature
+```
+
+Y aquí aparece una ventaja importante:
+
+**No necesitamos herencia para representar todas estas mediciones.**
+
+Estamos usando composición y Value Objects.
+
+Eso encaja muy bien con el principio que veníamos estudiando:
+
+> **Prefer composition over inheritance cuando no existe una relación conceptual fuerte de "es un".**
+
+---
+
+## Pero todavía falta una pieza
+
+Aunque `AnswerValue` funciona, todavía tenemos que resolver algo importante:
+
+Una `ActivityAnswer` debe saber **qué pregunta está respondiendo**.
+
+Por ejemplo:
+
+```text
+Pregunta:
+"Medir corriente del compresor"
+
+Respuesta:
+R = 12.1
+S = 11.8
+T = 12.0
+```
+
+Por eso el siguiente paso será crear:
+
+```text
+ActivityAnswer
+```
+
+y relacionarlo con:
+
+```text
+Question
+      ↓
+ActivityAnswer
+      ↓
+AnswerValue
+```
+
+Ahí comenzaremos a cerrar realmente el modelo de **preguntas y respuestas de mantenimiento de ACSoft**.
+
+paso a paso con [webapi parte 5-3 crear ActivityAnswer](/blog/webapi-5-3-csharp)
