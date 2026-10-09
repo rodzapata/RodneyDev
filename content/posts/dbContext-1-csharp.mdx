@@ -1,0 +1,716 @@
+---
+title: "DbContext parte 1"
+date: "2026-10-08"
+description: "DbContext parte 1"
+slug: "dbContext-1-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+En **.NET 10 + C# 14**, `DbContext` es la clase principal de **Entity Framework Core (EF Core)** para trabajar con una base de datos desde C#.
+
+En pocas palabras:
+
+> **`DbContext` es el puente entre tus objetos de C# y las tablas de tu base de datos.**
+
+En tu proyecto **AcSoft**, por ejemplo, permite que entidades como `Customer`, `Equipment`, `WorkOrder`, etc., puedan persistirse y consultarse desde PostgreSQL o SQL Server.
+
+---
+
+# 1. ¿Qué problema resuelve `DbContext`?
+
+Supongamos que tienes esta entidad:
+
+```csharp
+public class WorkOrder
+{
+    public Guid Id { get; private set; }
+
+    public Guid CustomerId { get; private set; }
+
+    public Guid EquipmentId { get; private set; }
+}
+```
+
+Y en PostgreSQL tienes:
+
+```text
+work_orders
+--------------------------------
+id
+customer_id
+equipment_id
+status
+created_at
+```
+
+Sin Entity Framework tendrías que escribir SQL manualmente:
+
+```sql
+SELECT *
+FROM work_orders
+WHERE id = @id;
+```
+
+Y después convertir manualmente el resultado SQL en un objeto `WorkOrder`.
+
+Con EF Core puedes hacer:
+
+```csharp
+var workOrder = await context.WorkOrders
+    .FirstOrDefaultAsync(x => x.Id == id);
+```
+
+Aquí:
+
+```text
+C# / Application
+       ↓
+   DbContext
+       ↓
+   EF Core
+       ↓
+PostgreSQL / SQL Server
+```
+
+---
+
+# 2. ¿Qué contiene un `DbContext`?
+
+Normalmente contiene propiedades `DbSet<T>`.
+
+Por ejemplo, para **AcSoft**:
+
+```csharp
+public sealed class AcSoftDbContext : DbContext
+{
+    public AcSoftDbContext(
+        DbContextOptions<AcSoftDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<WorkOrder> WorkOrders => Set<WorkOrder>();
+
+    public DbSet<Customer> Customers => Set<Customer>();
+
+    public DbSet<Equipment> Equipments => Set<Equipment>();
+}
+```
+
+Cada `DbSet<T>` representa una colección de entidades que EF Core puede consultar y modificar.
+
+Por ejemplo:
+
+```csharp
+context.WorkOrders
+```
+
+representa conceptualmente:
+
+```text
+work_orders
+```
+
+Y:
+
+```csharp
+context.Customers
+```
+
+representa:
+
+```text
+customers
+```
+
+---
+
+# 3. ¿Qué es `DbSet<T>`?
+
+Esta diferencia es muy importante:
+
+### `DbContext`
+
+Representa la **sesión de trabajo con la base de datos**.
+
+### `DbSet<T>`
+
+Representa una **entidad o conjunto de entidades** dentro de esa sesión.
+
+Por ejemplo:
+
+```csharp
+DbContext
+   │
+   ├── DbSet<Customer>
+   ├── DbSet<Equipment>
+   ├── DbSet<WorkOrder>
+   └── DbSet<Activity>
+```
+
+Puedes imaginarlo así:
+
+```text
+AcSoftDbContext
+       │
+       ├── Customers
+       ├── Equipments
+       ├── WorkOrders
+       └── Activities
+```
+
+---
+
+# 4. Consultar datos
+
+Por ejemplo, buscar una OT:
+
+```csharp
+var workOrder = await context.WorkOrders
+    .FirstOrDefaultAsync(x => x.Id == workOrderId);
+```
+
+EF Core transforma la expresión LINQ en SQL.
+
+Conceptualmente genera algo parecido a:
+
+```sql
+SELECT *
+FROM work_orders
+WHERE id = @workOrderId
+LIMIT 1;
+```
+
+Tú trabajas con C#:
+
+```csharp
+x => x.Id == workOrderId
+```
+
+y EF Core se encarga de traducirlo a SQL.
+
+---
+
+# 5. Insertar datos
+
+Supongamos:
+
+```csharp
+var workOrder = WorkOrder.Create(
+    number,
+    customerId,
+    equipmentId);
+```
+
+Puedes hacer:
+
+```csharp
+context.WorkOrders.Add(workOrder);
+
+await context.SaveChangesAsync();
+```
+
+Aquí ocurre algo importante.
+
+### `Add()`
+
+Le dice al `DbContext`:
+
+> "Quiero insertar esta entidad."
+
+Pero todavía no necesariamente se ejecuta el `INSERT`.
+
+### `SaveChangesAsync()`
+
+Le dice:
+
+> "Ahora guarda todos los cambios pendientes en la base de datos."
+
+EF Core terminará ejecutando algo parecido a:
+
+```sql
+INSERT INTO work_orders (...)
+VALUES (...);
+```
+
+---
+
+# 6. Actualizar datos
+
+Supongamos que una OT cambia de estado.
+
+```csharp
+workOrder.AssignTechnician(technicianId);
+```
+
+El `DbContext` está realizando **tracking** de esa entidad.
+
+Entonces:
+
+```csharp
+await context.SaveChangesAsync();
+```
+
+puede generar:
+
+```sql
+UPDATE work_orders
+SET technician_id = @technicianId
+WHERE id = @id;
+```
+
+No tienes que escribir manualmente el `UPDATE`.
+
+---
+
+# 7. El concepto más importante: Change Tracking
+
+Una de las funciones fundamentales de `DbContext` es el **seguimiento de cambios**.
+
+Por ejemplo:
+
+```csharp
+var workOrder = await context.WorkOrders
+    .FirstAsync(x => x.Id == id);
+```
+
+EF Core mantiene internamente información sobre esa entidad.
+
+Conceptualmente:
+
+```text
+Base de datos
+      ↓
+    SELECT
+      ↓
+ WorkOrder
+      ↓
+ DbContext la está siguiendo
+```
+
+Después:
+
+```csharp
+workOrder.AssignTechnician(technicianId);
+```
+
+EF Core detecta:
+
+```text
+ANTES
+TechnicianId = null
+
+DESPUÉS
+TechnicianId = ABC...
+```
+
+Cuando haces:
+
+```csharp
+await context.SaveChangesAsync();
+```
+
+EF Core sabe qué debe modificar.
+
+---
+
+# 8. `DbContext` también configura el modelo
+
+En una arquitectura DDD/Clean Architecture como la de **AcSoft**, normalmente no quieres colocar toda la configuración de EF Core dentro de las entidades.
+
+Puedes tener:
+
+```csharp
+public sealed class WorkOrderConfiguration
+    : IEntityTypeConfiguration<WorkOrder>
+{
+    public void Configure(
+        EntityTypeBuilder<WorkOrder> builder)
+    {
+        builder.ToTable("work_orders");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.Id)
+            .HasColumnName("id");
+
+        builder.Property(x => x.CustomerId)
+            .HasColumnName("customer_id")
+            .IsRequired();
+    }
+}
+```
+
+Y luego:
+
+```csharp
+protected override void OnModelCreating(
+    ModelBuilder modelBuilder)
+{
+    modelBuilder.ApplyConfigurationsFromAssembly(
+        typeof(AcSoftDbContext).Assembly);
+}
+```
+
+Esto permite mantener separado:
+
+```text
+Domain
+   ↓
+Entidades y reglas de negocio
+
+Infrastructure
+   ↓
+EF Core
+DbContext
+Configurations
+Repositories
+```
+
+Eso encaja muy bien con la arquitectura que estamos construyendo para **AcSoft**.
+
+---
+
+# 9. ¿`DbContext` es una conexión a la base de datos?
+
+Aquí hay una confusión muy común.
+
+**No exactamente.**
+
+`DbContext` no es simplemente una conexión.
+
+Podemos verlo como:
+
+```text
+DbContext
+│
+├── Configuración del modelo
+├── DbSet<T>
+├── Change Tracking
+├── Traducción LINQ → SQL
+├── Gestión de operaciones
+└── Acceso a la base de datos
+```
+
+La conexión real está gestionada por EF Core mediante el proveedor de base de datos.
+
+Por ejemplo:
+
+```text
+DbContext
+    ↓
+EF Core
+    ↓
+Npgsql
+    ↓
+PostgreSQL
+```
+
+o:
+
+```text
+DbContext
+    ↓
+EF Core
+    ↓
+Microsoft.Data.SqlClient
+    ↓
+SQL Server
+```
+
+---
+
+# 10. ¿Dónde debería estar el `DbContext` en AcSoft?
+
+Con la arquitectura que estás utilizando:
+
+```text
+AcSoft
+│
+├── AcSoft.Domain
+│
+├── AcSoft.Application
+│
+├── AcSoft.Infrastructure
+│
+└── AcSoft.Api
+```
+
+El `DbContext` debería estar en:
+
+```text
+AcSoft.Infrastructure
+```
+
+Por ejemplo:
+
+```text
+AcSoft.Infrastructure
+│
+├── Persistence
+│   │
+│   ├── AcSoftDbContext.cs
+│   │
+│   ├── Configurations
+│   │   ├── WorkOrderConfiguration.cs
+│   │   ├── CustomerConfiguration.cs
+│   │   └── EquipmentConfiguration.cs
+│   │
+│   └── Repositories
+│       └── WorkOrderRepository.cs
+```
+
+¿Por qué?
+
+Porque `DbContext` es una preocupación de **persistencia**, no de dominio.
+
+Tu entidad:
+
+```csharp
+WorkOrder
+```
+
+no debería saber que existe:
+
+```csharp
+DbContext
+```
+
+---
+
+# 11. ¿Cómo se conecta con tu Repository?
+
+En tu diseño actual tienes algo como:
+
+```csharp
+public interface IWorkOrderRepository
+{
+    Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken);
+
+    Task AddAsync(
+        WorkOrder workOrder,
+        CancellationToken cancellationToken);
+}
+```
+
+La interfaz está en:
+
+```text
+Application
+```
+
+Pero la implementación puede estar en:
+
+```text
+Infrastructure
+```
+
+Por ejemplo:
+
+```csharp
+public sealed class WorkOrderRepository
+    : IWorkOrderRepository
+{
+    private readonly AcSoftDbContext _context;
+
+    public WorkOrderRepository(AcSoftDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        return await _context.WorkOrders
+            .FirstOrDefaultAsync(
+                x => x.Id == id,
+                cancellationToken);
+    }
+
+    public async Task AddAsync(
+        WorkOrder workOrder,
+        CancellationToken cancellationToken)
+    {
+        await _context.WorkOrders.AddAsync(
+            workOrder,
+            cancellationToken);
+    }
+}
+```
+
+Aquí se ve claramente la separación:
+
+```text
+Application
+     │
+     │ IWorkOrderRepository
+     ↓
+Infrastructure
+     │
+     │ WorkOrderRepository
+     ↓
+AcSoftDbContext
+     ↓
+EF Core
+     ↓
+PostgreSQL
+```
+
+---
+
+# 12. ¿Y dónde entra `UnitOfWork`?
+
+Esto también es importante para tu proyecto.
+
+Si tienes:
+
+```csharp
+await repository.AddAsync(workOrder, cancellationToken);
+```
+
+todavía puedes no haber guardado físicamente nada.
+
+Después:
+
+```csharp
+await unitOfWork.SaveChangesAsync(cancellationToken);
+```
+
+terminas la operación.
+
+Una implementación sencilla sería:
+
+```csharp
+public sealed class UnitOfWork : IUnitOfWork
+{
+    private readonly AcSoftDbContext _context;
+
+    public UnitOfWork(AcSoftDbContext context)
+    {
+        _context = context;
+    }
+
+    public Task<int> SaveChangesAsync(
+        CancellationToken cancellationToken)
+    {
+        return _context.SaveChangesAsync(
+            cancellationToken);
+    }
+}
+```
+
+Entonces:
+
+```text
+Handler
+   ↓
+Repository
+   ↓
+DbContext
+   ↓
+UnitOfWork
+   ↓
+SaveChangesAsync()
+   ↓
+Database
+```
+
+---
+
+# 13. Una analogía sencilla
+
+Imagina que `DbContext` es una **mesa de trabajo**.
+
+```text
+              DbContext
+        ┌──────────────────┐
+        │                  │
+        │ WorkOrder        │
+        │ Customer         │
+        │ Equipment        │
+        │ Activity         │
+        │                  │
+        └──────────────────┘
+                 │
+                 │ SaveChanges()
+                 ↓
+             Base de datos
+```
+
+Puedes colocar objetos sobre la mesa:
+
+```csharp
+context.WorkOrders.Add(workOrder);
+```
+
+Modificar objetos:
+
+```csharp
+workOrder.AssignTechnician(id);
+```
+
+Quitarlos:
+
+```csharp
+context.WorkOrders.Remove(workOrder);
+```
+
+Y finalmente:
+
+```csharp
+await context.SaveChangesAsync();
+```
+
+La mesa le dice a EF Core:
+
+> "Estos son todos los cambios que quiero persistir."
+
+---
+
+## En resumen
+
+En **.NET 10 + C# 14 + EF Core**, `DbContext` sirve principalmente para:
+
+| Función                | Ejemplo                                    |
+| ---------------------- | ------------------------------------------ |
+| Consultar              | `context.WorkOrders.FirstAsync()`          |
+| Insertar               | `context.WorkOrders.Add()`                 |
+| Modificar              | Cambiar una entidad + `SaveChangesAsync()` |
+| Eliminar               | `context.WorkOrders.Remove()`              |
+| Tracking               | Detectar cambios de entidades              |
+| LINQ → SQL             | `Where`, `Select`, `First`, etc.           |
+| Configurar modelo      | `OnModelCreating()`                        |
+| Gestionar persistencia | `SaveChangesAsync()`                       |
+
+Y para **AcSoft**, la idea fundamental sería:
+
+```text
+             ACSoft.Api
+                  │
+                  ↓
+          Application
+                  │
+                  ↓
+             Interfaces
+                  │
+                  ↓
+          Infrastructure
+                  │
+          ┌───────┴────────┐
+          ↓                ↓
+   Repository          DbContext
+                           │
+                           ↓
+                        EF Core
+                           │
+                           ↓
+                    PostgreSQL/SQL Server
+```
+
+**Lo siguiente que te recomiendo estudiar es `DbContext` paso a paso en AcSoft:** primero crear `AcSoftDbContext`, luego `DbSet`, después `OnModelCreating`, `IEntityTypeConfiguration`, `Dependency Injection` y finalmente cómo `Repository + UnitOfWork + DbContext` trabajan juntos.

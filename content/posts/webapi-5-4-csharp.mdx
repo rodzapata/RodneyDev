@@ -1,0 +1,653 @@
+---
+title: "Crear webapi Parte 5-4 crear WorkOrderActivity"
+date: "2026-10-07"
+description: "Crear WebApi parte 5-4 crear WorkOrderActivity"
+slug: "webapi-5-4-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. Ahora llegamos a una pieza central del dominio de **ACSoft**: `WorkOrderActivity`.
+
+Hasta ahora tenemos las definiciones del catálogo y las respuestas. Ahora necesitamos representar **la ejecución concreta de una actividad dentro de una OT**.
+
+# Paso 5.6 — `WorkOrderActivity`
+
+La diferencia fundamental es esta:
+
+```text
+Activity
+    ↓
+"¿Qué actividad existe en el catálogo?"
+
+WorkOrderActivity
+    ↓
+"¿Qué actividad se ejecutó en esta OT?"
+```
+
+Por ejemplo, en el catálogo podemos tener:
+
+```text
+Activity
+--------------------------------
+Id: 25
+Nombre: Medición de corriente
+```
+
+Pero una OT concreta puede ejecutarla varias veces:
+
+```text
+OT-001
+
+WorkOrderActivity #1
+Actividad: Medición de corriente
+Momento: Before
+
+WorkOrderActivity #2
+Actividad: Medición de corriente
+Momento: After
+```
+
+Y esto es exactamente lo que necesitamos para ACSoft.
+
+---
+
+## 1. Crear `ExecutionMoment`
+
+Primero necesitamos representar el momento de ejecución.
+
+En:
+
+```text
+AcSoft.Domain
+└── Enums
+    └── ExecutionMoment.cs
+```
+
+```csharp
+namespace AcSoft.Domain.Enums;
+
+public enum ExecutionMoment
+{
+    Before = 1,
+    During = 2,
+    After = 3
+}
+```
+
+No utilizaremos un `string` como:
+
+```csharp
+"Before"
+"After"
+```
+
+porque el dominio debe trabajar con conceptos controlados.
+
+---
+
+# 2. Crear `WorkOrderActivity`
+
+Ahora:
+
+```text
+AcSoft.Domain
+└── Entities
+    └── WorkOrderActivity.cs
+```
+
+```csharp
+using AcSoft.Domain.Enums;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class WorkOrderActivity
+{
+    private readonly List<ActivityAnswer> _answers = [];
+
+    private WorkOrderActivity() { }
+
+    private WorkOrderActivity(
+        Guid id,
+        Guid workOrderId,
+        Guid activityId,
+        ExecutionMoment moment,
+        int sequence)
+    {
+        Id = id;
+        WorkOrderId = workOrderId;
+        ActivityId = activityId;
+        Moment = moment;
+        Sequence = sequence;
+    }
+
+    public Guid Id { get; private set; }
+
+    public Guid WorkOrderId { get; private set; }
+
+    public Guid ActivityId { get; private set; }
+
+    public ExecutionMoment Moment { get; private set; }
+
+    public int Sequence { get; private set; }
+
+    public IReadOnlyCollection<ActivityAnswer> Answers =>
+        _answers.AsReadOnly();
+
+    public static WorkOrderActivity Create(
+        Guid workOrderId,
+        Guid activityId,
+        ExecutionMoment moment,
+        int sequence)
+    {
+        if (workOrderId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "La orden de trabajo es obligatoria.",
+                nameof(workOrderId));
+        }
+
+        if (activityId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "La actividad es obligatoria.",
+                nameof(activityId));
+        }
+
+        if (sequence <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(sequence),
+                "La secuencia debe ser mayor que cero.");
+        }
+
+        return new WorkOrderActivity(
+            Guid.NewGuid(),
+            workOrderId,
+            activityId,
+            moment,
+            sequence);
+    }
+
+    public void AddAnswer(ActivityAnswer answer)
+    {
+        ArgumentNullException.ThrowIfNull(answer);
+
+        _answers.Add(answer);
+    }
+}
+```
+
+---
+
+# 3. ¿Qué representa `Sequence`?
+
+Esta propiedad es muy importante:
+
+```csharp
+public int Sequence { get; private set; }
+```
+
+¿Por qué?
+
+Porque anteriormente vimos que:
+
+> `ActivityId + Moment` no necesariamente identifica una ejecución.
+
+Por ejemplo:
+
+```text
+OT-001
+
+ActivityId = 10
+Moment = After
+```
+
+podría ejecutarse varias veces:
+
+```text
+ActivityId   Moment   Sequence
+--------------------------------
+10           After       1
+10           After       2
+10           After       3
+```
+
+Por ejemplo, un técnico puede hacer una medición:
+
+```text
+After #1 → después de la limpieza
+```
+
+y luego:
+
+```text
+After #2 → después de ajustar el sistema
+```
+
+Por eso **no debemos imponer unicidad únicamente por `ActivityId + Moment`**.
+
+---
+
+# 4. Ahora podemos construir una actividad real
+
+Supongamos:
+
+```text
+WorkOrder
+OT-2026-001
+
+Activity
+Medir corriente del compresor
+ActivityId = 50
+```
+
+Creamos:
+
+```csharp
+var activity = WorkOrderActivity.Create(
+    workOrderId,
+    activityId,
+    ExecutionMoment.Before,
+    1);
+```
+
+Tenemos:
+
+```text
+WorkOrderActivity
+├── WorkOrderId
+├── ActivityId = 50
+├── Moment = Before
+└── Sequence = 1
+```
+
+---
+
+# 5. Agregamos las respuestas
+
+Creamos la medición:
+
+```csharp
+var measurements = new[]
+{
+    MeasurementReading.Create(
+        "R",
+        MeasurementValue.FromCurrent(
+            Current.Create(12.1m))),
+
+    MeasurementReading.Create(
+        "S",
+        MeasurementValue.FromCurrent(
+            Current.Create(11.8m))),
+
+    MeasurementReading.Create(
+        "T",
+        MeasurementValue.FromCurrent(
+            Current.Create(12.0m)))
+};
+```
+
+Creamos el `AnswerValue`:
+
+```csharp
+var answerValue =
+    AnswerValue.FromMeasurements(measurements);
+```
+
+Y finalmente:
+
+```csharp
+var answer = ActivityAnswer.Create(
+    questionId,
+    answerValue);
+```
+
+La agregamos:
+
+```csharp
+activity.AddAnswer(answer);
+```
+
+Ahora tenemos:
+
+```text
+WorkOrderActivity
+│
+├── ActivityId: 50
+├── Moment: Before
+├── Sequence: 1
+│
+└── Answers
+      │
+      └── Question: Medir corriente
+             │
+             └── Measurements
+                    ├── R → 12.1 A
+                    ├── S → 11.8 A
+                    └── T → 12.0 A
+```
+
+---
+
+# 6. Y después podemos ejecutar la misma actividad nuevamente
+
+Por ejemplo:
+
+```csharp
+var afterActivity = WorkOrderActivity.Create(
+    workOrderId,
+    activityId,
+    ExecutionMoment.After,
+    1);
+```
+
+Y registrar:
+
+```text
+R → 10.2 A
+S → 10.1 A
+T → 10.3 A
+```
+
+Ahora la OT tiene:
+
+```text
+OT-001
+│
+├── WorkOrderActivity
+│   ├── ActivityId = 50
+│   ├── Moment = Before
+│   └── Sequence = 1
+│
+└── WorkOrderActivity
+    ├── ActivityId = 50
+    ├── Moment = After
+    └── Sequence = 1
+```
+
+Esto es mucho mejor que tener:
+
+```csharp
+decimal ValorAntes;
+decimal ValorDespues;
+```
+
+porque nuestro modelo no está limitado a dos momentos.
+
+---
+
+# 7. Incluso podemos tener `During`
+
+Por ejemplo:
+
+```text
+Before
+   ↓
+limpieza
+   ↓
+During
+   ↓
+ajuste
+   ↓
+After
+```
+
+Y podemos registrar:
+
+```text
+Before:
+12.1 A
+
+During:
+11.5 A
+
+After:
+10.2 A
+```
+
+Sin cambiar ninguna clase.
+
+---
+
+# 8. ¿Por qué `WorkOrderActivity` tiene una colección de respuestas?
+
+Porque una actividad puede tener varias preguntas.
+
+Por ejemplo:
+
+```text
+Actividad:
+Mantenimiento eléctrico
+```
+
+Preguntas:
+
+```text
+Q1 → ¿El cableado está en buen estado?
+Q2 → Medir voltaje
+Q3 → Medir corriente
+Q4 → ¿Los terminales están ajustados?
+```
+
+Entonces:
+
+```text
+WorkOrderActivity
+│
+├── Q1 → Correct
+├── Q2 → 230 V
+├── Q3 → R=12.1, S=11.8, T=12.0 A
+└── Q4 → Correct
+```
+
+Por eso:
+
+```csharp
+private readonly List<ActivityAnswer> _answers = [];
+```
+
+tiene mucho sentido.
+
+---
+
+# 9. Pero hay una decisión DDD importante
+
+Aquí debemos detenernos un momento.
+
+¿`WorkOrderActivity` debe pertenecer al **Aggregate Root `WorkOrder`**?
+
+Para nuestro ACSoft, **sí es una buena decisión inicial**.
+
+El modelo sería:
+
+```text
+                 WorkOrder
+               Aggregate Root
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+ WorkOrderAssignment    WorkOrderActivity
+                              │
+                              │
+                       ActivityAnswer
+```
+
+Esto significa que una actividad ejecutada no debería crearse independientemente de una OT.
+
+Conceptualmente:
+
+```text
+WorkOrder
+    └── AddActivity(...)
+```
+
+en lugar de permitir:
+
+```csharp
+WorkOrderActivity.Create(...)
+```
+
+desde cualquier lugar de la aplicación.
+
+---
+
+# 10. Entonces hagamos la siguiente mejora
+
+En lugar de que Application haga directamente:
+
+```csharp
+var activity = WorkOrderActivity.Create(...);
+```
+
+queremos que el Aggregate Root controle la operación:
+
+```csharp
+workOrder.AddActivity(
+    activityId,
+    ExecutionMoment.Before,
+    1);
+```
+
+Y que `WorkOrder` cree internamente la entidad.
+
+Agregaríamos:
+
+```csharp
+private readonly List<WorkOrderActivity> _activities = [];
+```
+
+y:
+
+```csharp
+public IReadOnlyCollection<WorkOrderActivity> Activities =>
+    _activities.AsReadOnly();
+```
+
+Luego:
+
+```csharp
+public WorkOrderActivity AddActivity(
+    Guid activityId,
+    ExecutionMoment moment,
+    int sequence)
+{
+    EnsureOrderCanReceiveActivities();
+
+    var activity = WorkOrderActivity.Create(
+        Id,
+        activityId,
+        moment,
+        sequence);
+
+    _activities.Add(activity);
+
+    return activity;
+}
+```
+
+Con una validación inicial:
+
+```csharp
+private void EnsureOrderCanReceiveActivities()
+{
+    if (Status == WorkOrderStatus.Completed)
+    {
+        throw new InvalidOperationException(
+            "No se pueden agregar actividades a una orden completada.");
+    }
+
+    if (Status == WorkOrderStatus.Cancelled)
+    {
+        throw new InvalidOperationException(
+            "No se pueden agregar actividades a una orden cancelada.");
+    }
+}
+```
+
+Así el Aggregate Root comienza a proteger sus invariantes.
+
+---
+
+# 11. Nuestro Aggregate empieza a quedar así
+
+```text
+WorkOrder
+│
+├── Id
+├── Number
+├── CustomerId
+├── EquipmentId
+├── Status
+│
+├── Assignments
+│     ├── Assignment
+│     ├── Assignment
+│     └── Assignment
+│
+└── Activities
+      │
+      ├── WorkOrderActivity
+      │      ├── Moment
+      │      ├── Sequence
+      │      └── Answers
+      │             ├── ActivityAnswer
+      │             └── ActivityAnswer
+      │
+      └── WorkOrderActivity
+             ├── Moment
+             ├── Sequence
+             └── Answers
+```
+
+Y esto ya se parece bastante al dominio real de una orden de mantenimiento HVAC.
+
+---
+
+## Un detalle importante antes de seguir
+
+Todavía **no debemos agregar directamente una lista de `Activity` catalogadas dentro de `WorkOrder`**.
+
+La separación correcta es:
+
+```text
+CATÁLOGO
+────────
+Activity
+Question
+Answer configuration
+Equipment parameters
+
+
+EJECUCIÓN
+─────────
+WorkOrder
+ └── WorkOrderActivity
+      └── ActivityAnswer
+           └── AnswerValue
+```
+
+Esto nos permitirá que una definición de actividad pueda cambiar en el futuro sin destruir el historial de las órdenes ya ejecutadas.
+
+---
+
+### Siguiente paso
+
+El siguiente paso será **refinar `Question` y `Activity`** para que puedan indicar:
+
+```text
+Pregunta
+├── AnswerType
+├── MeasurementType
+├── unidad/tipo de medición
+└── reglas necesarias
+
+Actividad
+└── Questions[]
+```
+
+y luego conectar esas definiciones con `WorkOrderActivity`.
+
+Ahí podremos resolver algo especialmente importante para ACSoft: **cómo decir que "Medir voltaje" espera Voltios, "Medir corriente" espera Amperios y "Medir presión" espera PSI, sin poner rangos específicos del equipo dentro de la actividad.**

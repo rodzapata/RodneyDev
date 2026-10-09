@@ -1,0 +1,901 @@
+---
+title: "IActionResult parte 1"
+date: "2026-10-08"
+description: "IActionResult parte 1"
+slug: "IActionResult-1-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+Claro. Vamos a estudiar `IActionResult` **paso a paso**, usando ejemplos de tu proyecto **AcSoft (.NET 10 + C# 14 + Clean Architecture)**.
+
+La idea principal es que entiendas **qué es, por qué existe, cuándo usarlo y cuándo conviene usar `ActionResult<T>` en lugar de `IActionResult`**.
+
+---
+
+# 1. ¿Qué es `IActionResult`?
+
+`IActionResult` es una interfaz de ASP.NET Core que representa **el resultado que una acción de un Controller devuelve al cliente HTTP**.
+
+Por ejemplo:
+
+```csharp
+[HttpGet]
+public IActionResult Get()
+{
+    return Ok();
+}
+```
+
+Aquí:
+
+```text
+Cliente
+   │
+   │ GET /api/work-orders
+   ▼
+Controller
+   │
+   │ IActionResult
+   ▼
+HTTP Response
+```
+
+El `IActionResult` permite devolver diferentes tipos de respuestas HTTP:
+
+```csharp
+return Ok();
+return NotFound();
+return BadRequest();
+return Unauthorized();
+return Forbid();
+return Created();
+return NoContent();
+```
+
+Cada uno representa una respuesta HTTP diferente.
+
+---
+
+# 2. ¿Por qué no simplemente devolver `WorkOrder`?
+
+Podríamos hacer esto:
+
+```csharp
+[HttpGet("{id}")]
+public WorkOrder GetById(Guid id)
+{
+    ...
+}
+```
+
+Pero aparece un problema.
+
+¿Qué hacemos si la orden no existe?
+
+```csharp
+return null;
+```
+
+No expresa claramente:
+
+```text
+HTTP 404 Not Found
+```
+
+En una API REST necesitamos poder devolver diferentes respuestas.
+
+Por eso:
+
+```csharp
+[HttpGet("{id}")]
+public IActionResult GetById(Guid id)
+{
+    var workOrder = ...;
+
+    if (workOrder is null)
+        return NotFound();
+
+    return Ok(workOrder);
+}
+```
+
+Ahora podemos representar correctamente:
+
+```text
+                     ┌── 200 OK
+                     │
+GET /work-orders/1 ──┤
+                     │
+                     └── 404 Not Found
+```
+
+---
+
+# 3. `IActionResult` representa una respuesta HTTP
+
+Miremos un ejemplo sencillo:
+
+```csharp
+[HttpGet("{id}")]
+public IActionResult GetById(Guid id)
+{
+    var workOrder = ...;
+
+    if (workOrder is null)
+        return NotFound();
+
+    return Ok(workOrder);
+}
+```
+
+Tenemos dos caminos.
+
+### Si existe
+
+```csharp
+return Ok(workOrder);
+```
+
+ASP.NET Core genera:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+```
+
+Y el JSON:
+
+```json
+{
+    "id": "..."
+}
+```
+
+### Si no existe
+
+```csharp
+return NotFound();
+```
+
+ASP.NET Core genera:
+
+```http
+HTTP/1.1 404 Not Found
+```
+
+---
+
+# 4. ¿Qué devuelve realmente `Ok()`?
+
+Cuando escribes:
+
+```csharp
+return Ok(workOrder);
+```
+
+`Ok()` crea un objeto que implementa `IActionResult`.
+
+Conceptualmente:
+
+```text
+Ok(workOrder)
+     │
+     ▼
+OkObjectResult
+     │
+     ▼
+IActionResult
+```
+
+Mientras que:
+
+```csharp
+return NotFound();
+```
+
+produce:
+
+```text
+NotFound()
+    │
+    ▼
+NotFoundResult
+    │
+    ▼
+IActionResult
+```
+
+Y:
+
+```csharp
+return BadRequest();
+```
+
+produce:
+
+```text
+BadRequest()
+      │
+      ▼
+BadRequestResult
+      │
+      ▼
+IActionResult
+```
+
+Por eso todos pueden ser devueltos por:
+
+```csharp
+IActionResult
+```
+
+---
+
+# 5. Los resultados más utilizados
+
+En una API como **AcSoft**, estos son los que más vas a utilizar.
+
+| Método                  | HTTP | Uso                             |
+| ----------------------- | ---: | ------------------------------- |
+| `Ok()`                  |  200 | Operación exitosa               |
+| `Created()`             |  201 | Recurso creado                  |
+| `NoContent()`           |  204 | Operación exitosa sin contenido |
+| `BadRequest()`          |  400 | Solicitud incorrecta            |
+| `Unauthorized()`        |  401 | No autenticado                  |
+| `Forbid()`              |  403 | Sin permisos                    |
+| `NotFound()`            |  404 | Recurso inexistente             |
+| `Conflict()`            |  409 | Conflicto                       |
+| `UnprocessableEntity()` |  422 | Datos semánticamente inválidos  |
+
+---
+
+# 6. Ejemplo práctico con AcSoft
+
+Supongamos:
+
+```csharp
+[ApiController]
+[Route("api/work-orders")]
+public sealed class WorkOrdersController : ControllerBase
+{
+    [HttpGet("{id:guid}")]
+    public IActionResult GetById(Guid id)
+    {
+        // Simulación
+        var exists = true;
+
+        if (!exists)
+            return NotFound();
+
+        return Ok(new
+        {
+            Id = id,
+            Number = "OT-20261008-001"
+        });
+    }
+}
+```
+
+Si hacemos:
+
+```http
+GET /api/work-orders/123
+```
+
+podemos obtener:
+
+```http
+200 OK
+```
+
+con:
+
+```json
+{
+    "id": "123",
+    "number": "OT-20261008-001"
+}
+```
+
+---
+
+# 7. `Ok()` puede recibir datos
+
+Puedes hacer:
+
+```csharp
+return Ok(workOrder);
+```
+
+También:
+
+```csharp
+return Ok(new
+{
+    id = workOrder.Id,
+    number = workOrder.Number
+});
+```
+
+Incluso:
+
+```csharp
+return Ok(new
+{
+    message = "Orden creada correctamente"
+});
+```
+
+Por ejemplo:
+
+```csharp
+[HttpGet]
+public IActionResult Get()
+{
+    return Ok(new
+    {
+        message = "AcSoft API funcionando"
+    });
+}
+```
+
+Respuesta:
+
+```json
+{
+    "message": "AcSoft API funcionando"
+}
+```
+
+---
+
+# 8. `CreatedAtAction()` — muy importante para AcSoft
+
+Este método lo vimos en tu `WorkOrdersController`.
+
+Por ejemplo:
+
+```csharp
+[HttpPost]
+public async Task<IActionResult> Create(
+    CreateWorkOrderRequest request,
+    CancellationToken cancellationToken)
+{
+    var id = await _handler.HandleAsync(
+        request,
+        cancellationToken);
+
+    return CreatedAtAction(
+        nameof(GetById),
+        new { id },
+        new { id });
+}
+```
+
+Aquí estás diciendo:
+
+> La orden fue creada y existe una URL donde el cliente puede consultarla.
+
+La respuesta será:
+
+```http
+201 Created
+```
+
+Y puede incluir:
+
+```http
+Location: /api/work-orders/...
+```
+
+Esto es mejor que simplemente:
+
+```csharp
+return Ok(id);
+```
+
+porque semánticamente estamos diciendo:
+
+```text
+POST
+ ↓
+Recurso creado
+ ↓
+201 Created
+```
+
+---
+
+# 9. `NoContent()`
+
+Es muy común en operaciones `PUT`, `PATCH` y `DELETE`.
+
+Por ejemplo:
+
+```csharp
+[HttpDelete("{id:guid}")]
+public IActionResult Delete(Guid id)
+{
+    // eliminar...
+
+    return NoContent();
+}
+```
+
+Respuesta:
+
+```http
+204 No Content
+```
+
+No hay body.
+
+Es decir:
+
+```text
+HTTP 204
+↓
+sin JSON
+↓
+sin contenido
+```
+
+---
+
+# 10. `BadRequest()`
+
+Se utiliza cuando la solicitud enviada por el cliente no es válida.
+
+Ejemplo:
+
+```csharp
+[HttpPost]
+public IActionResult Create(CreateWorkOrderRequest request)
+{
+    if (request.CustomerId == Guid.Empty)
+        return BadRequest("CustomerId es obligatorio.");
+
+    return Ok();
+}
+```
+
+Respuesta:
+
+```http
+400 Bad Request
+```
+
+---
+
+# 11. `NotFound()`
+
+Probablemente será muy utilizado en AcSoft.
+
+```csharp
+[HttpGet("{id:guid}")]
+public IActionResult GetById(Guid id)
+{
+    var workOrder = FindWorkOrder(id);
+
+    if (workOrder is null)
+        return NotFound();
+
+    return Ok(workOrder);
+}
+```
+
+La lógica es:
+
+```text
+Buscar OT
+   │
+   ├── Existe ──► 200 OK
+   │
+   └── No existe ► 404 Not Found
+```
+
+---
+
+# 12. `Conflict()`
+
+Muy importante en aplicaciones empresariales.
+
+Supongamos que no quieres crear dos órdenes con el mismo número:
+
+```csharp
+if (await ExistsAsync(request.Number))
+{
+    return Conflict(
+        "Ya existe una orden con ese número.");
+}
+```
+
+Respuesta:
+
+```http
+409 Conflict
+```
+
+Esto tiene mucho más sentido que:
+
+```csharp
+return BadRequest();
+```
+
+porque el problema no es que la petición esté mal formada.
+
+El problema es que **entra en conflicto con el estado actual del sistema**.
+
+---
+
+# 13. `IActionResult` vs `ActionResult<T>`
+
+Esta es una diferencia **muy importante**.
+
+Puedes escribir:
+
+```csharp
+public IActionResult GetById(Guid id)
+```
+
+pero también:
+
+```csharp
+public ActionResult<WorkOrderResponse> GetById(Guid id)
+```
+
+La segunda opción suele ser muy buena para APIs modernas.
+
+Por ejemplo:
+
+```csharp
+[HttpGet("{id:guid}")]
+public ActionResult<WorkOrderResponse> GetById(Guid id)
+{
+    var workOrder = FindWorkOrder(id);
+
+    if (workOrder is null)
+        return NotFound();
+
+    return Ok(workOrder);
+}
+```
+
+Aquí tenemos:
+
+```text
+ActionResult<WorkOrderResponse>
+        │
+        ├── WorkOrderResponse
+        │
+        └── IActionResult
+```
+
+Es decir, podemos devolver tanto:
+
+```csharp
+return workOrder;
+```
+
+como:
+
+```csharp
+return NotFound();
+```
+
+---
+
+# 14. ¿Por qué `ActionResult<T>` puede ser mejor?
+
+Supongamos:
+
+```csharp
+public IActionResult GetById(Guid id)
+```
+
+El compilador no sabe cuál es el tipo principal de respuesta.
+
+Pero:
+
+```csharp
+public ActionResult<WorkOrderResponse> GetById(Guid id)
+```
+
+está expresando:
+
+> Esta operación devuelve normalmente un `WorkOrderResponse`, pero también puede devolver respuestas HTTP como 404, 400, etc.
+
+Esto además ayuda bastante a **Swagger/OpenAPI** a describir la API.
+
+---
+
+# 15. Ejemplo recomendado para AcSoft
+
+Yo estructuraría tu endpoint aproximadamente así:
+
+```csharp
+[HttpGet("{id:guid}")]
+public async Task<ActionResult<WorkOrderResponse>> GetById(
+    Guid id,
+    CancellationToken cancellationToken)
+{
+    var workOrder = await _handler.HandleAsync(
+        id,
+        cancellationToken);
+
+    if (workOrder is null)
+        return NotFound();
+
+    return Ok(workOrder);
+}
+```
+
+Tenemos:
+
+```text
+                GET /api/work-orders/{id}
+                            │
+                            ▼
+                    Controller
+                            │
+                            ▼
+                       Handler
+                            │
+                            ▼
+                       Application
+                            │
+                            ▼
+                         Domain
+```
+
+Y finalmente:
+
+```text
+Domain
+  ↓
+Application
+  ↓
+Controller
+  ↓
+ActionResult<WorkOrderResponse>
+  ↓
+HTTP Response
+```
+
+---
+
+# 16. ¿Entonces cuándo utilizar `IActionResult`?
+
+Puedes utilizar:
+
+```csharp
+IActionResult
+```
+
+cuando quieres que la acción pueda devolver diferentes tipos de resultados y **no necesitas expresar un tipo de respuesta principal**.
+
+Por ejemplo:
+
+```csharp
+public IActionResult Health()
+{
+    return Ok();
+}
+```
+
+Pero para endpoints que devuelven una entidad/DTO, normalmente prefiero:
+
+```csharp
+ActionResult<T>
+```
+
+Por ejemplo:
+
+```csharp
+public async Task<ActionResult<WorkOrderResponse>> GetById(...)
+```
+
+---
+
+# 17. Un error conceptual importante
+
+No debes confundir:
+
+```csharp
+IActionResult
+```
+
+con:
+
+```csharp
+IResult
+```
+
+Son conceptos diferentes.
+
+### `IActionResult`
+
+Pertenece al modelo tradicional de **Controllers**:
+
+```csharp
+ControllerBase
+     ↓
+IActionResult
+```
+
+### `IResult`
+
+Se utiliza principalmente con **Minimal APIs**:
+
+```csharp
+app.MapGet(...);
+```
+
+Por ejemplo:
+
+```csharp
+app.MapGet(
+    "/work-orders/{id}",
+    (Guid id) =>
+    {
+        return Results.Ok(id);
+    });
+```
+
+Aquí estamos utilizando:
+
+```csharp
+IResult
+```
+
+Mientras que en tu AcSoft estamos trabajando con:
+
+```csharp
+[ApiController]
+public sealed class WorkOrdersController : ControllerBase
+```
+
+por lo que:
+
+```csharp
+IActionResult
+```
+
+y:
+
+```csharp
+ActionResult<T>
+```
+
+son los conceptos que debes dominar primero.
+
+---
+
+# 18. Regla práctica para tu proyecto AcSoft
+
+Yo utilizaría esta regla:
+
+### GET que devuelve un recurso
+
+```csharp
+ActionResult<T>
+```
+
+Ejemplo:
+
+```csharp
+public async Task<ActionResult<WorkOrderResponse>> GetById(...)
+```
+
+---
+
+### GET que devuelve una colección
+
+```csharp
+ActionResult<IReadOnlyList<T>>
+```
+
+Por ejemplo:
+
+```csharp
+public async Task<ActionResult<IReadOnlyList<WorkOrderResponse>>> GetAll(...)
+```
+
+---
+
+### POST
+
+```csharp
+ActionResult<T>
+```
+
+Ejemplo:
+
+```csharp
+public async Task<ActionResult<CreateWorkOrderResponse>> Create(...)
+```
+
+y:
+
+```csharp
+return CreatedAtAction(...);
+```
+
+---
+
+### DELETE
+
+Puedes utilizar:
+
+```csharp
+IActionResult
+```
+
+o:
+
+```csharp
+ActionResult
+```
+
+Ejemplo:
+
+```csharp
+public async Task<IActionResult> Delete(...)
+{
+    ...
+
+    return NoContent();
+}
+```
+
+---
+
+# 19. Resumen mental
+
+Quédate con este esquema:
+
+```text
+Controller
+    │
+    ▼
+ Acción
+    │
+    ▼
+┌──────────────────────────┐
+│      IActionResult       │
+└──────────────────────────┘
+    │
+    ├── Ok()              → 200
+    ├── Created()         → 201
+    ├── NoContent()       → 204
+    ├── BadRequest()      → 400
+    ├── Unauthorized()   → 401
+    ├── Forbid()          → 403
+    ├── NotFound()        → 404
+    └── Conflict()        → 409
+```
+
+Y para APIs como **AcSoft**, la idea más importante es:
+
+```csharp
+IActionResult
+```
+
+significa:
+
+> **"Esta acción puede devolver diferentes respuestas HTTP."**
+
+Mientras que:
+
+```csharp
+ActionResult<WorkOrderResponse>
+```
+
+significa:
+
+> **"Esta acción normalmente devuelve `WorkOrderResponse`, pero también puede devolver diferentes respuestas HTTP."**
+
+Para tu proyecto **Clean Architecture + .NET 10**, yo me inclinaría por `ActionResult<T>` en los endpoints que devuelven DTOs y reservaría `IActionResult` para acciones donde el tipo de respuesta no aporta demasiado valor.

@@ -1,7 +1,7 @@
 ---
-title: "Excepciones en CSharp mas usada en .net 10 "
+title: "Excepciones en CSharp mas usada en .net 10 parte 1"
 date: "2026-09-07"
-description: "Excepciones en CSharp"
+description: "Excepciones en CSharp parte 1"
 slug: "excepciones-1-csharp"
 category: "clean Arquitecture"
 tags: ["netcore", "csharp", "backend"]
@@ -1237,4 +1237,134 @@ HTTP 400 / 404 / 409 / 500
 
 y hacerlo siguiendo **DDD + Clean Architecture + .NET 10 + C# 14**, incluyendo el código de cada proyecto (`Domain`, `Application`, `Infrastructure` y `Api`).
 
-cuando se recomienda usar DomainException o ArgumentExeption o  nvalidOperationException   en .net 10 y csharp 14 ?
+> si quiero personalizar el mensaje de error en este código como lo haría en csharp 14
+
+```csharp
+public void AddAnswer(ActivityAnswer answer)
+    {
+        ArgumentNullException.ThrowIfNull(answer);
+
+    }
+
+```
+
+Sí. En **C# 14 / .NET 10**, `ArgumentNullException.ThrowIfNull()` permite personalizar el mensaje usando el segundo parámetro `paramName` **solo si quieres indicar el nombre del parámetro**. Pero si quieres un **mensaje completamente personalizado**, hay que lanzar la excepción manualmente.
+
+### 1. Forma recomendada si solo necesitas indicar el parámetro
+
+```csharp
+public void AddAnswer(ActivityAnswer answer)
+{
+    ArgumentNullException.ThrowIfNull(answer);
+}
+```
+
+Esto genera un mensaje similar a:
+
+```text
+Value cannot be null. (Parameter 'answer')
+```
+
+Aquí C# obtiene automáticamente el nombre `answer` gracias a `CallerArgumentExpression`.
+
+---
+
+### 2. Mensaje personalizado
+
+Si quieres algo como:
+
+> "La respuesta de la actividad no puede ser nula."
+
+puedes hacer:
+
+```csharp
+public void AddAnswer(ActivityAnswer answer)
+{
+    if (answer is null)
+    {
+        throw new ArgumentNullException(
+            nameof(answer),
+            "La respuesta de la actividad no puede ser nula.");
+    }
+}
+```
+
+El resultado será aproximadamente:
+
+```text
+La respuesta de la actividad no puede ser nula. (Parameter 'answer')
+```
+
+### 3. ¿Y se puede hacer con `ThrowIfNull`?
+
+Sí, puedes pasar un nombre de parámetro personalizado, pero **no un mensaje**:
+
+```csharp
+ArgumentNullException.ThrowIfNull(
+    answer,
+    "La respuesta de la actividad no puede ser nula.");
+```
+
+⚠️ Pero aquí hay una particularidad importante: el segundo parámetro de `ThrowIfNull` es `paramName`, **no `message`**.
+
+Por tanto, eso produciría algo conceptualmente como:
+
+```text
+Value cannot be null. (Parameter 'La respuesta de la actividad no puede ser nula.')
+```
+
+Por eso **no debes usar el segundo parámetro para personalizar el mensaje**.
+
+---
+
+## Para tu proyecto AcSoft
+
+En tu caso, yo usaría:
+
+```csharp
+public void AddAnswer(ActivityAnswer answer)
+{
+    ArgumentNullException.ThrowIfNull(answer);
+
+    _answers.Add(answer);
+}
+```
+
+si simplemente quieres proteger el método contra `null`.
+
+Pero si el mensaje tiene **valor de negocio**, por ejemplo:
+
+```text
+No se puede agregar una respuesta porque la actividad ya fue cerrada.
+```
+
+entonces ya no estamos hablando de un argumento nulo. Ahí sería mejor una excepción de dominio:
+
+```csharp
+public void AddAnswer(ActivityAnswer answer)
+{
+    ArgumentNullException.ThrowIfNull(answer);
+
+    if (IsClosed)
+    {
+        throw new DomainException(
+            "No se puede agregar una respuesta a una orden de trabajo cerrada.");
+    }
+
+    _answers.Add(answer);
+}
+```
+
+**Regla práctica para tu DDD:**
+
+* `ArgumentNullException` → el programador pasó `null`.
+* `ArgumentException` → el argumento tiene un valor inválido.
+* `InvalidOperationException` → el objeto está en un estado que no permite la operación.
+* `DomainException` → se violó una **regla de negocio del dominio**.
+
+En `AddAnswer(ActivityAnswer answer)`, `ThrowIfNull(answer)` es precisamente la opción moderna y limpia de .NET 10.
+
+
+> cuando se recomienda usar DomainException o ArgumentExeption o  nvalidOperationException   en .net 10 y csharp 14 ?
+
+[Excepciones parate 2](/blog/excepciones-2-csharp)

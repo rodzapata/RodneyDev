@@ -1,7 +1,7 @@
 ---
-title: "Excepciones en CSharp mas usada en .net 10 "
+title: "Excepciones en CSharp mas usada en .net 10 parte 2"
 date: "2026-10-05"
-description: "Excepciones en CSharp"
+description: "Excepciones en CSharp parte 2"
 slug: "excepciones-2-csharp"
 category: "clean Arquitecture"
 tags: ["netcore", "csharp", "backend"]
@@ -69,7 +69,7 @@ var workOrder = WorkOrder.Create("");
 
 Se lanza una `ArgumentException`, porque el argumento `number` no cumple las condiciones requeridas.
 
-### ¿Cuándo conviene usarla?
+**¿Cuándo conviene usarla?**
 
 * Cuando un argumento es nulo, vacío o tiene un formato inválido.
 
@@ -142,7 +142,7 @@ workOrder.Complete();
 
 La operación falla porque la orden está pendiente, no porque el método haya recibido un argumento incorrecto.
 
-### ¿Cuándo conviene usarla?
+**¿Cuándo conviene usarla?**
 
 * Cuando se llama a un método en un momento no permitido.
 
