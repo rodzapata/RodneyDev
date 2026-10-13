@@ -1,0 +1,108 @@
+---
+title: "Inyeccion de Dependencia "
+date: "2026-09-17"
+description: "Inyeccion de Dependencia con Clean Arquitecture "
+slug: "inyeccion-de-dependencia0-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft", "webapi"]
+published: true
+featured: true
+---
+
+> es correcto que en la capa Api se cree el  archivo de inyeccion de dependencia o solo debe ir en la capa de Application y en la capa Infrastructure ?
+
+**Sí, es completamente correcto.** De hecho, la capa de **API (o Presentation)** debe contener el archivo principal donde se configuran y registran todas las dependencias de la solución, conocido en arquitectura de software como el **Composition Root** (Raíz de Composición).
+
+Para mantener una Clean Architecture impecable en .NET, existe un patrón claro para organizar la inyección de dependencias entre capas.
+
+---
+
+### La regla de oro: La API conoce a todas, pero Application no conoce a Infrastructure
+
+* **Application:** No debe depender de la capa `Infrastructure` ni de la capa `Api`.
+* **Infrastructure:** Implementa las interfaces definidas en `Application` o `Domain`.
+* **API (Presentation):** Es el punto de entrada ejecutable de la aplicación (*Host*). Para que .NET pueda instanciar los controladores y resolver los servicios en tiempo de ejecución, la capa de API necesita referencias a `Application` e `Infrastructure`.
+
+---
+
+### La mejor práctica: Métodos de extensión distribuidos
+
+Para evitar que la capa de API se llene de cientos de líneas de código registrando servicio por servicio, la responsabilidad se delega usando **métodos de extensión** en cada capa y unificándolos en la API.
+
+#### 1. Capa `Application` (Registra sus propios servicios)
+
+Crea una clase estática de extensión (por ejemplo, `ApplicationServiceRegistration.cs`):
+
+```csharp
+namespace TuProyecto.Application;
+
+public static class ApplicationServiceRegistration
+{
+    public static IServiceCollection AddApplicationServices(this IServiceCollection services)
+    {
+        // Registrar MediatR, FluentValidation, AutoMapper, Casos de Uso, etc.
+        services.AddValidatorsFromAssembly(Assembly.GetExecutingAssembly());
+        
+        return services;
+    }
+}
+
+```
+
+#### 2. Capa `Infrastructure` (Registra repositorios, BD y servicios externos)
+
+Crea su propia clase estática (por ejemplo, `InfrastructureServiceRegistration.cs`):
+
+```csharp
+namespace TuProyecto.Infrastructure;
+
+public static class InfrastructureServiceRegistration
+{
+    public static IServiceCollection AddInfrastructureServices(this IServiceCollection services, IConfiguration configuration)
+    {
+        // Registrar DbContext, Repositorios, Servicios de Email, JWT, etc.
+        services.AddDbContext<ApplicationDbContext>(options =>
+            options.UseNpgsql(configuration.GetConnectionString("DefaultConnection")));
+
+        services.AddScoped<IClienteRepository, ClienteRepository>();
+
+        return services;
+    }
+}
+
+```
+
+#### 3. Capa `Api` (El Composition Root)
+
+En el archivo `Program.cs` (o en un archivo de extensión dentro de la capa API si deseas modularizar la configuración del servidor web, Swagger, CORS, etc.), invocas los métodos de las demás capas:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// La API ensambla las dependencias de todas las capas
+builder.Services.AddApplicationServices();
+builder.Services.AddInfrastructureServices(builder.Configuration);
+
+// Y registra sus propias dependencias de presentación (Controllers, Swagger, CORS, etc.)
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+
+var app = builder.Build();
+
+```
+
+---
+
+### Resumen del flujo
+
+| Capa | Responsabilidad en Inyección de Dependencias |
+| --- | --- |
+| **Domain** | Ninguna (Cero dependencias de framework). |
+| **Application** | Expone `AddApplicationServices()` para sus DTOs, validaciones y casos de uso. |
+| **Infrastructure** | Expone `AddInfrastructureServices()` para BD, repositorios y clientes API externos. |
+| **API** | **Composition Root:** Llama a los métodos anteriores y configura el pipeline HTTP de ASP.NET Core. |
+
+Con este enfoque mantienes el acoplamiento bajo, respetas la regla de dependencia de Clean Architecture y logras un `Program.cs` limpio y legible.
+
+
+[Inyeccion de Dependencia parte 1](/blog/inyeccion-de-dependencia1-csharp)  
