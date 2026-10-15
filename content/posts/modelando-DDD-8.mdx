@@ -1,0 +1,458 @@
+---
+title: "Modelando DDD parte 8 Aggregate Root"
+date: "2026-10-15"
+description: "Estructura para implementar Aggregate Root"
+slug: "modelando-DDD-8"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+Continuemos con nuestro proyecto AcSoft en .NET 10 y C# 14, utilizando DDD y Clean Architecture, sin MediatR ni librerías externas por ahora.
+
+El siguiente paso es construir `OrdenMantenimiento` como Aggregate Root y conectar correctamente el catálogo con las actividades que ejecuta el técnico.
+
+Antes de escribir el código, vamos a resolver una regla importante: la orden debe poder determinar si una actividad está completa, sin permitir que se registren respuestas arbitrarias o que se cierre una orden con mediciones obligatorias pendientes.
+
+## 1. La estructura que vamos a implementar
+
+ActividadCatalogo
+
+Define parámetros, opciones y etapas requeridas.
+
+OrdenMantenimiento — Aggregate Root
+
+Controla las actividades realizadas y el ciclo de vida de la orden.
+
+ActividadRealizada
+
+Registra el trabajo ejecutado sobre una actividad del catálogo.
+
+Medicion → ValorRespuestaItem
+
+Guarda respuestas de las etapas Antes y Después.
+
+Una decisión de diseño importante: `OrdenMantenimiento` no debe consultar la base de datos desde el dominio. La capa de aplicación obtiene la configuración del catálogo y la utiliza para iniciar la actividad. Así mantenemos las dependencias de Clean Architecture correctamente orientadas.
+
+## 2. Completar `ActividadCatalogo`
+
+Primero, el catálogo debe garantizar que una actividad tenga una configuración coherente.
+
+Por ejemplo, para la lectura de amperaje:
+
+- Parámetros obligatorios: `RS`, `RT` y `ST`.
+- Etapas requeridas: `Antes` y `Después`.
+- Tipo de respuesta: decimal.
+- Unidad: amperios (`A`).
+
+Añadimos una validación a `ActividadCatalogo`:
+
+```csharp
+using AcSoft.Domain.Enums;
+using AcSoft.Domain.Exceptions;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class ActividadCatalogo
+{
+    public Guid Id { get; private set; }
+
+    public string Nombre { get; private set; } = null!;
+
+    public string? Descripcion { get; private set; }
+
+    private readonly List<ParametroRespuesta> _parametrosRespuesta = [];
+    private readonly List<EtapaActividad> _etapas = [];
+
+    public IReadOnlyCollection<ParametroRespuesta> ParametrosRespuesta =>
+        _parametrosRespuesta.AsReadOnly();
+
+    public IReadOnlyCollection<EtapaActividad> Etapas =>
+        _etapas.AsReadOnly();
+
+    private ActividadCatalogo()
+    {
+    }
+
+    public ActividadCatalogo(
+        string nombre,
+        string? descripcion = null)
+    {
+        if (string.IsNullOrWhiteSpace(nombre))
+        {
+            throw new ArgumentException(
+                "El nombre de la actividad es obligatorio.",
+                nameof(nombre));
+        }
+
+        Id = Guid.NewGuid();
+        Nombre = nombre.Trim();
+        Descripcion = descripcion;
+    }
+
+    public void AgregarParametro(ParametroRespuesta parametro)
+    {
+        ArgumentNullException.ThrowIfNull(parametro);
+
+        if (_parametrosRespuesta.Any(
+            p => p.Nombre.Equals(
+                parametro.Nombre,
+                StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new DomainException(
+                $"El parámetro '{parametro.Nombre}' ya existe.");
+        }
+
+        _parametrosRespuesta.Add(parametro);
+    }
+
+    public void AgregarEtapa(EtapaMantenimiento etapa)
+    {
+        if (_etapas.Any(e => e.Etapa == etapa))
+        {
+            throw new DomainException(
+                $"La etapa '{etapa}' ya está configurada.");
+        }
+
+        _etapas.Add(new EtapaActividad(etapa));
+    }
+
+    public void ValidarConfiguracion()
+    {
+        if (_parametrosRespuesta.Count == 0)
+        {
+            throw new DomainException(
+                "La actividad debe tener al menos un parámetro de respuesta.");
+        }
+
+        if (_etapas.Count == 0)
+        {
+            throw new DomainException(
+                "La actividad debe tener al menos una etapa configurada.");
+        }
+    }
+}
+```
+
+En este ejemplo, `ValidarConfiguracion()` se ejecuta cuando la aplicación necesita comprobar que la actividad del catálogo está lista para utilizarse.
+
+Importante: no todas las actividades tienen que usar `Antes` y `Después`. Una inspección puede tener una sola etapa; una medición de amperaje puede requerir ambas.
+
+## 3. Crear el estado de la orden
+
+En `AcSoft.Domain.Enums`, creamos `EstadoOrdenMantenimiento.cs`:
+
+```
+namespace AcSoft.Domain.Enums;
+
+public enum EstadoOrdenMantenimiento
+{
+    Pendiente = 1,
+    EnProgreso = 2,
+    Completada = 3,
+    Cancelada = 4
+}
+```
+
+Esto nos permite controlar el ciclo de vida de la orden. No es lo mismo que el resultado de una inspección: el estado de la orden describe el proceso completo, mientras que `Correcto`, `No correcto` y `No aplica` describen una respuesta particular.
+
+## 4. Preparar `ActividadRealizada` para validar si está completa
+
+Aquí necesitamos resolver un detalle: cuando el catálogo cambia, una orden que ya comenzó no debería cambiar silenciosamente sus requisitos.
+
+Por eso, al crear la actividad realizada, guardaremos una copia de los identificadores de los parámetros y las etapas que requiere. Es una primera versión del concepto de configuración congelada; más adelante podemos formalizarlo mediante versiones del catálogo.
+
+Actualiza `ActividadRealizada.cs`:
+
+```
+using AcSoft.Domain.Enums;
+using AcSoft.Domain.Exceptions;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class ActividadRealizada
+{
+    public Guid Id { get; private set; }
+
+    public Guid ActividadCatalogoId { get; private set; }
+
+    private readonly HashSet<Guid> _parametrosPermitidos = [];
+    private readonly HashSet<Guid> _parametrosObligatorios = [];
+    private readonly List<Medicion> _mediciones = [];
+
+    public IReadOnlyCollection<Medicion> Mediciones =>
+        _mediciones.AsReadOnly();
+
+    private ActividadRealizada()
+    {
+    }
+
+    public ActividadRealizada(ActividadCatalogo catalogo)
+    {
+        ArgumentNullException.ThrowIfNull(catalogo);
+
+        catalogo.ValidarConfiguracion();
+
+        Id = Guid.NewGuid();
+        ActividadCatalogoId = catalogo.Id;
+
+        foreach (var parametro in catalogo.ParametrosRespuesta)
+        {
+            _parametrosPermitidos.Add(parametro.Id);
+
+            if (parametro.Obligatorio)
+                _parametrosObligatorios.Add(parametro.Id);
+        }
+
+        foreach (var etapa in catalogo.Etapas)
+        {
+            _mediciones.Add(new Medicion(etapa.Etapa));
+        }
+    }
+
+    public void RegistrarRespuesta(
+        EtapaMantenimiento etapa,
+        ParametroRespuesta parametro,
+        string valor)
+    {
+        ArgumentNullException.ThrowIfNull(parametro);
+
+        if (!_parametrosPermitidos.Contains(parametro.Id))
+        {
+            throw new DomainException(
+                "El parámetro no pertenece a esta actividad.");
+        }
+
+        var medicion = _mediciones.SingleOrDefault(
+            m => m.Etapa == etapa);
+
+        if (medicion is null)
+        {
+            throw new DomainException(
+                $"La etapa '{etapa}' no está configurada.");
+        }
+
+        medicion.RegistrarRespuesta(parametro, valor);
+    }
+
+    public bool EstaCompleta()
+    {
+        return _mediciones.All(medicion =>
+            _parametrosObligatorios.All(parametroId =>
+                medicion.Valores.Any(
+                    valor => valor.ParametroRespuestaId == parametroId)));
+    }
+}
+```
+
+Esta implementación presupone que todos los parámetros obligatorios deben responderse en cada etapa configurada. Si después encontramos actividades que requieren parámetros distintos antes y después, ajustaremos la configuración para que las obligaciones se definan por etapa.
+
+También necesitamos que `ValorRespuestaItem` exponga `ParametroRespuestaId` y que `Medicion` mantenga el método `RegistrarRespuesta()` que construimos anteriormente.
+
+## 5. Crear el Aggregate Root `WorkOrder`
+
+Como tu proyecto ya utiliza el nombre `WorkOrder`, mantengámoslo en lugar de introducir otro nombre para la misma entidad.
+
+Creamos `WorkOrderStatus.cs`:
+
+```
+namespace AcSoft.Domain.Enums;
+
+public enum WorkOrderStatus
+{
+    Pending = 1,
+    InProgress = 2,
+    Completed = 3,
+    Cancelled = 4
+}
+```
+
+Ahora `WorkOrder.cs`:
+
+```
+using AcSoft.Domain.Enums;
+using AcSoft.Domain.Exceptions;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class WorkOrder
+{
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; } = null!;
+
+    public Guid CustomerId { get; private set; }
+
+    public Guid EquipmentId { get; private set; }
+
+    public WorkOrderStatus Status { get; private set; }
+
+    private readonly List<ActividadRealizada> _actividades = [];
+
+    public IReadOnlyCollection<ActividadRealizada> Actividades =>
+        _actividades.AsReadOnly();
+
+    private WorkOrder()
+    {
+    }
+
+    public WorkOrder(
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        if (string.IsNullOrWhiteSpace(number))
+            throw new ArgumentException(
+                "El número de la orden es obligatorio.",
+                nameof(number));
+
+        if (customerId == Guid.Empty)
+            throw new ArgumentException(
+                "El cliente es obligatorio.",
+                nameof(customerId));
+
+        if (equipmentId == Guid.Empty)
+            throw new ArgumentException(
+                "El equipo es obligatorio.",
+                nameof(equipmentId));
+
+        Id = Guid.NewGuid();
+        Number = number;
+        CustomerId = customerId;
+        EquipmentId = equipmentId;
+        Status = WorkOrderStatus.Pending;
+    }
+
+    public void AgregarActividad(ActividadCatalogo catalogo)
+    {
+        ArgumentNullException.ThrowIfNull(catalogo);
+
+        if (Status is WorkOrderStatus.Completed
+            or WorkOrderStatus.Cancelled)
+        {
+            throw new DomainException(
+                "No se pueden agregar actividades a una orden cerrada.");
+        }
+
+        if (_actividades.Any(
+            a => a.ActividadCatalogoId == catalogo.Id))
+        {
+            throw new DomainException(
+                "Esta actividad ya está agregada a la orden.");
+        }
+
+        _actividades.Add(new ActividadRealizada(catalogo));
+    }
+
+    public void Iniciar()
+    {
+        if (Status != WorkOrderStatus.Pending)
+        {
+            throw new DomainException(
+                "Solo se puede iniciar una orden pendiente.");
+        }
+
+        if (_actividades.Count == 0)
+        {
+            throw new DomainException(
+                "La orden debe tener actividades antes de iniciarse.");
+        }
+
+        Status = WorkOrderStatus.InProgress;
+    }
+
+    public void Completar()
+    {
+        if (Status != WorkOrderStatus.InProgress)
+        {
+            throw new DomainException(
+                "Solo se puede completar una orden en progreso.");
+        }
+
+        if (_actividades.Count == 0 ||
+            _actividades.Any(a => !a.EstaCompleta()))
+        {
+            throw new DomainException(
+                "No se puede completar la orden: existen actividades incompletas.");
+        }
+
+        Status = WorkOrderStatus.Completed;
+    }
+
+    public void Cancelar()
+    {
+        if (Status == WorkOrderStatus.Completed)
+        {
+            throw new DomainException(
+                "No se puede cancelar una orden completada.");
+        }
+
+        if (Status == WorkOrderStatus.Cancelled)
+        {
+            throw new DomainException(
+                "La orden ya está cancelada.");
+        }
+
+        Status = WorkOrderStatus.Cancelled;
+    }
+}
+```
+
+## 6. ¿Cómo se utilizaría?
+
+Imaginemos que el catálogo contiene la actividad de amperaje con tres parámetros obligatorios (`RS`, `RT`, `ST`) y dos etapas (`Antes`, `Después`).
+
+Desde la capa de aplicación, el flujo sería conceptualmente así:
+
+```
+// El repositorio de catálogo obtiene la actividad configurada.
+var catalogo = await actividadCatalogoRepository
+    .GetByIdAsync(actividadCatalogoId, cancellationToken);
+
+if (catalogo is null)
+    throw new InvalidOperationException(
+        "La actividad del catálogo no existe.");
+
+// Se agrega la actividad a la orden.
+workOrder.AgregarActividad(catalogo);
+
+// La orden comienza.
+workOrder.Iniciar();
+```
+
+Luego el técnico registra las respuestas mediante la actividad realizada que pertenece a la orden:
+
+```
+var actividad = workOrder.Actividades.Single(
+    a => a.ActividadCatalogoId == catalogo.Id);
+
+actividad.RegistrarRespuesta(
+    EtapaMantenimiento.Antes,
+    parametroRS,
+    "20.1");
+
+actividad.RegistrarRespuesta(
+    EtapaMantenimiento.Antes,
+    parametroRT,
+    "20.5");
+
+actividad.RegistrarRespuesta(
+    EtapaMantenimiento.Antes,
+    parametroST,
+    "20.3");
+```
+
+Después del mantenimiento se registran los tres valores para `EtapaMantenimiento.Despues`. Cuando todos los parámetros obligatorios estén respondidos en ambas etapas, `workOrder.Completar()` permitirá cerrar la orden, siempre que no existan otras actividades incompletas.
+
+Importante: este ejemplo muestra el comportamiento del dominio, no el flujo completo de persistencia. La aplicación debe cargar el agregado, guardar los cambios mediante el repositorio y utilizar una transacción apropiada. Además, en la versión definitiva tendremos que resolver la configuración histórica del catálogo y el mapeo de las colecciones privadas en EF Core 10.
+
+## 7. ¿Qué hemos conseguido?
+
+- `ActividadCatalogo` define las reglas y la configuración.
+- `ActividadRealizada` conserva los requisitos con los que comenzó la ejecución.
+- `Medicion` registra los valores de cada etapa.
+- `WorkOrder` controla cuándo se puede iniciar, completar o cancelar la orden.
+- Las reglas de negocio no dependen del controlador ni de EF Core.
+
+El siguiente paso recomendado es configurar estas entidades en EF Core 10, especialmente las colecciones privadas, las relaciones entre `WorkOrder`, `ActividadRealizada`, `Medicion` y `ValorRespuestaItem`, y la persistencia de los tipos de respuesta y las opciones del catálogo. Antes de hacerlo, conviene revisar que los archivos actuales de tu proyecto coincidan con estas versiones para evitar duplicar clases o introducir incompatibilidades.

@@ -1,0 +1,284 @@
+---
+title: "Crear webapi Parte 5-6 validar ActivityAnswer segun Question"
+date: "2026-10-15"
+description: "Crear WebApi parte 5-6 validar ActivityAnswer segun Question"
+slug: "webapi-5-6-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Continuemos con ACSoft. En este paso vamos a resolver una regla fundamental de nuestro dominio: una respuesta debe ser compatible con el tipo de pregunta que el técnico está contestando.
+
+Por ejemplo, no debemos permitir que una pregunta de corriente eléctrica reciba una respuesta de texto, ni que una pregunta de estado reciba una medición de presión.
+
+# Paso 5.8 — Validar `ActivityAnswer` según `Question`
+
+Actualmente tenemos estas piezas:
+
+```
+Activity (catálogo)
+    └── Question
+          ├── AnswerType
+          └── MeasurementType
+
+WorkOrder (Aggregate Root)
+    └── WorkOrderActivity
+          └── ActivityAnswer
+                └── AnswerValue
+```
+
+Hay un problema en el código actual: `ActivityAnswer` conoce el `QuestionId`, pero no conoce la definición de la pregunta. Por eso no puede comprobar si el tipo de respuesta es correcto.
+
+Vamos a solucionarlo sin introducir MediatR ni librerías externas.
+
+## 1. Agregar validación a `AnswerValue`
+
+Primero necesitamos que `AnswerValue` pueda comprobar si su tipo corresponde al esperado.
+
+En `AcSoft.Domain/ValueObjects/AnswerValue.cs`, agrega este método dentro de la clase:
+
+```csharp
+public bool Matches(AnswerType expectedType)
+{
+    return Type == expectedType;
+}
+```
+
+Asegúrate de tener:
+
+```csharp
+using AcSoft.Domain.Enums;
+```
+
+Esto permite comprobar el tipo general de respuesta. Para las mediciones también debemos validar la magnitud concreta.
+
+Agrega este segundo método a `AnswerValue`:
+
+```csharp
+public bool MatchesMeasurementType(
+    MeasurementType expectedType)
+{
+    return Type == AnswerType.Measurement &&
+           Measurements.All(
+               measurement => measurement.Value.Type == expectedType);
+}
+```
+
+Con esto, una pregunta de corriente podrá exigir que todas sus lecturas sean de tipo `Current`.
+
+Por ejemplo:
+
+```csharp
+var answerValue = AnswerValue.FromMeasurements(
+[
+    MeasurementReading.Create(
+        "R",
+        MeasurementValue.FromCurrent(
+            Current.Create(12.1m))),
+
+    MeasurementReading.Create(
+        "S",
+        MeasurementValue.FromCurrent(
+            Current.Create(11.8m)))
+]);
+
+bool valid = answerValue.MatchesMeasurementType(
+    MeasurementType.Current);
+```
+
+`valid` será `true`. Si alguna lectura fuera de tipo `Voltage`, el resultado sería `false`.
+
+## 2. Validar la respuesta dentro de `ActivityAnswer`
+
+Ahora modificamos `ActivityAnswer.cs` para que reciba la definición de la pregunta al crear la respuesta.
+
+```csharp
+using AcSoft.Domain.Enums;
+using AcSoft.Domain.ValueObjects;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class ActivityAnswer
+{
+    private ActivityAnswer() { }
+
+    private ActivityAnswer(
+        Guid id,
+        Guid questionId,
+        AnswerValue value)
+    {
+        Id = id;
+        QuestionId = questionId;
+        Value = value;
+    }
+
+    public Guid Id { get; private set; }
+
+    public Guid QuestionId { get; private set; }
+
+    public AnswerValue Value { get; private set; } = null!;
+
+    public static ActivityAnswer Create(
+        Question question,
+        AnswerValue value)
+    {
+        ArgumentNullException.ThrowIfNull(question);
+        ArgumentNullException.ThrowIfNull(value);
+
+        ValidateValue(question, value);
+
+        return new ActivityAnswer(
+            Guid.NewGuid(),
+            question.Id,
+            value);
+    }
+
+    public void ChangeValue(
+        Question question,
+        AnswerValue value)
+    {
+        ArgumentNullException.ThrowIfNull(question);
+        ArgumentNullException.ThrowIfNull(value);
+
+        if (question.Id != QuestionId)
+        {
+            throw new InvalidOperationException(
+                "La pregunta no corresponde a esta respuesta.");
+        }
+
+        ValidateValue(question, value);
+
+        Value = value;
+    }
+
+    private static void ValidateValue(
+        Question question,
+        AnswerValue value)
+    {
+        if (!value.Matches(question.AnswerType))
+        {
+            throw new InvalidOperationException(
+                "El tipo de respuesta no corresponde al tipo de pregunta.");
+        }
+
+        if (question.AnswerType == AnswerType.Measurement &&
+            !value.MatchesMeasurementType(
+                question.MeasurementType!.Value))
+        {
+            throw new InvalidOperationException(
+                "La magnitud de la medición no corresponde a la pregunta.");
+        }
+    }
+}
+```
+
+### ¿Qué cambió?
+
+Antes creábamos una respuesta así:
+
+```
+ActivityAnswer.Create(questionId, answerValue);
+```
+
+Ahora usamos la definición de la pregunta:
+
+```
+ActivityAnswer.Create(question, answerValue);
+```
+
+Esto permite verificar las reglas del catálogo antes de aceptar la respuesta. Conservamos únicamente `QuestionId` en la entidad para identificar a qué pregunta corresponde.
+
+## 3. Probarlo con ejemplos de HVAC
+
+Supongamos que tenemos estas dos preguntas:
+
+```csharp
+var currentQuestion = Question.Create(
+    "COMPRESSOR_CURRENT",
+    "Medir corriente del compresor",
+    AnswerType.Measurement,
+    MeasurementType.Current);
+
+var statusQuestion = Question.Create(
+    "CHECK_TERMINALS",
+    "¿Los terminales están ajustados?",
+    AnswerType.Status);
+```
+
+Una respuesta correcta para la corriente:
+
+```csharp
+var currentAnswer = ActivityAnswer.Create(
+    currentQuestion,
+    AnswerValue.FromMeasurements(
+    [
+        MeasurementReading.Create(
+            "R",
+            MeasurementValue.FromCurrent(
+                Current.Create(12.1m))),
+
+        MeasurementReading.Create(
+            "S",
+            MeasurementValue.FromCurrent(
+                Current.Create(11.8m))),
+
+        MeasurementReading.Create(
+            "T",
+            MeasurementValue.FromCurrent(
+                Current.Create(12.0m)))
+    ]));
+```
+
+Una respuesta correcta para el estado:
+
+```csharp
+var statusAnswer = ActivityAnswer.Create(
+    statusQuestion,
+    AnswerValue.FromStatus(
+        AnswerStatus.Correct));
+```
+
+Pero esto debe fallar:
+
+```csharp
+var invalidAnswer = ActivityAnswer.Create(
+    currentQuestion,
+    AnswerValue.FromText("El compresor funciona correctamente."));
+```
+
+Se lanzará `InvalidOperationException` porque la pregunta exige una medición, no texto.
+
+También debe fallar si intentamos responder la pregunta de corriente con una medición de voltaje.
+
+## 4. Un detalle importante sobre el catálogo
+
+En el ejemplo estamos pasando `Question` directamente a `ActivityAnswer`, pero eso no significa que `ActivityAnswer` deba guardar toda la definición de la pregunta.
+
+La entidad conserva su identificador:
+
+```csharp
+public Guid QuestionId { get; private set; }
+```
+
+La definición se utiliza para validar la respuesta. En un flujo real de aplicación, el caso de uso debe cargar la pregunta del catálogo, comprobar que pertenece a la actividad ejecutada y después crear la respuesta.
+
+Importante: como `Question` es mutable en el futuro potencial, o su configuración puede cambiar, ACSoft deberá conservar la versión o configuración utilizada al ejecutar una OT. No queremos que modificar el catálogo invalide o altere respuestas históricas.
+
+## 5. ¿Qué nos falta?
+
+Ya validamos dos cosas:
+
+- El tipo general de respuesta (`Status`, `Numeric`, `Measurement` o `Text`).
+- La magnitud de una medición (`Current`, `Voltage`, `Pressure`, etc.).
+
+Todavía debemos validar, entre otras cosas:
+
+- Que una pregunta pertenezca a la actividad que se está ejecutando.
+- Que las lecturas obligatorias estén presentes (por ejemplo, R, S y T).
+- Que no existan puntos duplicados en una misma respuesta.
+- Que los valores estén dentro de los rangos definidos para ese equipo, cuando corresponda.
+- Que las reglas del catálogo se conserven para las OTs históricas.
+
+Siguiente paso recomendado: integrar la creación de `ActivityAnswer` dentro de `WorkOrderActivity`, de modo que la ejecución controle las respuestas que recibe y no se pueda agregar una respuesta de una pregunta ajena a la actividad. Así continuaremos fortaleciendo las invariantes de nuestro Aggregate Root `WorkOrder`.

@@ -1,0 +1,347 @@
+---
+title: "Crear webapi Parte 5-5 Modelar Activity y Question"
+date: "2026-10-15"
+description: "Crear WebApi parte 5-5 cModelar Activity y Question"
+slug: "webapi-5-5-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Continuemos con ACSoft. En este paso vamos a refinar `Activity` y `Question`, para que el catálogo de mantenimiento indique qué debe realizar el técnico y qué tipo de respuesta debe registrar, sin mezclar esas definiciones con las mediciones reales de una orden de trabajo.
+
+# Paso 5.7 — Modelar `Activity` y `Question`
+
+Recordemos la separación que venimos construyendo con DDD:
+
+### Catálogo de mantenimiento
+
+`Activity`
+
+Define la actividad que se debe realizar.
+
+`Question`
+
+Define qué información debe registrar el técnico.
+
+### Ejecución de una OT
+
+`WorkOrderActivity`
+
+Representa una ejecución concreta de una actividad.
+
+`ActivityAnswer`
+
+Contiene la respuesta real registrada por el técnico.
+
+Por ejemplo, una actividad del catálogo puede llamarse Mantenimiento eléctrico del compresor y tener varias preguntas asociadas.
+
+## 1. Definir los tipos de respuesta
+
+En `AcSoft.Domain/Enums/AnswerType.cs`:
+
+```csharp
+namespace AcSoft.Domain.Enums;
+
+public enum AnswerType
+{
+    Status = 1,
+    Numeric = 2,
+    Measurement = 3,
+    Text = 4
+}
+```
+
+Y en `AcSoft.Domain/Enums/MeasurementType.cs`:
+
+```csharp
+namespace AcSoft.Domain.Enums;
+
+public enum MeasurementType
+{
+    Voltage = 1,
+    Current = 2,
+    Pressure = 3,
+    Temperature = 4,
+    Capacitance = 5,
+    Mass = 6
+}
+```
+
+Estos enums responden preguntas diferentes:
+
+- `AnswerType`: ¿qué clase de respuesta se espera?
+- `MeasurementType`: si es una medición, ¿qué magnitud física representa?
+
+Por ejemplo, una respuesta de tipo `Measurement` puede representar corriente o voltaje.
+
+## 2. Crear la entidad `Question`
+
+Archivo: `AcSoft.Domain/Entities/Question.cs`.
+
+```csharp
+using AcSoft.Domain.Enums;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class Question
+{
+    private Question() { }
+
+    private Question(
+        Guid id,
+        string code,
+        string text,
+        AnswerType answerType,
+        MeasurementType? measurementType)
+    {
+        Id = id;
+        Code = code;
+        Text = text;
+        AnswerType = answerType;
+        MeasurementType = measurementType;
+    }
+
+    public Guid Id { get; private set; }
+
+    public string Code { get; private set; } = null!;
+
+    public string Text { get; private set; } = null!;
+
+    public AnswerType AnswerType { get; private set; }
+
+    public MeasurementType? MeasurementType { get; private set; }
+
+    public static Question Create(
+        string code,
+        string text,
+        AnswerType answerType,
+        MeasurementType? measurementType = null)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            throw new ArgumentException(
+                "El código de la pregunta es obligatorio.",
+                nameof(code));
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            throw new ArgumentException(
+                "El texto de la pregunta es obligatorio.",
+                nameof(text));
+        }
+
+        if (!Enum.IsDefined(answerType))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(answerType),
+                "El tipo de respuesta no es válido.");
+        }
+
+        if (answerType == AnswerType.Measurement &&
+            measurementType is null)
+        {
+            throw new ArgumentException(
+                "Una pregunta de medición debe especificar la magnitud.",
+                nameof(measurementType));
+        }
+
+        if (answerType != AnswerType.Measurement &&
+            measurementType is not null)
+        {
+            throw new ArgumentException(
+                "Solo las preguntas de medición pueden especificar una magnitud.",
+                nameof(measurementType));
+        }
+
+        if (measurementType.HasValue &&
+            !Enum.IsDefined(measurementType.Value))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(measurementType),
+                "La magnitud de medición no es válida.");
+        }
+
+        return new Question(
+            Guid.NewGuid(),
+            code.Trim(),
+            text.Trim(),
+            answerType,
+            measurementType);
+    }
+}
+```
+
+### ¿Por qué `MeasurementType` es nullable?
+
+Porque no todas las preguntas representan magnitudes físicas.
+
+Ejemplos:
+
+| Pregunta                      | `AnswerType`  | `MeasurementType` |
+| ----------------------------- | ------------- | ----------------- |
+| ¿Se ajustó la tornillería?    | `Status`      | `null`            |
+| ¿Qué observaciones hay?       | `Text`        | `null`            |
+| Medir corriente del compresor | `Measurement` | `Current`         |
+| Medir presión de descarga     | `Measurement` | `Pressure`        |
+| Medir voltaje de alimentación | `Measurement` | `Voltage`         |
+
+Aquí el `null` es intencional: una pregunta de texto no tiene magnitud física. La fábrica `Create` impide crear una pregunta de medición sin especificarla.
+
+## 3. Crear la entidad `Activity`
+
+Archivo: `AcSoft.Domain/Entities/Activity.cs`.
+
+```csharp
+namespace AcSoft.Domain.Entities;
+
+public sealed class Activity
+{
+    private readonly List<Question> _questions = [];
+
+    private Activity() { }
+
+    private Activity(
+        Guid id,
+        string code,
+        string name,
+        string description)
+    {
+        Id = id;
+        Code = code;
+        Name = name;
+        Description = description;
+    }
+
+    public Guid Id { get; private set; }
+
+    public string Code { get; private set; } = null!;
+
+    public string Name { get; private set; } = null!;
+
+    public string Description { get; private set; } = null!;
+
+    public IReadOnlyCollection<Question> Questions =>
+        _questions.AsReadOnly();
+
+    public static Activity Create(
+        string code,
+        string name,
+        string description)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            throw new ArgumentException(
+                "El código de la actividad es obligatorio.",
+                nameof(code));
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException(
+                "El nombre de la actividad es obligatorio.",
+                nameof(name));
+        }
+
+        return new Activity(
+            Guid.NewGuid(),
+            code.Trim(),
+            name.Trim(),
+            description?.Trim() ?? string.Empty);
+    }
+
+    public void AddQuestion(Question question)
+    {
+        ArgumentNullException.ThrowIfNull(question);
+
+        if (_questions.Any(q => q.Id == question.Id))
+        {
+            throw new InvalidOperationException(
+                "La pregunta ya está asociada a esta actividad.");
+        }
+
+        _questions.Add(question);
+    }
+}
+```
+
+Una decisión importante de diseño: aquí `Activity` tiene una colección de referencias a preguntas. Para el primer modelo, podemos administrar las preguntas mediante esta entidad, pero si una pregunta debe reutilizarse en muchas actividades o tener versiones independientes, más adelante convendrá modelar la asociación con una entidad propia, por ejemplo `ActivityQuestion`, que permita definir el orden, si es obligatoria y otras reglas específicas de esa actividad.
+
+## 4. Crear actividades reales de ACSoft
+
+Ahora podemos usar el catálogo desde código:
+
+```csharp
+var measureCurrent = Question.Create(
+    code: "COMPRESSOR_CURRENT",
+    text: "Medir corriente del compresor",
+    answerType: AnswerType.Measurement,
+    measurementType: MeasurementType.Current);
+
+var checkTerminals = Question.Create(
+    code: "CHECK_TERMINALS",
+    text: "¿Los terminales eléctricos están ajustados?",
+    answerType: AnswerType.Status);
+
+var electricalMaintenance = Activity.Create(
+    code: "ELECTRICAL_MAINTENANCE",
+    name: "Mantenimiento eléctrico del compresor",
+    description: "Inspección y verificación eléctrica del compresor.");
+
+electricalMaintenance.AddQuestion(measureCurrent);
+electricalMaintenance.AddQuestion(checkTerminals);
+```
+
+El resultado conceptual es:
+
+```
+Activity
+├── Mantenimiento eléctrico del compresor
+│
+└── Questions
+    ├── COMPRESSOR_CURRENT
+    │   ├── AnswerType: Measurement
+    │   └── MeasurementType: Current
+    │
+    └── CHECK_TERMINALS
+        ├── AnswerType: Status
+        └── MeasurementType: null
+```
+
+## 5. ¿Dónde definimos los rangos permitidos?
+
+No debemos colocar un rango fijo en `Question` si depende del equipo.
+
+Imagina que tenemos dos equipos:
+
+- Equipo A: voltaje nominal de 220 V, tolerancia ±10 %.
+- Equipo B: voltaje nominal de 440 V, tolerancia ±10 %.
+
+Ambos pueden usar una pregunta como Medir voltaje de alimentación, pero sus rangos son diferentes.
+
+| Equipo | Nominal | Rango permitido |
+| ------ | ------- | --------------- |
+| A      | 220 V   | 198–242 V       |
+| B      | 440 V   | 396–484 V       |
+
+Por tanto, la separación recomendada es:
+
+- `Question`: define qué medir y la magnitud esperada.
+- Configuración o parámetros del equipo: define el valor nominal y las tolerancias aplicables.
+- `MeasurementRange`: representa el rango calculado.
+- Un evaluador del dominio: determina si la medición está dentro del rango.
+
+Esto también permite que el sistema registre los valores originales y la configuración aplicada durante la ejecución, sin que un cambio posterior en el catálogo altere el historial de una OT.
+
+## Siguiente paso recomendado
+
+Ahora debemos conectar `WorkOrderActivity` con las definiciones de `Activity` y `Question`, y validar que las respuestas sean compatibles con el tipo de pregunta.
+
+Por ejemplo, ACSoft debería impedir que el técnico registre una respuesta de texto para la pregunta Medir corriente del compresor. Esa validación debe realizarse en el dominio, no depender únicamente de la interfaz Kotlin o React.
+
+También convendrá revisar cómo conservar una fotografía de la definición y configuración utilizada cuando se ejecuta una OT, para mantener la trazabilidad histórica.
+
+
+paso a paso con [webapi parte 5-6 validar ActivityAnswer segun Question](/blog/webapi-5-6-csharp)
