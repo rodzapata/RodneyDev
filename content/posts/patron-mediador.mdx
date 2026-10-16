@@ -1,0 +1,337 @@
+---
+title: "Patron Mediador"
+date: "2026-10-16"
+description: "Patron Mediador sin usar MediatR "
+slug: "patron-mediador"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+> dame un ejemplo practico del patrón mediador sin usar MediatR
+
+Vamos a implementar el patrón Mediator manualmente, sin utilizar MediatR ni bibliotecas externas, usando .NET 10, C# 14 y tu proyecto AcSoft de mantenimiento de aires acondicionados.
+
+La idea es que el controlador pueda solicitar la creación de una orden de trabajo (OT) sin conocer directamente la clase que ejecuta esa operación.
+
+## 1. ¿Qué vamos a construir?
+
+Cuando un cliente solicita una nueva orden de trabajo, el flujo será:
+
+WorkOrdersController
+
+Recibe la petición HTTP
+
+IMediator / Mediator
+
+Localiza y ejecuta el manejador
+
+CreateWorkOrderHandler
+
+Contiene el caso de uso
+
+IWorkOrderRepository
+
+Guarda la OT en la base de datos
+
+En este ejemplo, construiremos nuestro propio mediador con genéricos de C#. No será una implementación completa de todas las funcionalidades de una biblioteca como MediatR, pero sí una versión funcional del patrón para comandos.
+
+## 2. Estructura de carpetas
+
+Dentro de tu solución, podemos organizarlo así:
+
+```
+AcSoft
+├── AcSoft.Domain
+│   └── Entities
+│       └── WorkOrder.cs
+│
+├── AcSoft.Application
+│   ├── Messaging
+│   │   ├── IRequest.cs
+│   │   ├── IRequestHandler.cs
+│   │   └── IMediator.cs
+│   ├── Features
+│   │   └── WorkOrders
+│   │       └── Commands
+│   │           ├── CreateWorkOrderCommand.cs
+│   │           └── CreateWorkOrderHandler.cs
+│   └── Abstractions
+│       └── Persistence
+│           ├── IWorkOrderRepository.cs
+│           └── IUnitOfWork.cs
+│
+├── AcSoft.Infrastructure
+│   └── Persistence
+│       └── Repositories
+│
+└── AcSoft.Api
+    ├── Messaging
+    │   └── Mediator.cs
+    └── Controllers
+        └── WorkOrdersController.cs
+```
+
+## 3. Paso 1: definir los contratos del mediador
+
+Primero crearemos tres interfaces en `AcSoft.Application/Messaging`.
+
+Archivo `IRequest.cs`
+
+Representa una solicitud que espera una respuesta.
+
+```csharp
+namespace AcSoft.Application.Messaging;
+
+public interface IRequest<TResponse>
+{
+}
+```
+
+Archivo `IRequestHandler.cs`
+
+Define el contrato de la clase que procesará la solicitud.
+
+```csharp
+namespace AcSoft.Application.Messaging;
+
+public interface IRequestHandler<TRequest, TResponse>
+    where TRequest : IRequest<TResponse>
+{
+    Task<TResponse> HandleAsync(
+        TRequest request,
+        CancellationToken cancellationToken = default);
+}
+```
+
+Archivo `IMediator.cs`
+
+Es el contrato del mediador que utilizará el controlador.
+
+```csharp
+namespace AcSoft.Application.Messaging;
+
+public interface IMediator
+{
+    Task<TResponse> SendAsync<TResponse>(
+        IRequest<TResponse> request,
+        CancellationToken cancellationToken = default);
+}
+```
+
+Observa que `IMediator` no conoce ninguna orden de trabajo, cliente o base de datos. Es un contrato genérico que puede servir para diferentes casos de uso.
+
+## 4. Paso 2: crear el comando
+
+Un comando representa una intención de modificar el sistema. En nuestro caso, queremos crear una OT.
+
+Archivo `CreateWorkOrderCommand.cs`:
+
+```csharp
+using AcSoft.Application.Messaging;
+
+namespace AcSoft.Application.Features.WorkOrders.Commands;
+
+public sealed record CreateWorkOrderCommand(
+    Guid CustomerId,
+    Guid EquipmentId
+) : IRequest<Guid>;
+```
+
+¿Por qué devuelve un `Guid`? Porque el caso de uso devolverá el identificador de la orden creada.
+
+Por ejemplo:
+
+```csharp
+var command = new CreateWorkOrderCommand(
+    CustomerId: customerId,
+    EquipmentId: equipmentId);
+```
+
+Todavía no se guarda nada. Solo estamos representando la solicitud.
+
+## 5. Paso 3: implementar el mediador
+
+Ahora construiremos el componente que recibe el comando y encuentra el manejador adecuado.
+
+Archivo `AcSoft.Api/Messaging/Mediator.cs`:
+
+```csharp
+using AcSoft.Application.Messaging;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace AcSoft.Api.Messaging;
+
+public sealed class Mediator(
+    IServiceProvider serviceProvider) : IMediator
+{
+    public async Task<TResponse> SendAsync<TResponse>(
+        IRequest<TResponse> request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var requestType = request.GetType();
+
+        var handlerType = typeof(IRequestHandler<,>)
+            .MakeGenericType(requestType, typeof(TResponse));
+
+        dynamic handler = serviceProvider.GetRequiredService(handlerType);
+
+        return await handler.HandleAsync(
+            (dynamic)request,
+            cancellationToken);
+    }
+}
+```
+
+### ¿Qué hace este código?
+
+1. Recibe el comando mediante `SendAsync`.
+2. Obtiene el tipo concreto del comando.
+3. Construye el tipo de interfaz del manejador que necesita.
+4. Busca ese manejador en el contenedor de inyección de dependencias.
+5. Ejecuta `HandleAsync` y devuelve el resultado.
+
+Importante: aquí usamos reflexión (`MakeGenericType`) y `dynamic` para mantener el ejemplo pequeño. Es una solución didáctica válida, pero para una implementación más robusta convendría evitar `dynamic`, controlar mejor los errores de registro y considerar un despacho tipado.
+
+## 6. Paso 4: crear el manejador del comando
+
+El manejador contiene la lógica del caso de uso. Es quien coordina la creación y persistencia de la OT.
+
+Archivo `CreateWorkOrderHandler.cs`:
+
+```
+using AcSoft.Application.Abstractions.Persistence;
+using AcSoft.Application.Messaging;
+using AcSoft.Domain.Entities;
+
+namespace AcSoft.Application.Features.WorkOrders.Commands;
+
+public sealed class CreateWorkOrderHandler(
+    IWorkOrderRepository workOrderRepository,
+    IUnitOfWork unitOfWork)
+    : IRequestHandler<CreateWorkOrderCommand, Guid>
+{
+    public async Task<Guid> HandleAsync(
+        CreateWorkOrderCommand request,
+        CancellationToken cancellationToken = default)
+    {
+        var workOrder = WorkOrder.Create(
+            number: $"OT-{Guid.NewGuid():N}",
+            customerId: request.CustomerId,
+            equipmentId: request.EquipmentId);
+
+        await workOrderRepository.AddAsync(
+            workOrder,
+            cancellationToken);
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return workOrder.Id;
+    }
+}
+```
+
+Este código supone que tu entidad `WorkOrder` tiene el método `Create` con esos parámetros y la propiedad `Id`, y que tus interfaces de persistencia ofrecen las operaciones mostradas. Ajusta los nombres si tu código actual difiere.
+
+El manejador no necesita conocer `AcDbContext` ni utilizar Entity Framework Core directamente. Depende de las abstracciones definidas en Application.
+
+## 7. Paso 5: registrar las dependencias
+
+En `Program.cs` de `AcSoft.Api`, registra el mediador y el manejador:
+
+```
+using AcSoft.Api.Messaging;
+using AcSoft.Application.Features.WorkOrders.Commands;
+using AcSoft.Application.Messaging;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+
+builder.Services.AddScoped<IMediator, Mediator>();
+
+builder.Services.AddScoped<
+    IRequestHandler<CreateWorkOrderCommand, Guid>,
+    CreateWorkOrderHandler>();
+
+// Aquí también debes registrar:
+// AcDbContext, IWorkOrderRepository e IUnitOfWork.
+
+var app = builder.Build();
+
+app.MapControllers();
+
+app.Run();
+```
+
+Los comentarios sobre persistencia son importantes: debes conservar o agregar los registros correspondientes a tu configuración actual de Infrastructure. No basta con registrar el mediador y el manejador si sus dependencias no están registradas.
+
+## 8. Paso 6: utilizarlo desde el controlador
+
+Archivo `WorkOrdersController.cs`:
+
+```
+using AcSoft.Application.Features.WorkOrders.Commands;
+using AcSoft.Application.Messaging;
+using Microsoft.AspNetCore.Mvc;
+
+namespace AcSoft.Api.Controllers;
+
+[ApiController]
+[Route("api/work-orders")]
+public sealed class WorkOrdersController(
+    IMediator mediator) : ControllerBase
+{
+    [HttpPost]
+    public async Task<IActionResult> Create(
+        CreateWorkOrderCommand command,
+        CancellationToken cancellationToken)
+    {
+        var workOrderId = await mediator.SendAsync(
+            command,
+            cancellationToken);
+
+        return Created(
+            $"/api/work-orders/{workOrderId}",
+            new { Id = workOrderId });
+    }
+}
+```
+
+Una petición de ejemplo sería:
+
+```
+POST /api/work-orders
+Content-Type: application/json
+```
+
+```
+{
+  "customerId": "11111111-1111-1111-1111-111111111111",
+  "equipmentId": "22222222-2222-2222-2222-222222222222"
+}
+```
+
+Si la operación termina correctamente, la API devuelve `201 Created` con el identificador de la orden.
+
+En una aplicación real, los identificadores deben corresponder a clientes y equipos existentes, y conviene validar la solicitud antes de crear la orden.
+
+## 9. ¿Qué ganamos con el patrón Mediator?
+
+Compara las responsabilidades:
+
+| Sin Mediator                                                   | Con Mediator                                           |
+| -------------------------------------------------------------- | ------------------------------------------------------ |
+| El controlador puede llamar directamente a un servicio.        | El controlador envía una solicitud genérica.           |
+| El controlador conoce la abstracción del servicio que utiliza. | El controlador conoce `IMediator`.                     |
+| La lógica suele estar en un servicio de aplicación.            | Cada comando puede tener su propio manejador.          |
+| Es una alternativa válida y sencilla.                          | Facilita organizar muchos casos de uso independientes. |
+
+Hay un matiz importante: Mediator no sustituye a Clean Architecture, DDD ni a la inyección de dependencias. Es un patrón adicional que ayuda a organizar la comunicación entre solicitudes y sus manejadores.
+
+Para AcSoft, te recomiendo comenzar con este ejemplo para comprender el mecanismo, pero no migrar todos tus casos de uso de inmediato. Cuando tengas más comandos y consultas, podrás evaluar si realmente te aporta valor.
+
+Además, el mediador que construimos es una versión mínima para comandos. Si después quieres implementar también consultas (`Queries`), validación, comportamientos transversales y manejo uniforme de errores, podemos ampliar la implementación sin instalar MediatR.
