@@ -1,49 +1,29 @@
+
 'use client'
 
 import { useState } from 'react'
-import { Children, isValidElement } from 'react'
 import { Copy, Check } from 'lucide-react'
-
-function extractCode(node) {
-  if (node == null) {
-    return ''
-  }
-
-  if (typeof node === 'string') {
-    return node
-  }
-
-  if (typeof node === 'number') {
-    return String(node)
-  }
-
-  if (Array.isArray(node)) {
-    return node.map(extractCode).join('')
-  }
-
-  if (isValidElement(node)) {
-    return extractCode(node.props.children)
-  }
-
-  return ''
-}
 
 export default function Pre({ children, ...props }) {
   const [copied, setCopied] = useState(false)
 
-  const code = extractCode(children)
+  async function handleCopy(event) {
+    const pre = event.currentTarget
+      .closest('.code-block-wrapper')
+      ?.querySelector('pre')
 
-  async function handleCopy() {
-    if (!code.trim()) return
+    const code = pre?.innerText ?? ''
+
+    if (!code.trim()) {
+      console.error('No se encontró texto en el bloque de código.')
+      return
+    }
 
     try {
       await navigator.clipboard.writeText(code)
-
       setCopied(true)
 
-      setTimeout(() => {
-        setCopied(false)
-      }, 1800)
+      setTimeout(() => setCopied(false), 1800)
     } catch (error) {
       console.error('No se pudo copiar el código:', error)
     }
