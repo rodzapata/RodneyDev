@@ -1,0 +1,287 @@
+---
+title: "Crear webapi Parte 5-7 Controlar la respuesta de una ejecucion"
+date: "2026-10-27"
+description: "Crear WebApi parte 5-7 Controlar la respuesta de una ejecucion"
+slug: "webapi-5-7-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Vamos con el siguiente paso de ACSoft: hacer que `WorkOrderActivity` controle las respuestas que recibe, evitando que se agreguen preguntas que no pertenecen a la actividad ejecutada.
+
+Hasta ahora, `WorkOrderActivity` permite agregar cualquier `ActivityAnswer`. Eso deja una brecha en nuestro modelo de dominio.
+
+## Paso 5.9 — Controlar las respuestas de una ejecución
+
+### 1. Entender el problema
+
+Supongamos que el catálogo contiene esta actividad:
+
+```
+Activity: Mantenimiento eléctrico
+
+Questions:
+├── Q1: Medir corriente del compresor
+└── Q2: Verificar terminales eléctricos
+```
+
+Un técnico ejecuta esa actividad y registra las respuestas correspondientes.
+
+Sin embargo, el código actual permite hacer esto:
+
+```csharp
+workOrderActivity.AddAnswer(answerFromAnotherQuestion);
+```
+
+Aunque la respuesta tenga un `QuestionId` válido, podría pertenecer a otra actividad, por ejemplo, Limpieza del evaporador.
+
+Nuestra regla de negocio: una ejecución solo puede recibir respuestas de preguntas definidas para la actividad que se está ejecutando.
+
+### 2. Crear `ActivityQuestion`
+
+Antes de modificar `WorkOrderActivity`, vamos a introducir una entidad de asociación que represente la relación entre una actividad y sus preguntas.
+
+¿Por qué? Porque una pregunta puede reutilizarse en varias actividades, y cada actividad puede necesitar su propio orden, obligatoriedad y configuración.
+
+Crea `AcSoft.Domain/Entities/ActivityQuestion.cs`:
+
+```csharp
+namespace AcSoft.Domain.Entities;
+
+public sealed class ActivityQuestion
+{
+    private ActivityQuestion() { }
+
+    private ActivityQuestion(
+        Guid id,
+        Guid activityId,
+        Question question,
+        int sequence,
+        bool isRequired)
+    {
+        Id = id;
+        ActivityId = activityId;
+        Question = question;
+        Sequence = sequence;
+        IsRequired = isRequired;
+    }
+
+    public Guid Id { get; private set; }
+
+    public Guid ActivityId { get; private set; }
+
+    public Question Question { get; private set; } = null!;
+
+    public Guid QuestionId => Question.Id;
+
+    public int Sequence { get; private set; }
+
+    public bool IsRequired { get; private set; }
+
+    public static ActivityQuestion Create(
+        Guid activityId,
+        Question question,
+        int sequence,
+        bool isRequired = true)
+    {
+        if (activityId == Guid.Empty)
+            throw new ArgumentException(
+                "La actividad es obligatoria.",
+                nameof(activityId));
+
+        ArgumentNullException.ThrowIfNull(question);
+
+        if (sequence <= 0)
+            throw new ArgumentOutOfRangeException(
+                nameof(sequence),
+                "La secuencia debe ser mayor que cero.");
+
+        return new ActivityQuestion(
+            Guid.NewGuid(),
+            activityId,
+            question,
+            sequence,
+            isRequired);
+    }
+}
+```
+
+`ActivityQuestion` representa una asociación del catálogo, no una respuesta real. Más adelante podremos añadir reglas específicas de cada actividad.
+
+### 3. Actualizar `Activity`
+
+En `Activity.cs`, sustituye la colección de preguntas por una colección de asociaciones:
+
+```csharp
+private readonly List<ActivityQuestion> _questions = [];
+
+public IReadOnlyCollection<ActivityQuestion> Questions =>
+    _questions.AsReadOnly();
+```
+
+Ahora modifica `AddQuestion` para registrar el orden y si la pregunta es obligatoria:
+
+```csharp
+public void AddQuestion(
+    Question question,
+    int sequence,
+    bool isRequired = true)
+{
+    ArgumentNullException.ThrowIfNull(question);
+
+    if (_questions.Any(
+        x => x.QuestionId == question.Id))
+    {
+        throw new InvalidOperationException(
+            "La pregunta ya está asociada a esta actividad.");
+    }
+
+    if (_questions.Any(
+        x => x.Sequence == sequence))
+    {
+        throw new InvalidOperationException(
+            "Ya existe una pregunta con esa secuencia.");
+    }
+
+    var activityQuestion = ActivityQuestion.Create(
+        Id,
+        question,
+        sequence,
+        isRequired);
+
+    _questions.Add(activityQuestion);
+}
+```
+
+Ahora puedes definir el catálogo así:
+
+```csharp
+electricalMaintenance.AddQuestion(
+    measureCurrent,
+    sequence: 1);
+
+electricalMaintenance.AddQuestion(
+    checkTerminals,
+    sequence: 2,
+    isRequired: true);
+```
+
+### 4. Actualizar `WorkOrderActivity`
+
+La ejecución debe conocer las preguntas permitidas y las respuestas registradas.
+
+Para hacerlo, agrega una colección de identificadores permitidos:
+
+```csharp
+private readonly HashSet<Guid> _allowedQuestionIds = [];
+```
+
+Y agrega este método a `WorkOrderActivity`:
+
+```csharp
+public void ConfigureQuestions(Activity activity)
+{
+    ArgumentNullException.ThrowIfNull(activity);
+
+    if (activity.Id != ActivityId)
+    {
+        throw new InvalidOperationException(
+            "La actividad no corresponde a esta ejecución.");
+    }
+
+    if (_answers.Count > 0)
+    {
+        throw new InvalidOperationException(
+            "No se pueden configurar las preguntas después de registrar respuestas.");
+    }
+
+    _allowedQuestionIds.Clear();
+
+    foreach (var question in activity.Questions)
+    {
+        _allowedQuestionIds.Add(question.QuestionId);
+    }
+}
+```
+
+Ahora modifica `AddAnswer`:
+
+```csharp
+public void AddAnswer(ActivityAnswer answer)
+{
+    ArgumentNullException.ThrowIfNull(answer);
+
+    if (!_allowedQuestionIds.Contains(answer.QuestionId))
+    {
+        throw new InvalidOperationException(
+            "La pregunta no pertenece a la actividad ejecutada.");
+    }
+
+    if (_answers.Any(
+        x => x.QuestionId == answer.QuestionId))
+    {
+        throw new InvalidOperationException(
+            "Esta pregunta ya tiene una respuesta en esta ejecución.");
+    }
+
+    _answers.Add(answer);
+}
+```
+
+Con esto, cada ejecución mantiene una lista de preguntas autorizadas.
+
+Importante: esta primera implementación es un paso didáctico. En producción, no conviene depender de un `HashSet` que se configure únicamente en memoria y no se restaure al cargar la OT. Debemos persistir la relación con las preguntas de la ejecución y reconstruir las reglas al recuperar los datos. Más adelante lo haremos con EF Core.
+
+## 5. Probar el flujo completo
+
+El flujo de creación sería:
+
+```csharp
+var execution = WorkOrderActivity.Create(
+    workOrderId,
+    electricalMaintenance.Id,
+    ExecutionMoment.Before,
+    sequence: 1);
+
+execution.ConfigureQuestions(electricalMaintenance);
+
+var answer = ActivityAnswer.Create(
+    measureCurrent,
+    AnswerValue.FromMeasurements(
+    [
+        MeasurementReading.Create(
+            "R",
+            MeasurementValue.FromCurrent(
+                Current.Create(12.1m))),
+        MeasurementReading.Create(
+            "S",
+            MeasurementValue.FromCurrent(
+                Current.Create(11.8m))),
+        MeasurementReading.Create(
+            "T",
+            MeasurementValue.FromCurrent(
+                Current.Create(12.0m)))
+    ]));
+
+execution.AddAnswer(answer);
+```
+
+La pregunta de corriente está permitida porque pertenece a la actividad configurada.
+
+Si intentas agregar una respuesta a una pregunta de otra actividad, el método `AddAnswer` la rechazará.
+
+## 6. Una mejora importante antes de continuar
+
+Hay dos detalles que debemos resolver en el siguiente paso:
+
+1. Obligatoriedad: no podemos completar una ejecución si falta una respuesta obligatoria.
+2. Persistencia de las reglas: las preguntas y su configuración deben conservarse para que una OT histórica no cambie cuando se edite el catálogo.
+
+Además, como `WorkOrder` es nuestro Aggregate Root, en la versión final la creación y modificación de `WorkOrderActivity` deberían pasar por él, en lugar de permitir operaciones desde cualquier parte de la aplicación.
+
+Mi recomendación es continuar con el método `Complete` de `WorkOrderActivity` y la validación de preguntas obligatorias, antes de entrar en EF Core. Así terminamos de definir el comportamiento del dominio y después mapeamos un modelo coherente a la base de datos.
+
+paso a paso con [webapi parte 5-8 Validar preguntas obligatorias antes de finalizar la orden](/blog/webapi-5-8-csharp)
+

@@ -1,0 +1,427 @@
+---
+title: "Crear webapi Parte 5-8 Validar preguntas obligatorias antes de finalizar la orden"
+date: "2026-10-27"
+description: "Crear WebApi parte 5-8 Validar preguntas obligatorias antes de finalizar la orden"
+slug: "webapi-5-8-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Continuemos con el siguiente paso de ACSoft: implementar `Complete()` en `WorkOrderActivity` para validar las preguntas obligatorias antes de dar por terminada una ejecución de mantenimiento.
+
+Antes de escribir el código, hay una decisión importante de diseño: una orden de trabajo debe conservar las preguntas tal como estaban configuradas cuando se creó. Si después modificas el catálogo de actividades, no queremos que cambien las respuestas ni las validaciones de órdenes históricas.
+
+Por eso, vamos a separar dos conceptos:
+
+- `ActivityQuestion`: configura las preguntas del catálogo.
+- `WorkOrderActivityQuestion`: guarda una copia de esa configuración para una ejecución concreta de una orden de trabajo.
+
+## 1. Crear `WorkOrderActivityQuestion`
+
+Esta clase representa la configuración de una pregunta dentro de una ejecución de mantenimiento. Conserva el texto, el tipo de respuesta y si es obligatoria.
+
+Crea el archivo `Entities/WorkOrderActivityQuestion.cs` en `AcSoft.Domain`:
+
+```csharp
+using AcSoft.Domain.Enums;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class WorkOrderActivityQuestion
+{
+    private WorkOrderActivityQuestion() { }
+
+    private WorkOrderActivityQuestion(
+        Guid id,
+        Guid workOrderActivityId,
+        Guid questionId,
+        string questionCode,
+        string questionText,
+        int sequence,
+        bool isRequired,
+        AnswerType answerType,
+        MeasurementType? measurementType)
+    {
+        Id = id;
+        WorkOrderActivityId = workOrderActivityId;
+        QuestionId = questionId;
+        QuestionCode = questionCode;
+        QuestionText = questionText;
+        Sequence = sequence;
+        IsRequired = isRequired;
+        AnswerType = answerType;
+        MeasurementType = measurementType;
+    }
+
+    public Guid Id { get; private set; }
+    public Guid WorkOrderActivityId { get; private set; }
+    public Guid QuestionId { get; private set; }
+
+    public string QuestionCode { get; private set; } = null!;
+    public string QuestionText { get; private set; } = null!;
+
+    public int Sequence { get; private set; }
+    public bool IsRequired { get; private set; }
+
+    public AnswerType AnswerType { get; private set; }
+    public MeasurementType? MeasurementType { get; private set; }
+
+    internal static WorkOrderActivityQuestion CreateSnapshot(
+        Guid workOrderActivityId,
+        ActivityQuestion catalogQuestion)
+    {
+        if (workOrderActivityId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "La ejecución de la actividad es obligatoria.",
+                nameof(workOrderActivityId));
+        }
+
+        ArgumentNullException.ThrowIfNull(catalogQuestion);
+
+        var question = catalogQuestion.Question;
+
+        return new WorkOrderActivityQuestion(
+            Guid.NewGuid(),
+            workOrderActivityId,
+            question.Id,
+            question.Code,
+            question.Text,
+            catalogQuestion.Sequence,
+            catalogQuestion.IsRequired,
+            question.AnswerType,
+            question.MeasurementType);
+    }
+}
+```
+
+¿Por qué guardamos `QuestionText`, `AnswerType` y `MeasurementType`? Porque son parte de la configuración que se utilizó durante la ejecución. Si más adelante cambias el texto de una pregunta o su configuración en el catálogo, la orden anterior conserva su versión.
+
+## 2. Actualizar `ActivityAnswer`
+
+Ahora la respuesta se crea a partir del identificador de la pregunta y su valor. La validación se hará desde `WorkOrderActivity`, utilizando la configuración guardada en la ejecución, no el catálogo actual.
+
+Reemplaza el contenido de `ActivityAnswer.cs` por:
+
+```csharp
+using AcSoft.Domain.ValueObjects;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class ActivityAnswer
+{
+    private ActivityAnswer() { }
+
+    private ActivityAnswer(
+        Guid id,
+        Guid questionId,
+        AnswerValue value)
+    {
+        Id = id;
+        QuestionId = questionId;
+        Value = value;
+    }
+
+    public Guid Id { get; private set; }
+    public Guid QuestionId { get; private set; }
+    public AnswerValue Value { get; private set; } = null!;
+
+    internal static ActivityAnswer Create(
+        Guid questionId,
+        AnswerValue value)
+    {
+        if (questionId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "La pregunta es obligatoria.",
+                nameof(questionId));
+        }
+
+        ArgumentNullException.ThrowIfNull(value);
+
+        return new ActivityAnswer(
+            Guid.NewGuid(),
+            questionId,
+            value);
+    }
+
+    internal void ChangeValue(AnswerValue value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        Value = value;
+    }
+}
+```
+
+Observa que `Create` y `ChangeValue` son `internal`: otros proyectos no pueden utilizarlos directamente. Así evitamos que se modifique una respuesta saltándose las reglas del agregado.
+
+## 3. Actualizar `WorkOrderActivity`
+
+Esta será la clase que controle la configuración de preguntas, las respuestas y la finalización de una ejecución.
+
+Reemplaza `WorkOrderActivity.cs` por esta versión:
+
+```csharp
+using AcSoft.Domain.Enums;
+using AcSoft.Domain.ValueObjects;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class WorkOrderActivity
+{
+    private readonly List<WorkOrderActivityQuestion> _questions = [];
+    private readonly List<ActivityAnswer> _answers = [];
+
+    private WorkOrderActivity() { }
+
+    private WorkOrderActivity(
+        Guid id,
+        Guid workOrderId,
+        Guid activityId,
+        ExecutionMoment moment,
+        int sequence)
+    {
+        Id = id;
+        WorkOrderId = workOrderId;
+        ActivityId = activityId;
+        Moment = moment;
+        Sequence = sequence;
+    }
+
+    public Guid Id { get; private set; }
+    public Guid WorkOrderId { get; private set; }
+    public Guid ActivityId { get; private set; }
+
+    public ExecutionMoment Moment { get; private set; }
+    public int Sequence { get; private set; }
+
+    public bool IsCompleted { get; private set; }
+
+    public IReadOnlyCollection<WorkOrderActivityQuestion> Questions =>
+        _questions.AsReadOnly();
+
+    public IReadOnlyCollection<ActivityAnswer> Answers =>
+        _answers.AsReadOnly();
+
+    public static WorkOrderActivity Create(
+        Guid workOrderId,
+        Guid activityId,
+        ExecutionMoment moment,
+        int sequence)
+    {
+        if (workOrderId == Guid.Empty)
+            throw new ArgumentException(
+                "La orden de trabajo es obligatoria.",
+                nameof(workOrderId));
+
+        if (activityId == Guid.Empty)
+            throw new ArgumentException(
+                "La actividad es obligatoria.",
+                nameof(activityId));
+
+        if (!Enum.IsDefined(moment))
+            throw new ArgumentOutOfRangeException(
+                nameof(moment),
+                "El momento de ejecución no es válido.");
+
+        if (sequence <= 0)
+            throw new ArgumentOutOfRangeException(
+                nameof(sequence),
+                "La secuencia debe ser mayor que cero.");
+
+        return new WorkOrderActivity(
+            Guid.NewGuid(),
+            workOrderId,
+            activityId,
+            moment,
+            sequence);
+    }
+
+    public void ConfigureQuestions(Activity activity)
+    {
+        EnsureNotCompleted();
+
+        ArgumentNullException.ThrowIfNull(activity);
+
+        if (activity.Id != ActivityId)
+            throw new InvalidOperationException(
+                "La actividad del catálogo no corresponde a esta ejecución.");
+
+        if (_questions.Count > 0 || _answers.Count > 0)
+            throw new InvalidOperationException(
+                "La configuración de preguntas ya fue realizada.");
+
+        foreach (var catalogQuestion in activity.Questions.OrderBy(q => q.Sequence))
+        {
+            var snapshot = WorkOrderActivityQuestion.CreateSnapshot(
+                Id,
+                catalogQuestion);
+
+            _questions.Add(snapshot);
+        }
+    }
+
+    public void AddAnswer(Guid questionId, AnswerValue value)
+    {
+        EnsureNotCompleted();
+
+        ArgumentNullException.ThrowIfNull(value);
+
+        var question = FindQuestion(questionId);
+
+        ValidateAnswerValue(question, value);
+
+        if (_answers.Any(a => a.QuestionId == questionId))
+            throw new InvalidOperationException(
+                "Esta pregunta ya tiene una respuesta. Utiliza ChangeAnswer para modificarla.");
+
+        _answers.Add(ActivityAnswer.Create(questionId, value));
+    }
+
+    public void ChangeAnswer(Guid questionId, AnswerValue value)
+    {
+        EnsureNotCompleted();
+
+        ArgumentNullException.ThrowIfNull(value);
+
+        var question = FindQuestion(questionId);
+
+        ValidateAnswerValue(question, value);
+
+        var answer = _answers.SingleOrDefault(
+            a => a.QuestionId == questionId);
+
+        if (answer is null)
+            throw new InvalidOperationException(
+                "No existe una respuesta para esta pregunta.");
+
+        answer.ChangeValue(value);
+    }
+
+    public void Complete()
+    {
+        EnsureNotCompleted();
+
+        if (_questions.Count == 0)
+            throw new InvalidOperationException(
+                "No se puede completar la ejecución sin configurar sus preguntas.");
+
+        var unansweredRequiredQuestions = _questions
+            .Where(q => q.IsRequired)
+            .Where(q => !_answers.Any(a => a.QuestionId == q.QuestionId))
+            .ToList();
+
+        if (unansweredRequiredQuestions.Count > 0)
+        {
+            var questionCodes = string.Join(
+                ", ",
+                unansweredRequiredQuestions.Select(q => q.QuestionCode));
+
+            throw new InvalidOperationException(
+                $"No se puede completar la ejecución. " +
+                $"Faltan respuestas obligatorias: {questionCodes}.");
+        }
+
+        IsCompleted = true;
+    }
+
+    private WorkOrderActivityQuestion FindQuestion(Guid questionId)
+    {
+        if (questionId == Guid.Empty)
+            throw new ArgumentException(
+                "La pregunta es obligatoria.",
+                nameof(questionId));
+
+        return _questions.SingleOrDefault(q => q.QuestionId == questionId)
+            ?? throw new InvalidOperationException(
+                "La pregunta no pertenece a esta ejecución de actividad.");
+    }
+
+    private static void ValidateAnswerValue(
+        WorkOrderActivityQuestion question,
+        AnswerValue value)
+    {
+        if (!value.Matches(question.AnswerType))
+            throw new InvalidOperationException(
+                "El tipo de respuesta no corresponde al tipo configurado para la pregunta.");
+
+        if (question.AnswerType == AnswerType.Measurement)
+        {
+            if (question.MeasurementType is null)
+                throw new InvalidOperationException(
+                    "La pregunta de medición no tiene una magnitud configurada.");
+
+            if (!value.MatchesMeasurementType(question.MeasurementType.Value))
+                throw new InvalidOperationException(
+                    "La magnitud de la medición no corresponde a la pregunta.");
+        }
+    }
+
+    private void EnsureNotCompleted()
+    {
+        if (IsCompleted)
+            throw new InvalidOperationException(
+                "La ejecución ya está completada y no puede modificarse.");
+    }
+}
+```
+
+## 4. ¿Cómo se utiliza?
+
+Imagina que el catálogo tiene una actividad llamada Inspección eléctrica, con dos preguntas obligatorias y una opcional.
+
+```csharp
+var activity = Activity.Create(
+    "ELEC-001",
+    "Inspección eléctrica",
+    "Revisión de componentes eléctricos del equipo.");
+
+// Supongamos que las preguntas ya fueron asociadas
+// a la actividad mediante Activity.AddQuestion(...).
+
+var execution = WorkOrderActivity.Create(
+    workOrderId: workOrderId,
+    activityId: activity.Id,
+    moment: ExecutionMoment.Before,
+    sequence: 1);
+
+// Copiar la configuración del catálogo a la ejecución.
+execution.ConfigureQuestions(activity);
+
+// Registrar una respuesta.
+// Usa el Id real de una pregunta configurada.
+execution.AddAnswer(
+    questionId,
+    AnswerValue.FromStatus(AnswerStatus.Correct));
+
+// Intentar completar la ejecución.
+execution.Complete();
+```
+
+Este ejemplo es ilustrativo: para que `Complete()` funcione, debes registrar previamente las respuestas de todas las preguntas obligatorias. Los identificadores deben corresponder a preguntas que realmente pertenezcan a la actividad.
+
+## 5. ¿Qué reglas hemos implementado?
+
+| Regla                              | Comportamiento                                                  |
+| ---------------------------------- | --------------------------------------------------------------- |
+| Pregunta no configurada            | Rechaza la respuesta.                                           |
+| Tipo de respuesta incorrecto       | Rechaza la respuesta.                                           |
+| Magnitud de medición incorrecta    | Rechaza la respuesta.                                           |
+| Pregunta respondida dos veces      | Rechaza la duplicación; permite modificarla con `ChangeAnswer`. |
+| Pregunta obligatoria sin responder | Impide completar la ejecución.                                  |
+| Pregunta opcional sin responder    | Permite completar la ejecución.                                 |
+| Ejecución ya completada            | Impide agregar o cambiar respuestas.                            |
+
+Una precisión importante: responder `NotApplicable` cuenta como responder la pregunta. Si una pregunta obligatoria no aplica al equipo, el técnico puede registrar esa opción explícitamente; no significa que la haya dejado sin contestar.
+
+## 6. ¿Qué sigue?
+
+Antes de mapear estas clases con Entity Framework Core, recomiendo hacer una pequeña prueba de dominio que confirme tres casos:
+
+1. Una ejecución con todas sus preguntas obligatorias respondidas se completa.
+2. Una ejecución con una pregunta obligatoria pendiente no se completa.
+3. Una ejecución completada no acepta nuevas respuestas.
+
+Después podremos configurar EF Core para persistir `_questions` y `_answers`, sus relaciones y los Value Objects, sin trasladar las reglas de negocio a la base de datos ni al controlador de la API.
