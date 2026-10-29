@@ -1,0 +1,55 @@
+---
+title: "Crear webapi Parte 6-0 Flujo para construir orden de Trabajo y sus actividades"
+date: "2026-10-29"
+description: "Crear WebApi Parte 6-0 Flujo para construir orden de Trabajo y sus actividades"
+slug: "webapi-6-0-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+¡Perfecto! Continuemos con ACSoft.
+
+Por el punto en el que estamos, ya definimos las reglas principales de `WorkOrder` y cómo agregar actividades planificadas y no planificadas. El siguiente paso lógico es construir el flujo para crear una orden de trabajo y cargarle las actividades del mantenimiento preventivo.
+
+Lo haremos paso a paso, sin introducir MediatR ni librerías adicionales.
+
+## Paso siguiente: crear una orden con sus actividades
+
+El flujo será:
+
+La idea es que el controlador no conozca las reglas del dominio. El controlador recibe la solicitud y el `Handler` coordina el caso de uso.
+
+### 1. Definir qué debe incluir la solicitud
+
+Por ahora, tu DTO actual es:
+
+```
+public sealed record CreateWorkOrderRequest(
+    Guid CustomerId,
+    Guid EquipmentId);
+```
+
+Esto permite crear una orden, pero para un mantenimiento preventivo necesitamos saber también qué plan de mantenimiento se debe aplicar.
+
+Podemos ampliarlo así:
+
+```
+public sealed record CreateWorkOrderRequest(
+    Guid CustomerId,
+    Guid EquipmentId,
+    Guid MaintenancePlanId);
+```
+
+El `MaintenancePlanId` identifica el plan preventivo que contiene las actividades que deben ejecutarse para ese equipo.
+
+### 2. Antes de escribir el Handler, definamos el plan preventivo
+
+En ACSoft, ¿cómo quieres manejar los planes de mantenimiento?
+
+Por ejemplo, ¿un equipo puede tener un plan de mantenimiento preventivo que se reutilice en todas las órdenes de ese equipo, con actividades como limpieza, revisión eléctrica, medición de corriente y verificación de presiones?
+
+O, por el contrario, ¿cada orden debe recibir una copia de las actividades configuradas específicamente para ese equipo?
+
+Mi recomendación inicial es usar un plan de mantenimiento reutilizable, y al crear la orden copiar sus actividades y preguntas a la orden como una fotografía histórica. Así, si el plan cambia en el futuro, las órdenes antiguas conservan las actividades que tenían originalmente.

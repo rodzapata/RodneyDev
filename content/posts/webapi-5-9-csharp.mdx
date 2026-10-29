@@ -1,0 +1,697 @@
+---
+title: "Crear webapi Parte 5-9 Administrar Actividades desde WorkOrden"
+date: "2026-10-29"
+description: "Crear WebApi parte 5-9 Administrar Actividades desde WorkOrden"
+slug: "webapi-5-9-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+¡Claro! Continuemos con ACSoft.
+
+Hasta ahora hemos definido el catálogo de actividades y preguntas, y cómo se registran las respuestas dentro de una ejecución de mantenimiento. También implementamos la validación de preguntas obligatorias al completar `WorkOrderActivity`.
+
+El siguiente paso es revisar cómo `WorkOrder` administra sus ejecuciones de actividades. Esto es importante porque `WorkOrder` es la raíz del agregado: queremos que controle cuándo se agregan actividades a una orden y que no se puedan modificar libremente desde fuera.
+
+## Paso 5.11 — Administrar las actividades desde `WorkOrder`
+
+Recordemos la relación:
+
+```
+WorkOrder (Aggregate Root)
+    └── WorkOrderActivity
+          ├── WorkOrderActivityQuestion
+          └── ActivityAnswer
+```
+
+Una regla de DDD que queremos respetar es:
+
+> Las entidades que pertenecen al agregado se deben administrar a través de su raíz.
+
+Por eso, en lugar de que cualquier clase cree una `WorkOrderActivity` y la agregue directamente a una colección, será `WorkOrder` quien controle esa operación.
+
+### 1. Agregar la colección privada en `WorkOrder`
+
+Dentro de tu clase `WorkOrder`, agrega:
+
+```csharp
+private readonly List<WorkOrderActivity> _activities = [];
+
+public IReadOnlyCollection<WorkOrderActivity> Activities =>
+    _activities.AsReadOnly();
+```
+
+La colección es privada para que el código externo no pueda agregar ni eliminar actividades directamente.
+
+### 2. Crear el método `AddActivity`
+
+Dentro de `WorkOrder`, agrega este método:
+
+```csharp
+public WorkOrderActivity AddActivity(
+    Activity activity,
+    ExecutionMoment moment,
+    int sequence)
+{
+    ArgumentNullException.ThrowIfNull(activity);
+
+    if (IsCompleted)
+    {
+        throw new InvalidOperationException(
+            "No se pueden agregar actividades a una orden de trabajo completada.");
+    }
+
+    if (sequence <= 0)
+    {
+        throw new ArgumentOutOfRangeException(
+            nameof(sequence),
+            "La secuencia debe ser mayor que cero.");
+    }
+
+    var sequenceAlreadyExists = _activities.Any(
+        x => x.Moment == moment && x.Sequence == sequence);
+
+    if (sequenceAlreadyExists)
+    {
+        throw new InvalidOperationException(
+            "Ya existe una actividad con esa secuencia para el momento indicado.");
+    }
+
+    var workOrderActivity = WorkOrderActivity.Create(
+        WorkOrderId: Id,
+        activityId: activity.Id,
+        moment: moment,
+        sequence: sequence);
+
+    workOrderActivity.ConfigureQuestions(activity);
+
+    _activities.Add(workOrderActivity);
+
+    return workOrderActivity;
+}
+```
+
+Nota: en el código anterior, `IsCompleted` e `Id` representan las propiedades que debes tener en tu `WorkOrder`. Si tu clase utiliza otros nombres, ajustamos el método a los que ya tienes.
+
+Hay un detalle importante: en la llamada a `WorkOrderActivity.Create`, el primer parámetro de tu implementación actual se llama `workOrderId`, no `WorkOrderId`. Por tanto, la llamada correcta, usando argumentos nombrados, es:
+
+```csharp
+var workOrderActivity = WorkOrderActivity.Create(
+    workOrderId: Id,
+    activityId: activity.Id,
+    moment: moment,
+    sequence: sequence);
+```
+
+Usa esta segunda versión en tu código.
+
+### 3. ¿Por qué validamos la secuencia por momento?
+
+Supongamos que una orden tiene estas actividades:
+
+| Momento | Secuencia | Actividad          |
+| ------- | --------- | ------------------ |
+| Before  | 1         | Inspección visual  |
+| Before  | 2         | Medición eléctrica |
+| During  | 1         | Limpieza           |
+| After   | 1         | Medición eléctrica |
+
+Esto es válido.
+
+La actividad de medición eléctrica aparece dos veces porque se ejecuta antes y después del mantenimiento. No debemos impedir que una actividad se repita, ya que eso es necesario para comparar resultados.
+
+La regla que estamos aplicando es que no haya dos actividades con la misma secuencia dentro del mismo momento.
+
+### 4. ¿Cómo se utiliza ahora?
+
+Desde un caso de uso de Application, una vez que tienes la orden y la actividad del catálogo:
+
+```csharp
+var workOrderActivity = workOrder.AddActivity(
+    activity: electricalInspection,
+    moment: ExecutionMoment.Before,
+    sequence: 1);
+```
+
+Ya no necesitas crear la ejecución directamente desde Application:
+
+```csharp
+// Evitar este patrón desde Application:
+var execution = WorkOrderActivity.Create(...);
+```
+
+La creación queda centralizada en `WorkOrder`.
+
+### 5. Una observación sobre el diseño actual
+
+`ConfigureQuestions(activity)` copia la configuración de preguntas del catálogo a la ejecución. Esto permite que la orden mantenga una referencia histórica a la configuración que tenía cuando se agregó.
+
+Más adelante, cuando configuremos EF Core, debemos persistir también las preguntas de esa ejecución. No bastará con guardar solamente `ActivityId`, porque necesitamos conservar la configuración histórica.
+
+## Siguiente paso
+
+Ahora podemos implementar una regla importante en `WorkOrder`:
+
+Una orden de trabajo no puede completarse mientras tenga actividades de mantenimiento pendientes.
+
+Antes de continuar, una pregunta para evitar modificar incorrectamente tu código actual: ¿tu clase `WorkOrder` ya tiene un método `Complete()` o todavía no lo hemos implementado?
+
+> si ya lo tenemos el metodo Complete()
+
+Perfecto. Entonces no vamos a crear otro `Complete()` en `WorkOrder`. Vamos a mejorar el que ya tienes para que, además de validar el estado de la orden, compruebe que todas las actividades de mantenimiento estén completadas.
+
+Tu implementación actual valida correctamente que solo una orden en ejecución pueda completarse:
+
+```csharp
+public void Complete()
+{
+    if (Status != WorkOrderStatus.InProgress)
+        throw new InvalidOperationException(
+            "Solo una orden en ejecución puede completarse.");
+
+    Status = WorkOrderStatus.Completed;
+}
+```
+
+Lo que todavía no valida es si las actividades de la orden siguen pendientes.
+
+El siguiente paso es agregar la validación de las actividades pendientes.
+
+## Paso 5.12 — Validar las actividades antes de completar `WorkOrder`
+
+En tu clase `WorkOrder`, reemplaza el método `Complete()` por esta versión:
+
+```csharp
+public void Complete()
+{
+    if (Status != WorkOrderStatus.InProgress)
+    {
+        throw new InvalidOperationException(
+            "Solo una orden en ejecución puede completarse.");
+    }
+
+    if (_activities.Count == 0)
+    {
+        throw new InvalidOperationException(
+            "No se puede completar una orden de trabajo sin actividades.");
+    }
+
+    var incompleteActivities = _activities
+        .Where(activity => !activity.IsCompleted)
+        .ToList();
+
+    if (incompleteActivities.Count > 0)
+    {
+        throw new InvalidOperationException(
+            $"No se puede completar la orden de trabajo. " +
+            $"Hay {incompleteActivities.Count} actividad(es) pendiente(s).");
+    }
+
+    Status = WorkOrderStatus.Completed;
+}
+```
+
+Este código asume que tu `WorkOrder` tiene la colección privada `_activities` que agregamos en el paso anterior:
+
+```csharp
+private readonly List<WorkOrderActivity> _activities = [];
+```
+
+Y que `WorkOrderActivity` tiene la propiedad:
+
+```csharp
+public bool IsCompleted { get; private set; }
+```
+
+### ¿Qué sucede ahora?
+
+Supongamos que una orden tiene tres actividades:
+
+| Actividad          | Estado     |
+| ------------------ | ---------- |
+| Inspección visual  | Completada |
+| Medición eléctrica | Completada |
+| Limpieza           | Pendiente  |
+
+Cuando se invoque:
+
+```csharp
+workOrder.Complete();
+```
+
+Se lanzará una excepción y la orden permanecerá en `InProgress`.
+
+Cuando el técnico complete también la limpieza:
+
+```csharp
+cleaningActivity.Complete();
+```
+
+Entonces:
+
+```csharp
+workOrder.Complete();
+```
+
+podrá cambiar el estado de la orden a `Completed`.
+
+## ¿Por qué esta validación va en `WorkOrder`?
+
+Porque `WorkOrder` es la raíz del agregado y conoce todas las actividades que forman parte de esa orden.
+
+La regla queda distribuida correctamente:
+
+- `WorkOrderActivity.Complete()` verifica que sus preguntas obligatorias tengan respuesta.
+- `WorkOrder.Complete()` verifica que todas las actividades estén completadas.
+- `WorkOrder` cambia el estado general de la orden.
+
+Así evitamos que una orden se complete aunque alguna actividad tenga preguntas obligatorias pendientes.
+
+Una decisión de negocio: en el ejemplo también impedimos completar una orden que no tenga actividades. Si en tu proceso existen órdenes que pueden cerrarse sin actividades de mantenimiento —por ejemplo, una visita cancelada en sitio o una orden administrativa— esa regla deberá ajustarse.
+
+El siguiente paso recomendable sería crear pruebas de dominio para estas reglas antes de continuar con EF Core.
+
+> copio mi codigo de WorkOrden para tu revision:
+
+Revisé todo el código de tu clase `WorkOrder`. En general, la estructura está bien organizada y es coherente con DDD: `WorkOrder` administra sus asignaciones, sus actividades y las transiciones de estado de la orden.
+
+Confirmo que tienes correctamente ubicada esta colección:
+
+```csharp
+private readonly List<WorkOrderActivity> _activities = [];
+```
+
+Y que `WorkOrderActivity` tiene sus propias colecciones `_questions` y `_answers`. No debes duplicar `_activities` dentro de `WorkOrderActivity`.
+
+Sin embargo, antes de continuar, te recomiendo corregir algunos detalles.
+
+## 1. Validar el estado antes de agregar una actividad
+
+Tu método `AddActivity()` impide agregar actividades a órdenes completadas, pero permite hacerlo cuando la orden está cancelada. También permite hacerlo cuando está pendiente o asignada.
+
+Si las actividades se definen al preparar la orden, podemos permitir agregarlas en `Pending` y `Assigned`, pero impedirlo cuando esté en ejecución, en espera, completada o cancelada.
+
+Por ejemplo, si el catálogo de actividades debe quedar definido antes de iniciar el trabajo, puedes utilizar:
+
+```csharp
+if (Status is not WorkOrderStatus.Pending
+    and not WorkOrderStatus.Assigned)
+{
+    throw new InvalidOperationException(
+        "Solo se pueden agregar actividades a una orden pendiente o asignada.");
+}
+```
+
+Esta regla depende del negocio. Si necesitas permitir agregar actividades imprevistas durante el mantenimiento, tendremos que contemplar esa excepción explícitamente.
+
+## 2. Validar `ExecutionMoment`
+
+Aunque `WorkOrderActivity.Create()` ya valida el enum, es buena práctica mantener esa validación en un solo lugar. No necesitas repetirla en `AddActivity()` si toda creación pasa por ese método.
+
+Tu validación de secuencia está bien:
+
+```csharp
+var sequenceAlreadyExists = _activities.Any(
+    x => x.Moment == moment && x.Sequence == sequence);
+```
+
+Evita duplicados dentro del mismo momento de ejecución, pero permite que la secuencia `1` exista tanto en `Before` como en `After`.
+
+## 3. Corregir el formato de `AddActivity()`
+
+No es un error funcional, pero conviene mantener la indentación consistente con el resto de la clase:
+
+```csharp
+public WorkOrderActivity AddActivity(
+    Activity activity,
+    ExecutionMoment moment,
+    int sequence)
+{
+    ArgumentNullException.ThrowIfNull(activity);
+
+    if (Status is not WorkOrderStatus.Pending
+        and not WorkOrderStatus.Assigned)
+    {
+        throw new InvalidOperationException(
+            "Solo se pueden agregar actividades a una orden pendiente o asignada.");
+    }
+
+    if (sequence <= 0)
+    {
+        throw new ArgumentOutOfRangeException(
+            nameof(sequence),
+            "La secuencia debe ser mayor que cero.");
+    }
+
+    var sequenceAlreadyExists = _activities.Any(
+        x => x.Moment == moment && x.Sequence == sequence);
+
+    if (sequenceAlreadyExists)
+    {
+        throw new InvalidOperationException(
+            "Ya existe una actividad con esa secuencia para el momento indicado.");
+    }
+
+    var workOrderActivity = WorkOrderActivity.Create(
+        workOrderId: Id,
+        activityId: activity.Id,
+        moment: moment,
+        sequence: sequence);
+
+    workOrderActivity.ConfigureQuestions(activity);
+
+    _activities.Add(workOrderActivity);
+
+    return workOrderActivity;
+}
+```
+
+Esta versión supone que las actividades se configuran antes de iniciar la orden. Si quieres permitir actividades adicionales durante la ejecución, no apliques todavía esa restricción.
+
+## 4. Revisar `Cancel()` y las asignaciones
+
+Tu método `Cancel()` cambia el estado, pero no cierra la asignación activa del técnico. Eso puede dejar una asignación marcada como activa después de cancelar la orden.
+
+No lo cambiaría sin definir primero la regla de negocio: podemos cerrar la asignación al cancelar, registrar el motivo y la fecha, o gestionar la finalización de la asignación desde un flujo de aplicación específico.
+
+## 5. ¿Qué considero prioritario ahora?
+
+Antes de seguir con EF Core, tenemos que aclarar una regla funcional de ACSoft.
+
+¿El técnico puede agregar una actividad imprevista a una orden de trabajo cuando ya está en estado `InProgress`?
+
+Por ejemplo, durante el mantenimiento del aire acondicionado descubre que debe realizar una limpieza adicional que no estaba contemplada en la planificación inicial.
+
+Esta respuesta determina cómo debemos diseñar `AddActivity()` y cómo conservar el historial de actividades de la orden.
+
+> si debe permitirle agregar una actividad imprevista, pero se debe identificar que esta actividad no estaba programada.
+
+Perfecto. Entonces en ACSoft debemos permitir que el técnico agregue actividades imprevistas durante el mantenimiento y, además, guardar explícitamente que la actividad no estaba programada originalmente.
+
+Mi recomendación es incorporar esta distinción en `WorkOrderActivity`, porque es cada ejecución de actividad la que pertenece a una orden de trabajo. La actividad del catálogo (`Activity`) puede ser la misma, pero su ejecución puede ser programada o imprevista según la orden.
+
+## 1. Agregar `IsUnplanned` a `WorkOrderActivity`
+
+En `WorkOrderActivity.cs`, agrega esta propiedad:
+
+```csharp
+public bool IsUnplanned { get; private set; }
+```
+
+También debemos actualizar el constructor privado para recibir el valor:
+
+```csharp
+private WorkOrderActivity(
+    Guid id,
+    Guid workOrderId,
+    Guid activityId,
+    ExecutionMoment moment,
+    int sequence,
+    bool isUnplanned)
+{
+    Id = id;
+    WorkOrderId = workOrderId;
+    ActivityId = activityId;
+    Moment = moment;
+    Sequence = sequence;
+    IsUnplanned = isUnplanned;
+}
+```
+
+Y actualizar el método `Create()`:
+
+```csharp
+public static WorkOrderActivity Create(
+    Guid workOrderId,
+    Guid activityId,
+    ExecutionMoment moment,
+    int sequence,
+    bool isUnplanned = false)
+{
+    if (workOrderId == Guid.Empty)
+        throw new ArgumentException(
+            "La orden de trabajo es obligatoria.",
+            nameof(workOrderId));
+
+    if (activityId == Guid.Empty)
+        throw new ArgumentException(
+            "La actividad es obligatoria.",
+            nameof(activityId));
+
+    if (!Enum.IsDefined(moment))
+        throw new ArgumentOutOfRangeException(
+            nameof(moment),
+            "El momento de ejecución no es válido.");
+
+    if (sequence <= 0)
+        throw new ArgumentOutOfRangeException(
+            nameof(sequence),
+            "La secuencia debe ser mayor que cero.");
+
+    return new WorkOrderActivity(
+        Guid.NewGuid(),
+        workOrderId,
+        activityId,
+        moment,
+        sequence,
+        isUnplanned);
+}
+```
+
+El valor predeterminado `false` significa que las actividades creadas normalmente se consideran programadas, salvo que se indique lo contrario.
+
+## 2. Permitir actividades imprevistas en `WorkOrder`
+
+Tu método `AddActivity()` debe permitir agregarlas tanto antes como durante el mantenimiento. Podemos mantener el control de estados así:
+
+- `Pending`: permite agregar actividades programadas.
+- `Assigned`: permite agregar actividades programadas.
+- `InProgress`: permite agregar actividades imprevistas.
+- `Waiting`: no permite agregar actividades hasta reanudar el trabajo.
+- `Completed` y `Cancelled`: no permiten agregar actividades.
+
+Reemplaza el método `AddActivity()` de `WorkOrder` por esta versión:
+
+```csharp
+public WorkOrderActivity AddActivity(
+    Activity activity,
+    ExecutionMoment moment,
+    int sequence,
+    bool isUnplanned = false)
+{
+    ArgumentNullException.ThrowIfNull(activity);
+
+    if (Status is WorkOrderStatus.Completed
+        or WorkOrderStatus.Cancelled)
+    {
+        throw new InvalidOperationException(
+            "No se pueden agregar actividades a una orden completada o cancelada.");
+    }
+
+    if (Status == WorkOrderStatus.InProgress && !isUnplanned)
+    {
+        throw new InvalidOperationException(
+            "Durante la ejecución solo se pueden agregar actividades imprevistas.");
+    }
+
+    if (Status == WorkOrderStatus.Waiting)
+    {
+        throw new InvalidOperationException(
+            "No se pueden agregar actividades mientras la orden está en espera.");
+    }
+
+    if (sequence <= 0)
+    {
+        throw new ArgumentOutOfRangeException(
+            nameof(sequence),
+            "La secuencia debe ser mayor que cero.");
+    }
+
+    var sequenceAlreadyExists = _activities.Any(
+        x => x.Moment == moment && x.Sequence == sequence);
+
+    if (sequenceAlreadyExists)
+    {
+        throw new InvalidOperationException(
+            "Ya existe una actividad con esa secuencia para el momento indicado.");
+    }
+
+    var workOrderActivity = WorkOrderActivity.Create(
+        workOrderId: Id,
+        activityId: activity.Id,
+        moment: moment,
+        sequence: sequence,
+        isUnplanned: isUnplanned);
+
+    workOrderActivity.ConfigureQuestions(activity);
+
+    _activities.Add(workOrderActivity);
+
+    return workOrderActivity;
+}
+```
+
+Esta versión conserva la validación de secuencia que ya tenías y permite registrar actividades imprevistas durante la ejecución.
+
+## 3. Ejemplos de uso
+
+### Actividad programada antes del mantenimiento
+
+```csharp
+var activity = workOrder.AddActivity(
+    activity: electricalInspection,
+    moment: ExecutionMoment.Before,
+    sequence: 1);
+```
+
+Como `isUnplanned` tiene el valor predeterminado `false`, la ejecución queda marcada como programada.
+
+### Actividad imprevista durante el mantenimiento
+
+```csharp
+var activity = workOrder.AddActivity(
+    activity: additionalCleaning,
+    moment: ExecutionMoment.During,
+    sequence: 2,
+    isUnplanned: true);
+```
+
+Esta ejecución queda marcada con:
+
+```csharp
+activity.IsUnplanned // true
+```
+
+Más adelante podremos mostrar esta distinción en los informes y en la aplicación móvil.
+
+## 4. Una mejora importante: registrar el motivo
+
+Para un sistema de mantenimiento profesional, no basta con identificar que una actividad es imprevista. También conviene guardar el motivo por el cual fue necesaria.
+
+Por ejemplo:
+
+- Falla detectada durante la inspección.
+- Solicitud adicional del cliente.
+- Componente deteriorado.
+- Riesgo de seguridad.
+- Otra causa.
+
+No recomiendo guardar esos motivos como texto libre únicamente. Podemos crear un `UnplannedActivityReason` mediante un enum o un catálogo, y permitir una descripción adicional cuando sea necesario.
+
+Mi recomendación: implementemos primero `IsUnplanned` y validemos el flujo. Después incorporamos el motivo, quién agregó la actividad y cuándo lo hizo, para mantener una trazabilidad adecuada de las órdenes de trabajo.
+
+> se maneja los 2 escenarios , pero es mas común el mantenimiento preventivo
+
+Entonces, para ACSoft debemos diseñar el flujo pensando principalmente en el mantenimiento preventivo, pero permitiendo también el correctivo y los trabajos adicionales que surjan durante una visita.
+
+Mi recomendación es permitir las actividades no planificadas, pero distinguir dos cosas:
+
+- No planificada: no estaba incluida en las actividades originales de la orden.
+- Autorizada: existe aprobación para ejecutarla, especialmente si implica un costo adicional.
+
+No son lo mismo. Una actividad puede ser descubierta por el técnico y registrada en la orden, pero quedar pendiente de aprobación antes de ejecutarse.
+
+## Propuesta sencilla para ACSoft
+
+Para la primera versión, no implementaría todavía un flujo complejo de aprobaciones. Mantendría el registro de actividades y su trazabilidad:
+
+| Situación                                   | Comportamiento                                            |
+| ------------------------------------------- | --------------------------------------------------------- |
+| Actividad incluida en el preventivo         | Se agrega como planificada (`IsUnplanned = false`).       |
+| Técnico descubre una actividad adicional    | Se registra como no planificada (`IsUnplanned = true`).   |
+| Actividad adicional que requiere aprobación | Se registra, pero no se ejecuta hasta que sea autorizada. |
+| Orden completada o cancelada                | No se pueden agregar actividades.                         |
+
+Esto permite documentar lo que realmente ocurrió en el equipo sin modificar el plan original.
+
+## Cómo ajustaría `WorkOrder.AddActivity()`
+
+Con la regla que venimos definiendo, el método podría quedar así:
+
+```csharp
+public WorkOrderActivity AddActivity(
+    Activity activity,
+    ExecutionMoment moment,
+    int sequence,
+    bool isUnplanned = false)
+{
+    ArgumentNullException.ThrowIfNull(activity);
+
+    if (Status is WorkOrderStatus.Completed or WorkOrderStatus.Cancelled)
+    {
+        throw new InvalidOperationException(
+            "No se pueden agregar actividades a una orden completada o cancelada.");
+    }
+
+    if (Status == WorkOrderStatus.Waiting)
+    {
+        throw new InvalidOperationException(
+            "No se pueden agregar actividades mientras la orden está en espera.");
+    }
+
+    if (Status == WorkOrderStatus.InProgress && !isUnplanned)
+    {
+        throw new InvalidOperationException(
+            "Durante la ejecución solo se pueden agregar actividades no planificadas.");
+    }
+
+    if (sequence <= 0)
+    {
+        throw new ArgumentOutOfRangeException(
+            nameof(sequence),
+            "La secuencia debe ser mayor que cero.");
+    }
+
+    var sequenceAlreadyExists = _activities.Any(
+        x => x.Moment == moment && x.Sequence == sequence);
+
+    if (sequenceAlreadyExists)
+    {
+        throw new InvalidOperationException(
+            "Ya existe una actividad con esa secuencia para el momento indicado.");
+    }
+
+    var workOrderActivity = WorkOrderActivity.Create(
+        workOrderId: Id,
+        activityId: activity.Id,
+        moment: moment,
+        sequence: sequence,
+        isUnplanned: isUnplanned);
+
+    workOrderActivity.ConfigureQuestions(activity);
+
+    _activities.Add(workOrderActivity);
+
+    return workOrderActivity;
+}
+```
+
+La política quedaría así:
+
+- En estado `Pending` o `Assigned`, se pueden agregar actividades planificadas o no planificadas.
+- En estado `InProgress`, solo se pueden agregar actividades no planificadas.
+- En estado `Waiting`, no se pueden agregar actividades.
+- En estado `Completed` o `Cancelled`, tampoco.
+
+## ¿Qué haría con la autorización?
+
+Para esta primera etapa, mantendría `IsUnplanned` como una propiedad de `WorkOrderActivity`. Más adelante, si ACSoft necesita administrar aprobaciones comerciales, agregaría un estado independiente, por ejemplo:
+
+```csharp
+public enum ActivityApprovalStatus
+{
+    NotRequired = 1,
+    Pending = 2,
+    Approved = 3,
+    Rejected = 4
+}
+```
+
+Así no confundimos el hecho de que una actividad sea no planificada con el hecho de que haya sido aprobada.
+
+Mi recomendación: empezar con `IsUnplanned`, y cuando el proceso comercial esté definido, agregar la autorización. Para un sistema donde predomina el preventivo, es importante conservar el plan original y poder identificar claramente qué actividades adicionales aparecieron durante la visita.
+
+
+paso a paso con [webapi parte 6-0 Flujo para construir orden de Trabajo y sus actividades](/blog/webapi-6-0-csharp)

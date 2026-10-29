@@ -425,3 +425,118 @@ Antes de mapear estas clases con Entity Framework Core, recomiendo hacer una peq
 3. Una ejecución completada no acepta nuevas respuestas.
 
 Después podremos configurar EF Core para persistir `_questions` y `_answers`, sus relaciones y los Value Objects, sin trasladar las reglas de negocio a la base de datos ni al controlador de la API.
+
+> una pregunta dentro de ActivityAnswer ya no es necesario el metodo VlidateValue() que veniamos trabajando ?
+
+Sí, la validación sigue siendo necesaria, pero en la última versión que te propuse la trasladamos desde `ActivityAnswer` hacia `WorkOrderActivity`.
+
+Te explico por qué y cuál sería la mejor decisión para nuestro diseño.
+
+## 1. ¿Qué hacía `ValidateValue()`?
+
+En la versión anterior de `ActivityAnswer` teníamos algo parecido a esto:
+
+```csharp
+private static void ValidateValue(
+    Question question,
+    AnswerValue value)
+{
+    if (!value.Matches(question.AnswerType))
+    {
+        throw new InvalidOperationException(
+            "El tipo de respuesta no corresponde al tipo de pregunta.");
+    }
+
+    if (question.AnswerType == AnswerType.Measurement &&
+        !value.MatchesMeasurementType(question.MeasurementType!.Value))
+    {
+        throw new InvalidOperationException(
+            "La magnitud de la medición no corresponde a la pregunta.");
+    }
+}
+```
+
+Su responsabilidad era verificar dos cosas:
+
+1. Que el tipo de respuesta coincida con el tipo de pregunta.
+2. Que, si es una medición, la magnitud coincida con la configurada.
+
+Por ejemplo:
+
+| Pregunta                                   | Respuesta                           | ¿Válida? |
+| ------------------------------------------ | ----------------------------------- | -------- |
+| ¿El equipo está funcionando correctamente? | `AnswerStatus.Correct`              | Sí       |
+| ¿El equipo está funcionando correctamente? | Texto                               | No       |
+| ¿Cuál es la corriente medida?              | `MeasurementValue.FromCurrent(...)` | Sí       |
+| ¿Cuál es la corriente medida?              | `MeasurementValue.FromVoltage(...)` | No       |
+
+## 2. ¿Por qué la trasladamos a `WorkOrderActivity`?
+
+En el diseño actual, `WorkOrderActivity` tiene una copia de la configuración de la pregunta:
+
+```csharp
+public AnswerType AnswerType { get; private set; }
+
+public MeasurementType? MeasurementType { get; private set; }
+```
+
+Por eso, ahora la validación está en:
+
+```csharp
+private static void ValidateAnswerValue(
+    WorkOrderActivityQuestion question,
+    AnswerValue value)
+{
+    if (!value.Matches(question.AnswerType))
+    {
+        throw new InvalidOperationException(
+            "El tipo de respuesta no corresponde al tipo configurado para la pregunta.");
+    }
+
+    if (question.AnswerType == AnswerType.Measurement)
+    {
+        if (question.MeasurementType is null)
+        {
+            throw new InvalidOperationException(
+                "La pregunta de medición no tiene una magnitud configurada.");
+        }
+
+        if (!value.MatchesMeasurementType(question.MeasurementType.Value))
+        {
+            throw new InvalidOperationException(
+                "La magnitud de la medición no corresponde a la pregunta.");
+        }
+    }
+}
+```
+
+La ventaja es que no dependemos del catálogo actual. La ejecución conserva la configuración con la que fue creada.
+
+## 3. ¿Entonces eliminamos `ValidateValue()` de `ActivityAnswer`?
+
+Sí, en este diseño podemos eliminarlo de `ActivityAnswer`.
+
+La distribución de responsabilidades queda así:
+
+| Clase                       | Responsabilidad                                                       |
+| --------------------------- | --------------------------------------------------------------------- |
+| `Question`                  | Define qué pregunta es y qué tipo de respuesta espera.                |
+| `ActivityQuestion`          | Relaciona una pregunta con una actividad del catálogo.                |
+| `WorkOrderActivityQuestion` | Conserva la configuración de la pregunta para una ejecución concreta. |
+| `WorkOrderActivity`         | Valida las respuestas y controla la finalización.                     |
+| `ActivityAnswer`            | Conserva el identificador de la pregunta y su respuesta.              |
+| `AnswerValue`               | Representa el valor de la respuesta.                                  |
+
+La regla de negocio no desapareció: simplemente quedó ubicada en la entidad que conoce el contexto completo de la ejecución.
+
+### Una precisión importante
+
+Esto funciona porque hicimos `ActivityAnswer.Create()` y `ActivityAnswer.ChangeValue()` `internal`, y la modificación de respuestas se realiza mediante `WorkOrderActivity`.
+
+Si en el futuro permitimos que otras clases creen o modifiquen directamente `ActivityAnswer`, tendríamos que revisar cómo proteger estas invariantes.
+
+En resumen: no necesitamos mantener dos métodos `ValidateValue()` que hagan la misma validación. En la estructura actual, la validación en `WorkOrderActivity` es suficiente y además utiliza la configuración histórica de la pregunta.
+
+paso a paso con [webapi parte 5-9 Administrar actividades desde WorkOrden](/blog/webapi-5-9-csharp)
+
+
