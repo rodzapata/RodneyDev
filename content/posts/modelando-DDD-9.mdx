@@ -1,0 +1,278 @@
+---
+title: "Modelando DDD Parte 9 Persistir Orden de trabajo y sus actividades"
+date: "2026-10-29"
+description: "Persistir Orden de trabajo y sus actividades"
+slug: "modelando-DDD-9"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+Perfecto. Continuemos con el siguiente paso de AcSoft: configurar Entity Framework Core 10 para persistir la orden de trabajo y sus actividades.
+
+Hasta ahora tenemos el modelo de dominio. El objetivo es que EF Core pueda guardar y recuperar esta estructura:
+
+```
+WorkOrder
+ └── ActividadRealizada
+      └── Medicion (Antes / Después)
+           └── ValorRespuestaItem
+                └── ValorRespuesta
+```
+
+Vamos a configurar las relaciones sin poner reglas de negocio en `DbContext`. Las reglas siguen dentro de las entidades; EF Core se encarga de la persistencia.
+
+Antes de escribir el código, una precisión: como las entidades tienen constructores privados, propiedades con `private set` y colecciones privadas, usaremos configuraciones explícitas con `IEntityTypeConfiguration<T>`. Es una forma clara de mantener la configuración de persistencia fuera del dominio.
+
+## 1. Configurar `WorkOrder`
+
+Crea la carpeta:
+
+```
+AcSoft.Infrastructure
+└── Persistence
+    └── Configurations
+        └── WorkOrderConfiguration.cs
+```
+
+Código:
+
+```csharp
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class WorkOrderConfiguration
+    : IEntityTypeConfiguration<WorkOrder>
+{
+    public void Configure(EntityTypeBuilder<WorkOrder> builder)
+    {
+        builder.ToTable("work_orders");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.Number)
+            .HasMaxLength(30)
+            .IsRequired();
+
+        builder.HasIndex(x => x.Number)
+            .IsUnique();
+
+        builder.Property(x => x.CustomerId)
+            .IsRequired();
+
+        builder.Property(x => x.EquipmentId)
+            .IsRequired();
+
+        builder.Property(x => x.Status)
+            .HasConversion<int>()
+            .IsRequired();
+
+        builder.HasMany(x => x.Actividades)
+            .WithOne()
+            .HasForeignKey("WorkOrderId")
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.Navigation(x => x.Actividades)
+            .HasField("_actividades")
+            .UsePropertyAccessMode(PropertyAccessMode.Field);
+    }
+}
+```
+
+### ¿Qué estamos configurando?
+
+- `work_orders`: nombre de la tabla.
+- `Number`: número de la orden, por ejemplo `OT-202610290001`.
+- Índice único: evita que existan dos órdenes con el mismo número.
+- `Status`: se almacena como un entero.
+- `Actividades`: EF Core utiliza el campo privado `_actividades` para guardar y cargar la colección.
+
+El `WorkOrder` sigue siendo el agregado raíz. La aplicación no debería guardar directamente una `ActividadRealizada` por separado.
+
+## 2. Configurar `ActividadRealizada`
+
+Crea `ActividadRealizadaConfiguration.cs`:
+
+```csharp
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class ActividadRealizadaConfiguration
+    : IEntityTypeConfiguration<ActividadRealizada>
+{
+    public void Configure(EntityTypeBuilder<ActividadRealizada> builder)
+    {
+        builder.ToTable("work_order_activities");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.ActividadCatalogoId)
+            .IsRequired();
+
+        builder.HasMany(x => x.Mediciones)
+            .WithOne()
+            .HasForeignKey("ActividadRealizadaId")
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.Navigation(x => x.Mediciones)
+            .HasField("_mediciones")
+            .UsePropertyAccessMode(PropertyAccessMode.Field);
+    }
+}
+```
+
+Aquí EF Core creará una relación entre `ActividadRealizada` y `Medicion`, utilizando una FK llamada `ActividadRealizadaId`.
+
+Aunque la propiedad no esté declarada explícitamente en `Medicion`, EF Core puede utilizar una shadow property para la clave foránea.
+
+## 3. Configurar `Medicion`
+
+Crea `MedicionConfiguration.cs`:
+
+```csharp
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class MedicionConfiguration
+    : IEntityTypeConfiguration<Medicion>
+{
+    public void Configure(EntityTypeBuilder<Medicion> builder)
+    {
+        builder.ToTable("work_order_measurements");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.Etapa)
+            .HasConversion<int>()
+            .IsRequired();
+
+        builder.HasMany(x => x.Valores)
+            .WithOne()
+            .HasForeignKey("MedicionId")
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.Navigation(x => x.Valores)
+            .HasField("_valores")
+            .UsePropertyAccessMode(PropertyAccessMode.Field);
+    }
+}
+```
+
+Esta configuración asume que `Medicion` tiene una colección privada llamada `_valores` y una propiedad pública `Valores`.
+
+Si en tu código actual el nombre es diferente, debemos ajustarlo. Por ejemplo, si tienes `_valoresRespuesta`, usa ese nombre en `HasField`.
+
+## 4. Configurar `ValorRespuestaItem`
+
+Crea `ValorRespuestaItemConfiguration.cs`:
+
+```csharp
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class ValorRespuestaItemConfiguration
+    : IEntityTypeConfiguration<ValorRespuestaItem>
+{
+    public void Configure(EntityTypeBuilder<ValorRespuestaItem> builder)
+    {
+        builder.ToTable("work_order_answer_items");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.ParametroRespuestaId)
+            .IsRequired();
+
+        builder.Property(x => x.Valor)
+            .HasConversion(
+                valor => valor.Valor,
+                valor => new ValorRespuesta(valor))
+            .HasMaxLength(500)
+            .IsRequired();
+    }
+}
+```
+
+Esta conversión asume que `ValorRespuesta` es un record o una clase que permite construir el objeto desde un `string`:
+
+```csharp
+public sealed record ValorRespuesta(string Valor);
+```
+
+Si tu `ValorRespuesta` tiene un constructor privado o un método de fábrica, debemos adaptar la conversión a esa implementación. No conviene cambiar la validación del dominio solo para facilitar el mapeo.
+
+## 5. Registrar las configuraciones en `AcDbContext`
+
+En tu `AcDbContext`, puedes registrar todas las configuraciones del ensamblado:
+
+```csharp
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace AcSoft.Infrastructure.Persistence;
+
+public sealed class AcDbContext : DbContext
+{
+    public AcDbContext(DbContextOptions<AcDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<WorkOrder> WorkOrders => Set<WorkOrder>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+
+        modelBuilder.ApplyConfigurationsFromAssembly(
+            typeof(AcDbContext).Assembly);
+    }
+}
+```
+
+Con `ApplyConfigurationsFromAssembly`, EF Core encuentra las clases que implementan `IEntityTypeConfiguration<T>` dentro del ensamblado de Infrastructure.
+
+## 6. Un detalle importante antes de ejecutar una migración
+
+En el código actual de `ActividadRealizada` teníamos estos campos:
+
+```csharp
+private readonly HashSet<Guid> _parametrosPermitidos = [];
+private readonly HashSet<Guid> _parametrosObligatorios = [];
+```
+
+Estos campos se llenan al crear la actividad desde `ActividadCatalogo`, pero no se reconstruyen automáticamente al cargar la actividad desde la base de datos.
+
+Por eso, una orden recién creada podría funcionar correctamente en memoria y, después de guardarla y volverla a consultar, `EstaCompleta()` podría calcular un resultado incorrecto.
+
+Una solución sólida es guardar una instantánea de los parámetros que aplicaban a la actividad cuando fue agregada a la orden. Así, si el catálogo cambia después, la orden histórica conserva sus reglas originales.
+
+Por ejemplo:
+
+```csharp
+ActividadRealizada
+ ├── ActividadCatalogoId
+ ├── Parámetros configurados en ese momento
+ │    ├── RS (obligatorio)
+ │    ├── RT (obligatorio)
+ │    └── ST (obligatorio)
+ └── Mediciones
+      ├── Antes
+      └── Después
+```
+
+Mi recomendación: antes de crear la migración, resolvamos esa instantánea de parámetros. Es importante para que el agregado se comporte igual antes y después de persistirlo.
+
+El siguiente cambio sería crear una entidad pequeña, por ejemplo `ParametroActividadSnapshot`, con `ParametroRespuestaId` y `Obligatorio`, y reemplazar esos dos `HashSet<Guid>` por una colección persistible. Esto también nos permitirá validar que una respuesta corresponde a un parámetro que realmente estaba configurado para esa actividad.
