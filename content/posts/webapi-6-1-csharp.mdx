@@ -1,0 +1,361 @@
+---
+title: "Crear webapi Parte 6-1 Plan de Mantenimiento Preventivo"
+date: "2026-10-30"
+description: "Crear WebApi Parte 6-1 Plan de Mantenimiento Preventivo"
+slug: "webapi-6-1-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Excelente. Entonces adoptaremos un plan de mantenimiento preventivo reutilizable en ACSoft.
+
+La idea es separar la configuración del mantenimiento de su ejecución:
+
+- `MaintenancePlan`: define qué actividades deben realizarse.
+- `MaintenancePlanActivity`: define las actividades que forman parte del plan y su orden.
+- `WorkOrder`: representa una visita o trabajo concreto.
+- `WorkOrderActivity`: representa la ejecución de una actividad en una orden específica.
+
+Cuando se crea una orden desde un plan, ACSoft copia las actividades y sus preguntas a la orden. Así, el plan puede evolucionar sin alterar el historial de órdenes anteriores.
+
+## 1. Modelo de dominio
+
+La estructura que vamos a implementar es:
+
+```
+AcSoft.Domain
+├── Entities
+│   ├── MaintenancePlan.cs
+│   ├── MaintenancePlanActivity.cs
+│   ├── WorkOrder.cs
+│   └── WorkOrderActivity.cs
+└── Enums
+    └── MaintenancePlanStatus.cs
+```
+
+Por ahora, `MaintenancePlan` será un agregado independiente. No vamos a convertirlo en un agregado enorme que contenga clientes, equipos, órdenes y actividades ejecutadas.
+
+## 2. Crear el estado del plan
+
+Un plan puede estar en borrador mientras se configura. Solo los planes activos podrán utilizarse para crear órdenes.
+
+`MaintenancePlanStatus.cs`
+
+```csharp
+namespace AcSoft.Domain.Enums;
+
+public enum MaintenancePlanStatus
+{
+    Draft = 1,
+    Active = 2,
+    Inactive = 3
+}
+```
+
+## 3. Crear `MaintenancePlanActivity`
+
+Esta entidad representa una actividad que pertenece a un plan. No es la actividad ejecutada por el técnico; es una referencia al catálogo `Activity`.
+
+Por ejemplo, un plan podría incluir:
+
+| Actividad             | Momento | Secuencia |
+| --------------------- | ------- | --------- |
+| Medición de corriente | Before  | 1         |
+| Limpieza de filtros   | During  | 1         |
+| Medición de corriente | After   | 1         |
+
+`MaintenancePlanActivity.cs`
+
+```csharp
+using AcSoft.Domain.Enums;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class MaintenancePlanActivity
+{
+    private MaintenancePlanActivity()
+    {
+    }
+
+    private MaintenancePlanActivity(
+        Guid id,
+        Guid maintenancePlanId,
+        Guid activityId,
+        ExecutionMoment moment,
+        int sequence)
+    {
+        Id = id;
+        MaintenancePlanId = maintenancePlanId;
+        ActivityId = activityId;
+        Moment = moment;
+        Sequence = sequence;
+    }
+
+    public Guid Id { get; private set; }
+
+    public Guid MaintenancePlanId { get; private set; }
+
+    public Guid ActivityId { get; private set; }
+
+    public ExecutionMoment Moment { get; private set; }
+
+    public int Sequence { get; private set; }
+
+    public static MaintenancePlanActivity Create(
+        Guid maintenancePlanId,
+        Guid activityId,
+        ExecutionMoment moment,
+        int sequence)
+    {
+        if (maintenancePlanId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "El plan de mantenimiento es obligatorio.",
+                nameof(maintenancePlanId));
+        }
+
+        if (activityId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "La actividad es obligatoria.",
+                nameof(activityId));
+        }
+
+        if (!Enum.IsDefined(moment))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(moment),
+                "El momento de ejecución no es válido.");
+        }
+
+        if (sequence <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(sequence),
+                "La secuencia debe ser mayor que cero.");
+        }
+
+        return new MaintenancePlanActivity(
+            Guid.NewGuid(),
+            maintenancePlanId,
+            activityId,
+            moment,
+            sequence);
+    }
+}
+```
+
+Observa que aquí no guardamos las preguntas. Las preguntas pertenecen al catálogo `Activity` y se copiarán a `WorkOrderActivity` cuando se genere la orden.
+
+## 4. Crear `MaintenancePlan`
+
+El plan controla su colección de actividades y sus reglas.
+
+`MaintenancePlan.cs`
+
+```csharp
+using AcSoft.Domain.Enums;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class MaintenancePlan
+{
+    private readonly List<MaintenancePlanActivity> _activities = [];
+
+    private MaintenancePlan()
+    {
+    }
+
+    private MaintenancePlan(
+        Guid id,
+        string code,
+        string name,
+        string? description)
+    {
+        Id = id;
+        Code = code;
+        Name = name;
+        Description = description;
+        Status = MaintenancePlanStatus.Draft;
+    }
+
+    public Guid Id { get; private set; }
+
+    public string Code { get; private set; } = null!;
+
+    public string Name { get; private set; } = null!;
+
+    public string? Description { get; private set; }
+
+    public MaintenancePlanStatus Status { get; private set; }
+
+    public IReadOnlyCollection<MaintenancePlanActivity> Activities =>
+        _activities.AsReadOnly();
+
+    public static MaintenancePlan Create(
+        string code,
+        string name,
+        string? description = null)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            throw new ArgumentException(
+                "El código del plan es obligatorio.",
+                nameof(code));
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException(
+                "El nombre del plan es obligatorio.",
+                nameof(name));
+        }
+
+        return new MaintenancePlan(
+            Guid.NewGuid(),
+            code.Trim(),
+            name.Trim(),
+            description?.Trim());
+    }
+
+    public void AddActivity(
+        Guid activityId,
+        ExecutionMoment moment,
+        int sequence)
+    {
+        EnsurePlanCanBeModified();
+
+        var sequenceAlreadyExists = _activities.Any(
+            x => x.Moment == moment && x.Sequence == sequence);
+
+        if (sequenceAlreadyExists)
+        {
+            throw new InvalidOperationException(
+                "Ya existe una actividad con esa secuencia para el momento indicado.");
+        }
+
+        var planActivity = MaintenancePlanActivity.Create(
+            maintenancePlanId: Id,
+            activityId: activityId,
+            moment: moment,
+            sequence: sequence);
+
+        _activities.Add(planActivity);
+    }
+
+    public void Activate()
+    {
+        if (Status != MaintenancePlanStatus.Draft)
+        {
+            throw new InvalidOperationException(
+                "Solo un plan en borrador puede activarse.");
+        }
+
+        if (_activities.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "No se puede activar un plan sin actividades.");
+        }
+
+        Status = MaintenancePlanStatus.Active;
+    }
+
+    public void Deactivate()
+    {
+        if (Status != MaintenancePlanStatus.Active)
+        {
+            throw new InvalidOperationException(
+                "Solo un plan activo puede desactivarse.");
+        }
+
+        Status = MaintenancePlanStatus.Inactive;
+    }
+
+    private void EnsurePlanCanBeModified()
+    {
+        if (Status != MaintenancePlanStatus.Draft)
+        {
+            throw new InvalidOperationException(
+                "Solo se pueden modificar las actividades de un plan en borrador.");
+        }
+    }
+}
+```
+
+### ¿Por qué no se puede modificar un plan activo?
+
+Porque queremos evitar que el técnico encuentre un plan que cambió mientras se estaba usando para generar órdenes.
+
+En esta primera versión:
+
+- Un plan se crea en `Draft`.
+- Se agregan las actividades.
+- Se activa.
+- Mientras está activo, no se modifican sus actividades.
+- Si necesita cambios, se desactiva y se prepara una nueva configuración.
+
+Más adelante podríamos implementar versiones explícitas del plan, pero no es necesario agregar esa complejidad todavía.
+
+## 5. Ejemplo de uso
+
+Supongamos que ya existen en el catálogo estas actividades:
+
+- Medición de corriente.
+- Limpieza de filtros.
+- Verificación de presiones.
+
+El plan podría configurarse así:
+
+```csharp
+var plan = MaintenancePlan.Create(
+    code: "PM-AIR-001",
+    name: "Mantenimiento preventivo de aire acondicionado",
+    description: "Plan general para equipos de expansión directa.");
+
+plan.AddActivity(
+    activityId: currentMeasurementActivityId,
+    moment: ExecutionMoment.Before,
+    sequence: 1);
+
+plan.AddActivity(
+    activityId: filterCleaningActivityId,
+    moment: ExecutionMoment.During,
+    sequence: 1);
+
+plan.AddActivity(
+    activityId: pressureCheckActivityId,
+    moment: ExecutionMoment.During,
+    sequence: 2);
+
+plan.AddActivity(
+    activityId: currentMeasurementActivityId,
+    moment: ExecutionMoment.After,
+    sequence: 1);
+
+plan.Activate();
+```
+
+La misma actividad del catálogo puede aparecer dos veces, como la medición de corriente antes y después del mantenimiento. Esto es válido porque cada una tiene un momento de ejecución diferente.
+
+## 6. Siguiente paso
+
+Con el modelo del plan listo, el siguiente paso es crear el caso de uso:
+
+`CreateWorkOrderFromMaintenancePlanHandler`
+
+Este Handler deberá:
+
+1. Recibir `CustomerId`, `EquipmentId` y `MaintenancePlanId`.
+2. Obtener el plan desde el repositorio.
+3. Verificar que el plan esté activo.
+4. Crear la orden mediante `WorkOrder.Create()`.
+5. Obtener cada `Activity` del catálogo.
+6. Agregarla a la orden mediante `WorkOrder.AddActivity()`.
+7. Copiar las preguntas de cada actividad.
+8. Guardar la orden y sus actividades en una única operación de persistencia.
+
+Un detalle importante: para que este flujo funcione correctamente, el repositorio debe cargar el plan con sus actividades y el catálogo debe permitir obtener cada `Activity` con sus preguntas. En el siguiente paso construiremos las interfaces y el Handler respetando la arquitectura que ya tienes.
+
+paso a paso con [webapi parte 6-2 La responsabilidad del Handler](/blog/webapi-6-2-csharp)

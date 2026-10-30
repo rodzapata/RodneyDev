@@ -34,7 +34,7 @@ La idea es que el controlador no conozca las reglas del dominio. El controlador 
 
 Por ahora, tu DTO actual es:
 
-```
+```csharp
 public sealed record CreateWorkOrderRequest(
     Guid CustomerId,
     Guid EquipmentId);
@@ -44,7 +44,7 @@ Esto permite crear una orden, pero para un mantenimiento preventivo necesitamos 
 
 Podemos ampliarlo así:
 
-```
+```csharp
 public sealed record CreateWorkOrderRequest(
     Guid CustomerId,
     Guid EquipmentId,
@@ -62,3 +62,5 @@ Por ejemplo, ¿un equipo puede tener un plan de mantenimiento preventivo que se 
 O, por el contrario, ¿cada orden debe recibir una copia de las actividades configuradas específicamente para ese equipo?
 
 Mi recomendación inicial es usar un plan de mantenimiento reutilizable, y al crear la orden copiar sus actividades y preguntas a la orden como una fotografía histórica. Así, si el plan cambia en el futuro, las órdenes antiguas conservan las actividades que tenían originalmente.
+
+paso a paso con [webapi parte 6-1 Plan de Mantenimiento Preventivo](/blog/webapi-6-1-csharp)

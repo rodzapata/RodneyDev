@@ -1,0 +1,365 @@
+---
+title: "Crear webapi Parte 6-2 La responsabilidad del Handler"
+date: "2026-10-30"
+description: "Crear WebApi Parte 6-2 La responsabilidad del Handler"
+slug: "webapi-6-2-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+¡Continuemos! Ahora vamos a implementar el caso de uso que toma un plan preventivo reutilizable y genera una orden de trabajo con sus actividades.
+
+Lo haremos en `AcSoft.Application`, manteniendo las reglas de negocio en `AcSoft.Domain` y el acceso a datos en `AcSoft.Infrastructure`.
+
+La responsabilidad del Handler será coordinar el proceso, no implementar las reglas de la orden ni las reglas del plan.
+
+## Paso 1. Crear las interfaces de repositorio
+
+Necesitamos consultar el plan preventivo y las actividades del catálogo.
+
+La estructura será:
+
+```
+AcSoft.Application
+├── Abstractions
+│   ├── Persistence
+│   │   ├── IMaintenancePlanRepository.cs
+│   │   ├── IActivityRepository.cs
+│   │   ├── IWorkOrderRepository.cs
+│   │   └── IUnitOfWork.cs
+├── WorkOrders
+│   └── CreateFromMaintenancePlan
+│       ├── CreateWorkOrderFromMaintenancePlanRequest.cs
+│       └── CreateWorkOrderFromMaintenancePlanHandler.cs
+```
+
+En este paso crearemos las interfaces. Recuerda que las interfaces de persistencia pertenecen a Application, aunque su implementación concreta esté en Infrastructure.
+
+### `IMaintenancePlanRepository.cs`
+
+```
+using AcSoft.Domain.Entities;
+
+namespace AcSoft.Application.Abstractions.Persistence;
+
+public interface IMaintenancePlanRepository
+{
+    Task<MaintenancePlan?> GetByIdWithActivitiesAsync(
+        Guid maintenancePlanId,
+        CancellationToken cancellationToken = default);
+}
+```
+
+Este método debe recuperar el plan junto con sus `MaintenancePlanActivity`.
+
+### `IActivityRepository.cs`
+
+```
+using AcSoft.Domain.Entities;
+
+namespace AcSoft.Application.Abstractions.Persistence;
+
+public interface IActivityRepository
+{
+    Task<Activity?> GetByIdWithQuestionsAsync(
+        Guid activityId,
+        CancellationToken cancellationToken = default);
+}
+```
+
+Este método debe recuperar la actividad del catálogo y sus preguntas.
+
+Es importante que las preguntas estén cargadas, porque posteriormente las copiaremos a la ejecución de la actividad.
+
+### `IWorkOrderRepository.cs`
+
+Si ya tienes esta interfaz, no la reemplaces completamente. Agrega el método `Add` si todavía no existe.
+
+```
+using AcSoft.Domain.Entities;
+
+namespace AcSoft.Application.Abstractions.Persistence;
+
+public interface IWorkOrderRepository
+{
+    Task<WorkOrder?> GetByIdAsync(
+        Guid workOrderId,
+        CancellationToken cancellationToken = default);
+
+    void Add(WorkOrder workOrder);
+}
+```
+
+### `IUnitOfWork.cs`
+
+Si ya tienes esta interfaz, conserva la que estás utilizando. La idea es que tenga una operación para guardar los cambios:
+
+```
+namespace AcSoft.Application.Abstractions.Persistence;
+
+public interface IUnitOfWork
+{
+    Task<int> SaveChangesAsync(
+        CancellationToken cancellationToken = default);
+}
+```
+
+El `UnitOfWork` permite guardar la orden y todas sus actividades en una sola transacción de persistencia.
+
+## Paso 2. Crear el DTO de entrada
+
+Como ya habíamos definido, la solicitud debe indicar el cliente, el equipo y el plan preventivo.
+
+`CreateWorkOrderFromMaintenancePlanRequest.cs`
+
+```
+namespace AcSoft.Application.WorkOrders.CreateFromMaintenancePlan;
+
+public sealed record CreateWorkOrderFromMaintenancePlanRequest(
+    Guid CustomerId,
+    Guid EquipmentId,
+    Guid MaintenancePlanId);
+```
+
+El número de la orden lo generaremos mediante un servicio independiente. No conviene que el cliente móvil decida el número de una orden.
+
+## Paso 3. Crear un generador de números de orden
+
+En una aplicación real, el número de una OT debe ser único. Para evitar que el Handler tenga que conocer cómo se construye ese número, podemos crear una abstracción.
+
+`IWorkOrderNumberGenerator.cs`
+
+```
+namespace AcSoft.Application.Abstractions;
+
+public interface IWorkOrderNumberGenerator
+{
+    Task<string> GenerateAsync(
+        CancellationToken cancellationToken = default);
+}
+```
+
+La implementación concreta puede vivir en Infrastructure.
+
+Por ejemplo, podríamos tener números como:
+
+```
+OT-2026-000001
+OT-2026-000002
+OT-2026-000003
+```
+
+La generación debe ser segura frente a solicitudes concurrentes. No es suficiente contar las órdenes existentes y sumar uno, porque dos solicitudes podrían obtener el mismo número.
+
+Por ahora, el Handler utilizará esta interfaz sin preocuparse por ese detalle.
+
+## Paso 4. Crear el Handler
+
+Este es el componente central del caso de uso.
+
+`CreateWorkOrderFromMaintenancePlanHandler.cs`
+
+```
+using AcSoft.Application.Abstractions;
+using AcSoft.Application.Abstractions.Persistence;
+using AcSoft.Domain.Entities;
+using AcSoft.Domain.Enums;
+
+namespace AcSoft.Application.WorkOrders.CreateFromMaintenancePlan;
+
+public sealed class CreateWorkOrderFromMaintenancePlanHandler
+{
+    private readonly IMaintenancePlanRepository _maintenancePlanRepository;
+    private readonly IActivityRepository _activityRepository;
+    private readonly IWorkOrderRepository _workOrderRepository;
+    private readonly IWorkOrderNumberGenerator _workOrderNumberGenerator;
+    private readonly IUnitOfWork _unitOfWork;
+
+    public CreateWorkOrderFromMaintenancePlanHandler(
+        IMaintenancePlanRepository maintenancePlanRepository,
+        IActivityRepository activityRepository,
+        IWorkOrderRepository workOrderRepository,
+        IWorkOrderNumberGenerator workOrderNumberGenerator,
+        IUnitOfWork unitOfWork)
+    {
+        _maintenancePlanRepository = maintenancePlanRepository;
+        _activityRepository = activityRepository;
+        _workOrderRepository = workOrderRepository;
+        _workOrderNumberGenerator = workOrderNumberGenerator;
+        _unitOfWork = unitOfWork;
+    }
+
+    public async Task<Guid> Handle(
+        CreateWorkOrderFromMaintenancePlanRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        // 1. Obtener el plan preventivo y sus actividades.
+        var maintenancePlan =
+            await _maintenancePlanRepository.GetByIdWithActivitiesAsync(
+                request.MaintenancePlanId,
+                cancellationToken);
+
+        if (maintenancePlan is null)
+        {
+            throw new InvalidOperationException(
+                "El plan de mantenimiento no existe.");
+        }
+
+        // 2. Verificar que el plan esté activo.
+        if (maintenancePlan.Status != MaintenancePlanStatus.Active)
+        {
+            throw new InvalidOperationException(
+                "Solo se pueden generar órdenes desde un plan activo.");
+        }
+
+        // 3. Generar el número de la orden.
+        var workOrderNumber =
+            await _workOrderNumberGenerator.GenerateAsync(
+                cancellationToken);
+
+        // 4. Crear la orden.
+        var workOrder = WorkOrder.Create(
+            number: workOrderNumber,
+            customerId: request.CustomerId,
+            equipmentId: request.EquipmentId);
+
+        // 5. Recorrer las actividades definidas en el plan.
+        foreach (var planActivity in maintenancePlan.Activities
+                     .OrderBy(x => x.Moment)
+                     .ThenBy(x => x.Sequence))
+        {
+            // Obtener la actividad del catálogo con sus preguntas.
+            var activity =
+                await _activityRepository.GetByIdWithQuestionsAsync(
+                    planActivity.ActivityId,
+                    cancellationToken);
+
+            if (activity is null)
+            {
+                throw new InvalidOperationException(
+                    $"No existe la actividad del catálogo " +
+                    $"con identificador {planActivity.ActivityId}.");
+            }
+
+            // Crear una instancia de ejecución dentro de la orden.
+            workOrder.AddActivity(
+                activity: activity,
+                moment: planActivity.Moment,
+                sequence: planActivity.Sequence,
+                isUnplanned: false);
+        }
+
+        // 6. Agregar la orden al repositorio.
+        _workOrderRepository.Add(workOrder);
+
+        // 7. Guardar la orden y sus actividades.
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        // 8. Retornar el identificador de la orden creada.
+        return workOrder.Id;
+    }
+}
+```
+
+### ¿Qué está haciendo el Handler?
+
+El Handler no crea directamente `WorkOrderActivityQuestion` ni `ActivityAnswer`.
+
+En lugar de eso, delega esa responsabilidad al dominio:
+
+```
+workOrder.AddActivity(
+    activity: activity,
+    moment: planActivity.Moment,
+    sequence: planActivity.Sequence,
+    isUnplanned: false);
+```
+
+Dentro de `WorkOrder.AddActivity()` ya tenemos:
+
+```
+var workOrderActivity = WorkOrderActivity.Create(
+    workOrderId: Id,
+    activityId: activity.Id,
+    moment: moment,
+    sequence: sequence,
+    isUnplanned: isUnplanned);
+
+workOrderActivity.ConfigureQuestions(activity);
+
+_activities.Add(workOrderActivity);
+```
+
+Por lo tanto, la copia de las preguntas se realiza utilizando el método de dominio que ya construimos.
+
+## Paso 5. ¿Qué pasa si una actividad se elimina del catálogo?
+
+Aquí hay una regla importante.
+
+Imaginemos que el plan preventivo tiene cinco actividades. Posteriormente, alguien elimina una actividad del catálogo.
+
+No deberíamos generar una orden incompleta silenciosamente.
+
+Por eso, el Handler verifica que cada actividad exista. Si no existe, cancela el proceso con una excepción.
+
+Además, la orden todavía no se ha guardado cuando ocurre esa validación. Si la operación completa se ejecuta dentro de una transacción, no quedará una orden parcialmente creada.
+
+Más adelante podemos mejorar el modelo para que las actividades del catálogo sean inactivables en lugar de eliminables. Esto suele ser más adecuado para mantener el historial.
+
+## Paso 6. Registrar el Handler en la inyección de dependencias
+
+En `AcSoft.Api`, dentro de tu configuración de servicios, agrega:
+
+```
+using AcSoft.Application.WorkOrders.CreateFromMaintenancePlan;
+
+builder.Services.AddScoped<
+    CreateWorkOrderFromMaintenancePlanHandler>();
+```
+
+No estamos usando MediatR. El controlador puede inyectar directamente el Handler.
+
+Por ejemplo:
+
+```
+public sealed class WorkOrdersController : ControllerBase
+{
+    private readonly CreateWorkOrderFromMaintenancePlanHandler _handler;
+
+    public WorkOrdersController(
+        CreateWorkOrderFromMaintenancePlanHandler handler)
+    {
+        _handler = handler;
+    }
+}
+```
+
+Todavía no estamos implementando el endpoint completo, porque primero necesitamos implementar las consultas de los repositorios en Infrastructure.
+
+## Una observación importante sobre el diseño
+
+En este momento, `MaintenancePlanActivity` contiene:
+
+```
+public Guid ActivityId { get; private set; }
+
+public ExecutionMoment Moment { get; private set; }
+
+public int Sequence { get; private set; }
+```
+
+Esto es suficiente para referenciar el catálogo y crear la ejecución.
+
+Sin embargo, el plan reutilizable también puede necesitar indicar cada cuántos días debe realizarse una actividad. Por ejemplo:
+
+- Limpieza de filtros: cada 30 días.
+- Verificación eléctrica: cada 90 días.
+- Inspección general: cada 180 días.
+
+Como tu proyecto HVAC contempla rutinas según los días transcurridos desde la fecha inicial, esa programación probablemente será una responsabilidad adicional de `MaintenancePlanActivity`.
+
+No la agregaría todavía al Handler de creación de órdenes. Primero terminemos el flujo básico y luego construiremos la programación de las rutinas.
+
+El siguiente paso concreto es implementar `MaintenancePlanRepository` y `ActivityRepository` en `AcSoft.Infrastructure` con EF Core, incluyendo las relaciones necesarias para cargar las actividades y preguntas.
