@@ -3,6 +3,7 @@ import CodeTitle from './CodeTitle'
 import Pre from './Pre'
 import { slugify } from '../../lib/utils'
 import CustomLink from './CustomLink'
+import Image from './Image'
 
 function Heading({ as: Tag, children }) {
   const text = Array.isArray(children) ? children.join('') : String(children ?? '')
@@ -17,5 +18,6 @@ export const mdxComponents = {
   pre: (props) => <Pre {...props} />,
   a: CustomLink,
   Alert,
-  CodeTitle
+  CodeTitle,
+  Image
 }

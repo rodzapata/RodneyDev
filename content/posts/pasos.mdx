@@ -1808,3 +1808,97 @@ porque queremos que el blog siga funcionando correctamente después de la actual
 
 Si quieres, **puedes subir tu `package.json`** y lo reviso para decirte exactamente qué debes cambiar y si hay otras dependencias que convenga actualizar antes de volver a hacer el deploy.
 
+> como muestro una imagen desde mi pagina, sin que llame a otra ventana independiente ?
+
+
+¡Claro! En tu blog de Next.js con MDX, puedes insertar una imagen dentro de la misma página del artículo, sin que se abra una página nueva.
+
+Hay dos formas comunes de hacerlo, dependiendo de lo que necesitas.
+
+## 1. Mostrar la imagen directamente en el artículo
+
+Si quieres que la imagen aparezca entre los párrafos de tu publicación MDX, puedes utilizar Markdown.
+
+Por ejemplo, si guardas la imagen en:
+
+```
+public/images/mediator-diagram.png
+```
+
+En tu archivo `.mdx` escribes:
+
+```
+## Arquitectura del Mediator
+
+En la siguiente imagen podemos observar cómo funciona el patrón Mediator.
+
+![Diagrama del patrón Mediator](/images/mediator-diagram.png)
+
+Como se observa en el diagrama, el Mediator recibe la solicitud y busca el handler correspondiente.
+```
+
+La imagen se mostrará dentro del artículo, en el lugar donde escribiste la referencia.
+
+## 2. Mostrar una imagen con tamaño y estilos personalizados
+
+Si quieres controlar el ancho, los bordes o el estilo de la imagen, puedes utilizar un componente React.
+
+Por ejemplo, crea un archivo `Image.jsx` dentro de `components/mdx`:
+
+```javascript
+
+export default function Image({ src, alt, width = '100%' }) {
+  return (
+    <img
+      src={src}
+      alt={alt}
+      style={{
+        display: 'block',
+        width,
+        maxWidth: '100%',
+        height: 'auto',
+        margin: '1.5rem auto',
+        borderRadius: '8px'
+      }}
+    />
+  )
+}
+
+```
+
+Después, regístralo en `mdx-components.jsx`:
+
+```javascript
+import Image from './Image'
+
+export const mdxComponents = {
+  // Los componentes que ya tienes...
+  Image
+}
+```
+
+Y en el artículo MDX puedes utilizar:
+
+```javascript
+<Image
+  src="/images/mediator-diagram.png"
+  alt="Diagrama del patrón Mediator"
+  width="800px"
+/>
+```
+
+La imagen se renderiza en la misma página, sin navegar a otra URL.
+
+## ¿Y si quieres que al hacer clic se amplíe?
+
+Eso es diferente: puedes mostrar la imagen dentro de la página y, al pulsarla, abrirla en una ventana superpuesta (lightbox), sin navegar a otra página.
+
+Para tu blog, ¿cuál de estos comportamientos necesitas?
+
+Mostrar la imagen directamente dentro del artículo.
+
+Mostrar la imagen y ampliarla al hacer clic, sin salir del artículo.
+
+Mostrar la imagen, pero que al hacer clic se abra en otra pestaña.
+
+Continuar
