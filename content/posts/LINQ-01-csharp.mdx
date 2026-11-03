@@ -1,0 +1,454 @@
+---
+title: "LINQ en CSharp"
+date: "2026-09-07"
+description: "Aprender LINQ en el 2026"
+slug: "LINQ-01-csharp"
+category: "Netcore"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+> LINQ es ORM ?
+
+No. **LINQ no es un ORM**.
+
+Son conceptos diferentes, aunque en .NET suelen trabajar juntos.
+
+### 1. ¿Qué es LINQ?
+
+**LINQ (Language Integrated Query)** es una funcionalidad de C#/.NET que permite consultar y transformar datos usando una sintaxis común.
+
+Por ejemplo, con una colección en memoria:
+
+```csharp
+var equipos = new List<Equipo>
+{
+    new("Compresor", true),
+    new("Evaporador", false),
+    new("Condensador", true)
+};
+
+var equiposActivos = equipos
+    .Where(e => e.Activo)
+    .ToList();
+```
+
+Aquí **LINQ está consultando objetos en memoria**.
+
+No hay base de datos ni ORM.
+
+---
+
+### 2. ¿Qué es un ORM?
+
+**ORM (Object-Relational Mapper)** es una tecnología que permite trabajar con una base de datos relacional utilizando objetos del lenguaje.
+
+En .NET, un ejemplo muy conocido es **Entity Framework Core**.
+
+Por ejemplo:
+
+```csharp
+var equipos = await context.Equipos
+    .Where(e => e.Activo)
+    .ToListAsync();
+```
+
+Aquí tenemos:
+
+```text
+C#
+ │
+ ├── LINQ
+ │     └── .Where()
+ │
+ └── Entity Framework Core
+       └── ORM
+             │
+             ▼
+          SQL Server
+```
+
+LINQ proporciona la forma de expresar la consulta:
+
+```csharp
+.Where(e => e.Activo)
+```
+
+Mientras que **EF Core**, como ORM, se encarga de traducir esa consulta a SQL.
+
+Conceptualmente podría terminar generando algo como:
+
+```sql
+SELECT *
+FROM Equipos
+WHERE Activo = 1;
+```
+
+---
+
+## 3. Entonces, ¿LINQ trabaja con ORM?
+
+**Sí.**
+
+Esta es una de las cosas que suele generar confusión.
+
+LINQ puede trabajar sobre:
+
+```text
+List<T>
+Array
+Dictionary
+IEnumerable<T>
+IQueryable<T>
+Entity Framework Core
+...
+```
+
+Por ejemplo:
+
+### LINQ + objetos
+
+```csharp
+IEnumerable<Equipo> equipos = listaEquipos;
+
+var resultado = equipos
+    .Where(e => e.Activo);
+```
+
+La consulta se ejecuta **en memoria**.
+
+---
+
+### LINQ + EF Core
+
+```csharp
+IQueryable<Equipo> equipos = context.Equipos;
+
+var resultado = equipos
+    .Where(e => e.Activo);
+```
+
+Aquí EF Core puede traducir la expresión LINQ a SQL.
+
+---
+
+# 4. La diferencia importante: `IEnumerable` vs `IQueryable`
+
+Esto conecta directamente con lo que estábamos viendo anteriormente sobre colecciones.
+
+### `IEnumerable<T>`
+
+Normalmente significa:
+
+> "Los datos ya están disponibles y los voy a recorrer/consultar."
+
+Ejemplo:
+
+```csharp
+IEnumerable<Equipo> equipos = listaEquipos;
+
+var resultado = equipos
+    .Where(e => e.Activo);
+```
+
+El filtro ocurre en .NET:
+
+```text
+Base de datos
+     ↓
+   todos los datos
+     ↓
+     .NET
+     ↓
+   Where()
+```
+
+---
+
+### `IQueryable<T>`
+
+Permite construir una consulta que otro proveedor puede interpretar.
+
+Con EF Core:
+
+```csharp
+IQueryable<Equipo> equipos = context.Equipos;
+
+var resultado = equipos
+    .Where(e => e.Activo)
+    .OrderBy(e => e.Nombre)
+    .Take(10);
+```
+
+EF Core puede convertirla en SQL:
+
+```text
+LINQ
+  ↓
+IQueryable
+  ↓
+EF Core
+  ↓
+SQL
+  ↓
+SQL Server
+```
+
+Por eso `IQueryable<T>` es especialmente importante cuando hablamos de **LINQ + EF Core**.
+
+---
+
+## 5. Una forma fácil de recordarlo
+
+Piensa en estas tres piezas:
+
+| Tecnología     | ¿Qué es?                  | Responsabilidad                              |
+| -------------- | ------------------------- | -------------------------------------------- |
+| **LINQ**       | Lenguaje/API de consultas | Expresar consultas                           |
+| **EF Core**    | ORM                       | Mapear objetos ↔ tablas y traducir consultas |
+| **SQL Server** | Base de datos             | Almacenar y consultar datos                  |
+
+Por ejemplo:
+
+```csharp
+var equipos = await context.Equipos
+    .Where(e => e.Activo)
+    .OrderBy(e => e.Nombre)
+    .ToListAsync();
+```
+
+Tenemos:
+
+```text
+.Where()
+.OrderBy()
+.ToListAsync()
+     │
+     ▼
+    LINQ
+     │
+     ▼
+ Entity Framework Core
+     │
+     ▼
+     SQL
+     │
+     ▼
+ SQL Server
+```
+
+### En una frase:
+
+> **LINQ es el mecanismo para expresar consultas; EF Core es el ORM que puede utilizar LINQ para consultar una base de datos.**
+
+Y en **DDD + Clean Architecture**, esta diferencia es muy importante porque normalmente **LINQ puede aparecer en Application/Infrastructure**, mientras que **EF Core pertenece a Infrastructure**, no al Domain.
+
+
+¡Continuemos! Vamos a seguir aprendiendo C# 14 y aplicando sus características a nuestro proyecto AcSoft (.NET 10 + Clean Architecture + DDD).
+
+Como acabamos de estudiar Collection Expressions, el siguiente tema que te propongo es una característica muy útil para trabajar con colecciones.
+
+# Siguiente tema: LINQ en C\#
+
+LINQ significa Language Integrated Query (consultas integradas en el lenguaje).
+
+Permite consultar, filtrar, ordenar y transformar colecciones de datos utilizando C#.
+
+Es fundamental para trabajar con:
+
+- Listas y arrays.
+- Colecciones de entidades de nuestro dominio.
+- Entity Framework Core.
+- Consultas a PostgreSQL.
+- Repositorios en Clean Architecture.
+
+## 1. Filtrar elementos con Where()
+
+Imagina que tenemos varias órdenes de trabajo en AcSoft.
+
+```csharp
+public class WorkOrder
+{
+    public Guid Id { get; set; }
+
+    public string Number { get; set; } = string.Empty;
+
+    public string Status { get; set; } = string.Empty;
+}
+```
+
+Creamos una colección:
+
+```csharp
+List<WorkOrder> workOrders =
+[
+    new()
+    {
+        Number = "OT-001",
+        Status = "Pending"
+    },
+    new()
+    {
+        Number = "OT-002",
+        Status = "Completed"
+    },
+    new()
+    {
+        Number = "OT-003",
+        Status = "Pending"
+    }
+];
+```
+
+Ahora queremos obtener únicamente las órdenes pendientes.
+
+Podemos utilizar LINQ:
+
+```csharp
+var pendingOrders = workOrders
+    .Where(order => order.Status == "Pending")
+    .ToList();
+```
+
+¿Qué está sucediendo?
+
+| Código                      | Significado                           |
+| --------------------------- | ------------------------------------- |
+| `Where()`                   | Filtra los elementos                  |
+| `order`                     | Representa cada orden                 |
+| `=>`                        | Operador lambda                       |
+| `order.Status == "Pending"` | Condición del filtro                  |
+| `ToList()`                  | Materializa el resultado en una lista |
+
+El resultado contiene:
+
+```csharp
+OT-001
+OT-003
+```
+
+## 2. ¿Qué significa la expresión lambda?
+
+Observa esta expresión:
+
+```csharp
+order => order.Status == "Pending"
+```
+
+Es una función que recibe una orden y devuelve `true` o `false`.
+
+Es equivalente a escribir:
+
+```csharp
+bool IsPending(WorkOrder order)
+{
+    return order.Status == "Pending";
+}
+```
+
+Por tanto:
+
+```csharp
+var pendingOrders = workOrders
+    .Where(IsPending)
+    .ToList();
+```
+
+Ambas formas son válidas.
+
+La expresión lambda es más compacta y se utiliza frecuentemente con LINQ.
+
+## 3. Filtrar y ordenar
+
+Ahora queremos obtener las órdenes pendientes, ordenadas por número.
+
+```csharp
+var pendingOrders = workOrders
+    .Where(order => order.Status == "Pending")
+    .OrderBy(order => order.Number)
+    .ToList();
+```
+
+También podemos ordenar de forma descendente:
+
+```csharp
+var pendingOrders = workOrders
+    .Where(order => order.Status == "Pending")
+    .OrderByDescending(order => order.Number)
+    .ToList();
+```
+
+Otros métodos LINQ que debes conocer:
+
+| Método                | Función                                              |
+| --------------------- | ---------------------------------------------------- |
+| `Where()`             | Filtrar                                              |
+| `Select()`            | Transformar elementos                                |
+| `OrderBy()`           | Ordenar ascendentemente                              |
+| `OrderByDescending()` | Ordenar descendentemente                             |
+| `FirstOrDefault()`    | Obtener el primer elemento o el valor predeterminado |
+| `Any()`               | Comprobar si existe algún elemento                   |
+| `Count()`             | Contar elementos                                     |
+| `SingleOrDefault()`   | Obtener un único elemento o el valor predeterminado  |
+
+## 4. Aplicación en nuestro proyecto AcSoft
+
+En nuestro dominio HVAC, podemos utilizar LINQ para comprobar si una orden tiene actividades pendientes.
+
+Por ejemplo:
+
+```csharp
+public bool HasPendingActivities()
+{
+    return _activities.Any(
+        activity => !activity.IsCompleted);
+}
+```
+
+Aquí utilizamos `Any()`.
+
+El método devuelve:
+
+- `true`: existe al menos una actividad pendiente.
+- `false`: todas las actividades están completadas, o la colección está vacía.
+
+Esto es útil para implementar una regla de negocio:
+
+> Una orden de trabajo no puede completarse mientras tenga actividades obligatorias pendientes.
+
+Sin embargo, para nuestro modelo DDD, debemos tener cuidado: no todas las actividades necesariamente serán obligatorias. La regla deberá considerar cuáles son requeridas y cuáles no.
+
+## 5. Tu primer ejercicio
+
+Pregunta
+
+Tenemos esta colección:
+
+```csharp
+int[] numbers = [10, 15, 20, 25, 30];
+```
+
+¿Qué resultado devuelve esta expresión?
+
+```csharp
+var result = numbers
+    .Where(number => number > 20)
+    .ToList();
+```
+
+A. `[25, 30]`
+
+B. `[20, 25, 30]`
+
+C. `[10, 15, 20]`
+
+D. `[10, 15, 20, 25, 30]`
+
+Comprobar respuesta
+
+¡Correcto!`Where()` conserva únicamente los números mayores que 20. Por tanto, el resultado es `[25, 30]`.
+
+Después de dominar LINQ con colecciones en memoria, pasaremos a LINQ con Entity Framework Core, donde las consultas se traducen a SQL y se ejecutan en PostgreSQL. Ese será el siguiente paso práctico para nuestro `WorkOrderRepository`.
+
+LINQ parte 2 [LINQ con Entity Framework and .net 10 ](/blog/LINQ-02-csharp)

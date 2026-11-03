@@ -1,0 +1,188 @@
+---
+title: "POOL de conexiones en Entity framework .net 10"
+date: "2026-11-01"
+description: "POOL de conexiones en Entity framework .net 10"
+slug: "pool-conexiones-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+> Entity Framework en .net 10 , maneja un pool de conexiones por defecto para postgres como lo hace el ORM prisma  o hay que configurarlo?
+
+
+
+Sí. Entity Framework Core 10 en .NET 10 utiliza un pool de conexiones para PostgreSQL por defecto, de forma similar a Prisma con Node.js.
+
+La diferencia importante es que en EF Core el pooling de conexiones lo administra principalmente el proveedor de PostgreSQL, Npgsql, y no el propio Entity Framework Core.
+
+Por lo tanto, para tu proyecto AcSoft con .NET 10, C# 14 y PostgreSQL, no necesitas instalar una librería adicional ni configurar manualmente un pool de conexiones para comenzar a trabajar.
+
+Hay que distinguir dos conceptos:
+
+- Connection Pooling: reutiliza conexiones físicas con PostgreSQL.
+- DbContext Pooling: reutiliza instancias de `DbContext` para reducir el costo de inicialización.
+
+Ambos mecanismos existen en EF Core, pero son independientes.
+
+## 1. ¿Cómo funciona el pool de conexiones en EF Core?
+
+Cuando utilizas PostgreSQL con Entity Framework Core, el proveedor `Npgsql` administra automáticamente las conexiones.
+
+Por defecto, los valores de Npgsql son:
+
+| Parámetro                  | Valor predeterminado |
+| -------------------------- | -------------------- |
+| `Pooling`                  | `true`               |
+| `Minimum Pool Size`        | `0`                  |
+| `Maximum Pool Size`        | `100`                |
+| `Connection Idle Lifetime` | `300` segundos       |
+| `Timeout`                  | `15` segundos        |
+
+Esto significa que Npgsql puede mantener hasta 100 conexiones físicas en su pool por cada pool correspondiente a una configuración de conexión. No significa que abra las 100 conexiones inmediatamente.&#x20;
+
+
+Npgsql Documentation+1
+
+
+
+### Ejemplo práctico
+
+Supongamos que tu API AcSoft recibe estas solicitudes:
+
+```
+Solicitud 1
+    |
+    v
+EF Core solicita una conexión
+    |
+    v
+Npgsql obtiene una conexión del pool
+    |
+    v
+PostgreSQL ejecuta la consulta
+    |
+    v
+EF Core termina la operación
+    |
+    v
+La conexión vuelve al pool
+```
+
+Cuando llega otra solicitud, Npgsql puede reutilizar la conexión física anterior.
+
+Importante: cuando EF Core termina de utilizar una conexión, no necesariamente se cierra la conexión física con PostgreSQL. Se devuelve al pool para su reutilización.&#x20;
+
+Npgsql Documentation
+
+
+
+## 2. ¿Cómo configurar EF Core en .NET 10?
+
+Para tu proyecto, la configuración habitual sería esta.
+
+En `Program.cs`:
+
+```csharp
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseNpgsql(
+        builder.Configuration.GetConnectionString("DefaultConnection")));
+```
+
+Y en `appsettings.json`:
+
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Host=localhost;Port=5432;Database=AcSoftDb;Username=postgres;Password=tu_password"
+  }
+}
+```
+
+Con esta configuración, el pool de conexiones ya está habilitado.
+
+No necesitas agregar:
+
+```csharp
+Pooling=true
+```
+
+Porque es el valor predeterminado de Npgsql.
+
+Si deseas especificar un límite personalizado, puedes hacerlo:
+
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Host=localhost;Port=5432;Database=AcSoftDb;Username=postgres;Password=tu_password;Pooling=true;Minimum Pool Size=5;Maximum Pool Size=50"
+  }
+}
+```
+
+En este ejemplo:
+
+- `Minimum Pool Size=5`: mantiene al menos 5 conexiones en el pool.
+- `Maximum Pool Size=50`: permite hasta 50 conexiones simultáneas en ese pool.
+
+No recomiendo establecer estos valores sin tener en cuenta la capacidad de PostgreSQL y la cantidad de instancias de tu API.
+
+## 3. ¿Qué diferencia hay entre AddDbContext y AddDbContextPool?
+
+Aquí hay un punto importante que suele generar confusión.
+
+| Característica                    | AddDbContext | AddDbContextPool              |
+| --------------------------------- | ------------ | ----------------------------- |
+| Pool de conexiones PostgreSQL     | Sí           | Sí                            |
+| Reutiliza instancias de DbContext | No           | Sí                            |
+| Configuración adicional           | No           | Sí, para pooling del contexto |
+| Recomendado para comenzar         | Sí           | Opcional                      |
+
+`AddDbContextPool` no es necesario para activar el pool de conexiones PostgreSQL. Es otro mecanismo de optimización.&#x20;
+
+
+Npgsql Documentation+1
+
+
+
+Por ejemplo:
+
+```csharp
+builder.Services.AddDbContextPool<ApplicationDbContext>(
+    options =>
+        options.UseNpgsql(
+            builder.Configuration.GetConnectionString("DefaultConnection")));
+```
+
+Esta configuración utiliza ambos mecanismos:
+
+1. Pool de conexiones físicas administrado por Npgsql.
+2. Pool de instancias de `ApplicationDbContext` administrado por EF Core.
+
+### ¿Cuál te recomiendo para AcSoft?
+
+Para tu API de mantenimiento HVAC, que estás desarrollando con Clean Architecture y DDD:
+
+Comienza con `AddDbContext` y deja que Npgsql administre el pool de conexiones.
+
+Es una configuración sencilla, correcta y suficiente para una gran cantidad de aplicaciones.
+
+Más adelante, si mediante pruebas de carga identificas que la creación de instancias de `DbContext` representa un costo significativo, puedes evaluar `AddDbContextPool`.
+
+La documentación de Npgsql explica ambos mecanismos: [Proveedor de Entity Framework Core para PostgreSQL](https://www.npgsql.org/efcore/?utm_source=chatgpt.com).
+
+## 4. ¿Y qué sucede si utilizo Prisma?
+
+La comparación sería:
+
+| Prisma con Node.js          | EF Core 10 con PostgreSQL                |
+| --------------------------- | ---------------------------------------- |
+| Prisma Client               | DbContext                                |
+| Prisma Query Engine         | EF Core + proveedor Npgsql               |
+| Pool de conexiones          | Pool de conexiones Npgsql                |
+| Configuración de pool       | Connection String / configuración Npgsql |
+| Reutilización de conexiones | Automática                               |
+
+En ambos casos, no deberías crear una conexión nueva a PostgreSQL para cada consulta de manera manual.
+
+Una recomendación adicional para tu proyecto: utiliza un `DbContext` con ciclo de vida `Scoped`, que es el comportamiento predeterminado de `AddDbContext` en ASP.NET Core. Esto permite que cada solicitud HTTP tenga su propio contexto, mientras que las conexiones físicas se reutilizan mediante el pool de Npgsql.

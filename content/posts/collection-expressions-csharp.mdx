@@ -1,0 +1,376 @@
+---
+title: "Collection Expressions en csharp 14 codigo moderno"
+date: "2026-11-01"
+description: "Collection Expressions en csharp 14 codigo moderno"
+slug: "collection-expressions-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+# ¿Qué son las Collection Expressions en C# 14?
+
+Las Collection Expressions (expresiones de colección) son una característica del lenguaje C# que permite crear e inicializar colecciones utilizando una sintaxis más sencilla y uniforme.
+
+Se introdujeron en C# 12, por lo que también están disponibles en C# 14, que puedes utilizar con .NET 10.
+
+La idea principal es reemplazar parte de la sintaxis tradicional de inicialización de colecciones por los corchetes `[]`.
+
+## 1. Ejemplo básico
+
+Imagina que necesitas crear una lista de números enteros.
+
+** Forma tradicional**
+
+```csharp
+List<int> numbers = new List<int>
+{
+    10,
+    20,
+    30,
+    40
+};
+```
+
+También puedes utilizar `var` y el operador `new`:
+
+```csharp
+var numbers = new List<int>
+{
+    10,
+    20,
+    30,
+    40
+};
+```
+
+### Forma moderna: Collection Expression
+
+```csharp
+List<int> numbers =
+[
+    10,
+    20,
+    30,
+    40
+];
+```
+
+Observa que ya no necesitas escribir:
+
+```csharp
+new List<int>
+```
+
+La expresión `[]` permite que el compilador construya la colección a partir del tipo esperado.
+
+Importante: los corchetes no representan necesariamente un array. El tipo de colección depende del contexto.&#x20;
+
+
+Microsoft Learn+1
+
+
+
+## 2. ¿Funcionan con diferentes tipos de colecciones?
+
+Sí. Una de las ventajas es que puedes utilizar la misma sintaxis con diferentes tipos.
+
+```csharp
+
+using System.Collections.Generic;
+
+// List
+List<int> numbers = [1, 2, 3];
+
+// Array
+int[] numbersArray = [1, 2, 3];
+
+// Span
+Span<int> numbersSpan = [1, 2, 3];
+
+// ReadOnlySpan
+ReadOnlySpan<int> numbersReadOnlySpan = [1, 2, 3];
+
+// Interface
+IEnumerable<int> numbersEnumerable = [1, 2, 3];
+
+```
+
+Aunque la sintaxis es la misma, cada variable tiene un tipo diferente.
+
+Por ejemplo:
+
+```csharp
+List<int> numbers = [1, 2, 3];
+
+numbers.Add(4);
+```
+
+En cambio:
+
+```csharp
+int[] numbers = [1, 2, 3];
+
+// No existe el método Add() en los arrays.
+```
+
+Esto es importante porque las Collection Expressions no reemplazan los tipos de colecciones. Solamente ofrecen una sintaxis más uniforme para crearlas.
+
+## 3. Collection Expressions con objetos
+
+Este es el ejemplo que estamos trabajando con tu clase `Game`.
+
+Supongamos que tenemos:
+
+```csharp
+public class Game
+{
+    public string Title { get; set; } = string.Empty;
+
+    public GameGenre Genre { get; set; }
+
+    public int ReleaseYear { get; set; }
+
+    public int Level { get; set; }
+
+    public decimal Price { get; set; }
+}
+```
+
+Podemos inicializar la colección de esta forma:
+
+```csharp
+List<Game> games =
+[
+    new()
+    {
+        Title = "The Legend of Zelda",
+        Genre = GameGenre.Adventure,
+        ReleaseYear = 2020,
+        Level = 1,
+        Price = 100m
+    },
+    new()
+    {
+        Title = "Mario Bros",
+        Genre = GameGenre.Adventure,
+        ReleaseYear = 1987,
+        Level = 5,
+        Price = 80m
+    }
+];
+```
+
+Aquí estamos combinando dos características:
+
+| Característica         | Función                                     |
+| ---------------------- | ------------------------------------------- |
+| Collection Expressions | Inicializa la colección mediante `[]`.      |
+| Target-Typed `new`     | Permite crear objetos sin escribir `Game`.  |
+| Object Initializers    | Permiten asignar valores a las propiedades. |
+
+Por ejemplo:
+
+```csharp
+new()
+{
+    Title = "Mario Bros"
+}
+```
+
+Es equivalente a:
+
+```csharp
+new Game()
+{
+    Title = "Mario Bros"
+}
+```
+
+El compilador conoce el tipo esperado a través de `List<Game>`.
+
+## 4. El operador Spread `..`
+
+Esta es una de las características más interesantes de las Collection Expressions.
+
+El operador `..` permite incorporar los elementos de otra colección dentro de una nueva colección.
+
+Imagina que tenemos dos listas:
+
+```csharp
+int[] firstNumbers = [1, 2, 3];
+
+int[] secondNumbers = [4, 5, 6];
+```
+
+Queremos crear una tercera colección con todos los números.
+
+### Forma tradicional
+
+```csharp
+var numbers = new List<int>();
+
+numbers.AddRange(firstNumbers);
+numbers.AddRange(secondNumbers);
+```
+
+### Utilizando Collection Expressions
+
+```csharp
+
+int[] firstNumbers = [1, 2, 3];
+
+int[] secondNumbers = [4, 5, 6];
+
+int[] numbers =
+[
+    ..firstNumbers,
+    ..secondNumbers
+];
+
+```
+
+El resultado es:
+
+```csharp
+[1, 2, 3, 4, 5, 6]
+```
+
+El operador `..` se denomina spread element en este contexto.
+
+Puedes combinar elementos individuales y colecciones:
+
+```csharp
+int[] numbers =
+[
+    0,
+    ..firstNumbers,
+    100
+];
+```
+
+Resultado:
+
+```csharp
+[0, 1, 2, 3, 100]
+```
+
+Esto resulta muy útil cuando necesitas combinar datos de diferentes fuentes.&#x20;
+
+Microsoft Learn+1
+
+
+
+## 5. Collection Expressions para colecciones vacías
+
+También puedes utilizar los corchetes vacíos:
+
+```csharp
+List<Game> games = [];
+```
+
+Esto crea una lista vacía.
+
+Es equivalente a:
+
+```csharp
+List<Game> games = new();
+```
+
+O a:
+
+```csharp
+List<Game> games = new List<Game>();
+```
+
+Sin embargo, hay un detalle importante:
+
+```csharp
+var games = [];
+```
+
+Este código no es válido.
+
+¿Por qué?
+
+Porque `[]` no tiene un tipo concreto por sí mismo. El compilador necesita conocer el tipo de colección que debe construir.
+
+Por eso debes utilizar:
+
+```csharp
+List<Game> games = [];
+```
+
+O:
+
+```csharp
+Game[] games = [];
+```
+
+## 6. Diferencia entre Collection Expressions y Collection Initializers
+
+Esta es una distinción importante para aprender C#.
+
+| Collection Initializer                              | Collection Expression                                   |
+| --------------------------------------------------- | ------------------------------------------------------- |
+| Sintaxis tradicional                                | Sintaxis moderna                                        |
+| Utiliza `{}`                                        | Utiliza `[]`                                            |
+| Generalmente requiere `new` para crear la colección | Utiliza el tipo esperado                                |
+| Disponible desde versiones antiguas de C#           | Introducida en C# 12                                    |
+| Puede utilizar `Add()` para inicializar             | Puede utilizar elementos `..` para expandir colecciones |
+
+Por ejemplo:
+
+```csharp
+// Collection Initializer
+List<int> numbers1 = new()
+{
+    1,
+    2,
+    3
+};
+
+// Collection Expression
+List<int> numbers2 =
+[
+    1,
+    2,
+    3
+];
+```
+
+Ambas son válidas.
+
+## 7. ¿Cuándo recomiendo utilizar Collection Expressions?
+
+Para tu aprendizaje de C# 14 y .NET 10, te recomiendo esta guía:
+
+- Utiliza `[]` cuando quieras inicializar una colección de forma sencilla.
+- Utiliza `..` cuando necesites combinar colecciones.
+- Utiliza `List<T>` cuando necesites agregar o eliminar elementos.
+- Utiliza arrays cuando necesites una colección de tamaño fijo.
+- Utiliza la sintaxis tradicional cuando consideres que resulta más clara para el equipo.
+
+Una recomendación adicional: no confundas Collection Expressions con LINQ.
+
+Por ejemplo:
+
+```csharp
+List<int> numbers = [1, 2, 3, 4, 5];
+
+var evenNumbers = numbers
+    .Where(number => number % 2 == 0)
+    .ToList();
+```
+
+Aquí:
+
+- crea una colección.
+- `Where()` filtra los elementos utilizando LINQ.
+- `ToList()` materializa el resultado en una lista.
+
+Son características diferentes, pero pueden trabajar juntas.
+
+Conclusión: las Collection Expressions son una mejora sintáctica que hace que la inicialización de colecciones sea más sencilla, uniforme y legible. No son un nuevo tipo de colección ni sustituyen a `List<T>`, los arrays o LINQ.
+

@@ -1,0 +1,414 @@
+---
+title: "LINQ parte 2, LINQ con Entity Framework and .net 10"
+date: "2026-09-07"
+description: "LINQ parte 2, LINQ con Entity Framework and .net 10"
+slug: "LINQ-02-csharp"
+category: "Netcore"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+# Siguiente paso: LINQ con Entity Framework Core 10 y PostgreSQL
+
+Ahora vamos a dar un paso importante: utilizar LINQ para consultar directamente nuestra base de datos PostgreSQL desde el proyecto AcSoft.
+
+La diferencia principal respecto al ejercicio anterior es que ahora las consultas no se ejecutarán sobre una lista en memoria, sino que Entity Framework Core intentará traducirlas a instrucciones SQL.
+
+Esto es fundamental para implementar nuestros repositorios siguiendo Clean Architecture y DDD.
+
+## 1. Recordemos la diferencia
+
+Anteriormente teníamos:
+
+```csharp
+List<WorkOrder> workOrders = [...];
+
+var result = workOrders
+    .Where(x => x.Status == "Pending")
+    .ToList();
+```
+
+En este caso, LINQ trabaja sobre una colección que ya está en memoria.
+
+Ahora tendremos:
+
+```csharp
+var result = await _context.WorkOrders
+    .Where(x => x.Status == WorkOrderStatus.Pending)
+    .ToListAsync(cancellationToken);
+```
+
+Aquí Entity Framework Core construye una consulta SQL y la ejecuta en PostgreSQL.
+
+Por ejemplo, conceptualmente se generaría algo parecido a:
+
+```sql
+SELECT *
+FROM "WorkOrders"
+WHERE "Status" = 'Pending';
+```
+
+La consulta exacta depende de la configuración de EF Core y del mapeo de nuestras entidades.
+
+## 2. Conocer IQueryable y IEnumerable
+
+Esta diferencia es muy importante.
+
+| Característica | IEnumerable                       | IQueryable             |
+| -------------- | --------------------------------- | ---------------------- |
+| Propósito      | Recorrer colecciones              | Construir consultas    |
+| Ejecución      | En memoria normalmente            | Proveedor de consultas |
+| LINQ           | Delegados                         | Árboles de expresiones |
+| EF Core        | Puede consultar datos ya cargados | Puede traducir a SQL   |
+
+Ejemplo con `IEnumerable`:
+
+```csharp
+IEnumerable<WorkOrder> orders =
+    await _context.WorkOrders.ToListAsync();
+
+var result = orders
+    .Where(x => x.Status == WorkOrderStatus.Pending);
+```
+
+Primero se cargan todas las órdenes en memoria y después se filtran.
+
+Ejemplo con `IQueryable`:
+
+```csharp
+IQueryable<WorkOrder> orders =
+    _context.WorkOrders;
+
+var result = orders
+    .Where(x => x.Status == WorkOrderStatus.Pending);
+```
+
+Aquí todavía no se ejecuta la consulta. Se construye una expresión que EF Core puede traducir a SQL.
+
+Importante: `IQueryable` no significa que siempre se ejecute en la base de datos. Depende del proveedor que lo implemente.
+
+## 3. Filtrar órdenes de trabajo con Where()
+
+Supongamos que tenemos nuestro `DbContext`:
+
+```csharp
+public class AcSoftDbContext : DbContext
+{
+    public DbSet<WorkOrder> WorkOrders => Set<WorkOrder>();
+
+    public AcSoftDbContext(
+        DbContextOptions<AcSoftDbContext> options)
+        : base(options)
+    {
+    }
+}
+```
+
+Podemos consultar las órdenes pendientes:
+
+```csharp
+var pendingOrders = await _context.WorkOrders
+    .Where(x => x.Status == WorkOrderStatus.Pending)
+    .ToListAsync(cancellationToken);
+```
+
+Observa que utilizamos:
+
+- `Where()`: construye el filtro.
+- `ToListAsync()`: ejecuta la consulta y devuelve una lista.
+- `cancellationToken`: permite cancelar la operación.
+
+Importante: `Where()` no ejecuta la consulta. La ejecución ocurre cuando utilizamos un operador terminal como `ToListAsync()`, `FirstOrDefaultAsync()` o `AnyAsync()`.
+
+## 4. Utilizar Select() para obtener solamente los datos necesarios
+
+Imagina que necesitamos mostrar las órdenes de trabajo en una pantalla de nuestra aplicación.
+
+No necesitamos cargar toda la entidad `WorkOrder`. Solamente necesitamos el identificador, número y estado.
+
+Podemos utilizar `Select()`:
+
+```csharp
+var orders = await _context.WorkOrders
+    .Select(x => new WorkOrderDto(
+        x.Id,
+        x.Number,
+        x.Status))
+    .ToListAsync(cancellationToken);
+```
+
+Esto permite que EF Core seleccione únicamente las columnas necesarias.
+
+Una posible consulta SQL sería:
+
+```sql
+SELECT
+    "Id",
+    "Number",
+    "Status"
+FROM "WorkOrders";
+```
+
+Esto es una buena práctica porque evita recuperar información innecesaria.
+
+## 5. Utilizar AsNoTracking()
+
+Esta característica es especialmente importante cuando trabajamos con consultas de lectura.
+
+Por defecto, EF Core realiza seguimiento (Change Tracking) de las entidades que consulta.
+
+Esto permite detectar modificaciones y posteriormente persistirlas mediante `SaveChangesAsync()`.
+
+Pero cuando solamente necesitamos leer información, podemos utilizar:
+
+```csharp
+var orders = await _context.WorkOrders
+    .AsNoTracking()
+    .Where(x => x.Status == WorkOrderStatus.Pending)
+    .ToListAsync(cancellationToken);
+```
+
+¿Qué ventajas tiene?
+
+- Evita el seguimiento de cambios de las entidades consultadas.
+- Reduce el trabajo del Change Tracker.
+- Puede mejorar el rendimiento de consultas de solo lectura.
+
+Mi recomendación es utilizar `AsNoTracking()` en los métodos de consulta de nuestros repositorios.
+
+No lo utilizaremos indiscriminadamente en operaciones donde necesitamos modificar entidades.
+
+## 6. Buscar una orden específica
+
+Para buscar una orden por su identificador:
+
+```csharp
+var workOrder = await _context.WorkOrders
+    .FirstOrDefaultAsync(
+        x => x.Id == workOrderId,
+        cancellationToken);
+```
+
+Si no encuentra la orden, devuelve `null`.
+
+También podemos utilizar:
+
+```csharp
+var exists = await _context.WorkOrders
+    .AnyAsync(
+        x => x.Id == workOrderId,
+        cancellationToken);
+```
+
+`AnyAsync()` es especialmente útil cuando solamente necesitamos comprobar si existe un registro.
+
+Por ejemplo:
+
+```csharp
+bool exists = await _context.WorkOrders
+    .AnyAsync(
+        x => x.Number == number,
+        cancellationToken);
+```
+
+Es preferible a cargar una entidad completa cuando solamente necesitamos verificar su existencia.
+
+## 7. Implementar paginación con Skip() y Take()
+
+Imagina que nuestra aplicación HVAC tiene miles de órdenes de trabajo.
+
+No sería conveniente devolverlas todas en una sola consulta.
+
+Podemos implementar paginación:
+
+```csharp
+int pageNumber = 1;
+int pageSize = 10;
+
+var orders = await _context.WorkOrders
+    .AsNoTracking()
+    .OrderBy(x => x.Number)
+    .Skip((pageNumber - 1) * pageSize)
+    .Take(pageSize)
+    .ToListAsync(cancellationToken);
+```
+
+¿Qué hacen estos métodos?
+
+| Método      | Función                          |
+| ----------- | -------------------------------- |
+| `OrderBy()` | Ordena los resultados            |
+| `Skip()`    | Omite una cantidad de registros  |
+| `Take()`    | Obtiene una cantidad determinada |
+
+Por ejemplo:
+
+- Página 1: registros del 1 al 10.
+- Página 2: registros del 11 al 20.
+- Página 3: registros del 21 al 30.
+
+Es importante ordenar antes de utilizar `Skip()` y `Take()`. Para paginación más robusta, especialmente con muchos registros, también podemos estudiar paginación por cursor (Keyset Pagination).
+
+## 8. Aplicarlo a nuestro WorkOrderRepository
+
+Ahora vamos a llevar lo aprendido a la arquitectura de AcSoft.
+
+Recordemos nuestra estructura:
+
+```text
+AcSoft
+│
+├── AcSoft.Domain
+│   └── Entities
+│       └── WorkOrder.cs
+│
+├── AcSoft.Application
+│   └── Abstractions
+│       └── Persistence
+│           └── IWorkOrderRepository.cs
+│
+└── AcSoft.Infrastructure
+    └── Persistence
+        └── Repositories
+            └── WorkOrderRepository.cs
+```
+
+Primero: Application
+
+Definimos el contrato del repositorio:
+
+```csharp
+public interface IWorkOrderRepository
+{
+    Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<WorkOrder>> GetPendingAsync(
+        CancellationToken cancellationToken);
+
+    Task<bool> ExistsAsync(
+        string number,
+        CancellationToken cancellationToken);
+}
+```
+
+Segundo: Infrastructure
+
+Implementamos el contrato utilizando Entity Framework Core:
+
+```csharp
+public sealed class WorkOrderRepository
+    : IWorkOrderRepository
+{
+    private readonly AcSoftDbContext _context;
+
+    public WorkOrderRepository(AcSoftDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        return await _context.WorkOrders
+            .FirstOrDefaultAsync(
+                x => x.Id == id,
+                cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<WorkOrder>> GetPendingAsync(
+        CancellationToken cancellationToken)
+    {
+        return await _context.WorkOrders
+            .AsNoTracking()
+            .Where(x => x.Status == WorkOrderStatus.Pending)
+            .OrderBy(x => x.Number)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<bool> ExistsAsync(
+        string number,
+        CancellationToken cancellationToken)
+    {
+        return await _context.WorkOrders
+            .AnyAsync(
+                x => x.Number == number,
+                cancellationToken);
+    }
+}
+```
+
+Observa algo importante:
+
+- `GetByIdAsync()` no utiliza `AsNoTracking()` porque podríamos necesitar modificar la entidad posteriormente.
+- `GetPendingAsync()` utiliza `AsNoTracking()` porque solamente necesitamos consultar.
+- `ExistsAsync()` utiliza `AnyAsync()` porque solamente necesitamos saber si existe.
+
+Esta es una separación apropiada: Application conoce la interfaz, mientras Infrastructure conoce Entity Framework Core y PostgreSQL.
+
+## 9. Otros operadores LINQ que aprenderemos
+
+Estos son los siguientes métodos que vale la pena dominar:
+
+| Método          | Aplicación en AcSoft                                  |
+| --------------- | ----------------------------------------------------- |
+| `Include()`     | Cargar asignaciones de una orden                      |
+| `ThenInclude()` | Cargar relaciones de segundo nivel                    |
+| `GroupBy()`     | Agrupar órdenes por estado                            |
+| `Distinct()`    | Obtener valores sin duplicados                        |
+| `Sum()`         | Calcular tiempos acumulados                           |
+| `SelectMany()`  | Obtener actividades de varias órdenes                 |
+| `Contains()`    | Buscar órdenes dentro de una lista de identificadores |
+
+Por ejemplo, para cargar una orden junto con sus asignaciones:
+
+```
+var workOrder = await _context.WorkOrders
+    .Include(x => x.Assignments)
+    .FirstOrDefaultAsync(
+        x => x.Id == workOrderId,
+        cancellationToken);
+```
+
+Esto lo estudiaremos con más profundidad cuando abordemos las relaciones entre entidades y la carga de datos en EF Core.
+
+## 10. Ejercicio práctico
+
+Pregunta: ¿Cuál es la diferencia entre estos dos ejemplos?
+
+Opción A
+
+```
+var orders = await _context.WorkOrders
+    .ToListAsync();
+
+var pending = orders
+    .Where(x => x.Status == WorkOrderStatus.Pending);
+```
+
+Opción B
+
+```
+var pending = await _context.WorkOrders
+    .Where(x => x.Status == WorkOrderStatus.Pending)
+    .ToListAsync();
+```
+
+A. Ambas ejecutan el filtro en PostgreSQL.
+
+B. La opción A carga todas las órdenes y filtra en memoria; la B filtra en PostgreSQL.
+
+C. La opción B carga todas las órdenes y después filtra en memoria.
+
+D. No existe ninguna diferencia.
+
+Comprobar respuesta
+
+
+
+Mi propuesta para el siguiente tema: estudiar `Include()`, `ThenInclude()`, relaciones entre entidades y carga de datos (Eager Loading, Lazy Loading y Explicit Loading).
+
+Es un tema especialmente importante para nuestro proyecto AcSoft, porque una orden de trabajo está relacionada con técnicos, asignaciones, actividades, preguntas y respuestas.
