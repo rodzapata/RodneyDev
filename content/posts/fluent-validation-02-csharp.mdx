@@ -1,0 +1,1534 @@
+---
+title: "Fluent Validation parte 2 Tu primer validator"
+date: "2026-11-04"
+description: "Fluent Validation parte 2 Tu primer validator"
+slug: "fluent-validation-02-csharp"
+category: "Netcore"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+Excelente. Ahora comenzaremos con la primera lección donde realmente empezaremos a escribir código. A partir de aquí quiero que pienses como un **arquitecto**, no como alguien que simplemente aprende una librería.
+
+---
+
+# Curso FluentValidation Profesional .NET 10 (2026)
+
+# Lección 2 - Tu primer Validator
+
+## Objetivo de la lección
+
+Al finalizar esta lección sabrás:
+
+- Cómo crear un Validator.
+- Cómo funciona `AbstractValidator<T>`.
+- Cómo funciona `RuleFor()`.
+- Cómo FluentValidation construye un árbol de reglas.
+- Cuándo se ejecutan las validaciones.
+- Cómo escribir reglas limpias.
+
+---
+
+# Antes de escribir código...
+
+Supongamos este endpoint.
+
+```http
+POST /api/personas
+```
+
+Llega el siguiente JSON:
+
+```json
+{
+    "nombre": "Rodney",
+    "primerApellido": "Zapata",
+    "email": "rodney@gmail.com",
+    "edad": 50
+}
+```
+
+Lo primero que hará la aplicación **NO** será guardar en SQL Server.
+
+Primero debe validar.
+
+El flujo es:
+
+```text
+HTTP Request
+      │
+      ▼
+Model Binding
+      │
+      ▼
+CrearPersonaNaturalCommand
+      │
+      ▼
+CrearPersonaNaturalValidator
+      │
+ ¿Todo correcto?
+   │        │
+  No       Sí
+   │        │
+400      Handler
+```
+
+Observa que el Handler todavía ni siquiera ha comenzado.
+
+---
+
+# Nuestro primer Command
+
+En Clean Architecture normalmente validamos **Commands** o **Queries**, no las entidades.
+
+```csharp
+namespace TribuSoft.Application.Personas.Commands.CrearPersonaNatural;
+
+public sealed record CrearPersonaNaturalCommand
+{
+    public string Nombre { get; init; } = string.Empty;
+
+    public string PrimerApellido { get; init; } = string.Empty;
+
+    public string Email { get; init; } = string.Empty;
+
+    public int Edad { get; init; }
+}
+```
+
+¿Por qué un `record`?
+
+Porque un Command representa una **intención**, no una entidad persistente.
+
+Es inmutable, más ligero y expresa mejor el propósito del objeto.
+
+---
+
+# Creamos nuestro Validator
+
+```csharp
+using FluentValidation;
+
+namespace TribuSoft.Application.Personas.Commands.CrearPersonaNatural;
+
+public sealed class CrearPersonaNaturalValidator
+    : AbstractValidator<CrearPersonaNaturalCommand>
+{
+    public CrearPersonaNaturalValidator()
+    {
+
+    }
+}
+```
+
+La primera pregunta importante es:
+
+## ¿Qué es `AbstractValidator<T>`?
+
+Muchos creen que es una clase donde se escriben reglas.
+
+En realidad es mucho más que eso.
+
+Internamente mantiene una colección de reglas.
+
+Podemos imaginarlo así (simplificado):
+
+```text
+AbstractValidator
+│
+├── Regla 1
+├── Regla 2
+├── Regla 3
+├── Regla 4
+└── Regla N
+```
+
+Cada llamada a `RuleFor()` agrega una nueva regla a esa colección.
+
+Cuando llamas a:
+
+```csharp
+Validate(...)
+```
+
+FluentValidation recorre todas las reglas y devuelve un resultado.
+
+---
+
+# Nuestra primera regla
+
+```csharp
+RuleFor(x => x.Nombre)
+    .NotEmpty();
+```
+
+Parece una línea muy sencilla.
+
+Pero realmente está ocurriendo esto:
+
+```text
+Validator
+
+↓
+
+Nueva regla
+
+↓
+
+Propiedad = Nombre
+
+↓
+
+Validador = NotEmpty
+```
+
+Internamente FluentValidation guarda esa configuración.
+
+Todavía **no está validando nada**.
+
+Este es uno de los conceptos más importantes del curso.
+
+## El constructor NO valida.
+
+El constructor solamente **configura** las reglas.
+
+---
+
+# ¿Cuándo ocurre la validación?
+
+Cuando alguien hace esto:
+
+```csharp
+var validator = new CrearPersonaNaturalValidator();
+
+var resultado = validator.Validate(command);
+```
+
+En ese momento FluentValidation dice:
+
+```text
+Tengo 4 reglas.
+
+Voy una por una.
+
+¿Nombre?
+
+✔
+
+¿Apellido?
+
+✔
+
+¿Email?
+
+❌
+
+¿Edad?
+
+✔
+```
+
+Finalmente construye un `ValidationResult`.
+
+---
+
+# ¿Qué devuelve?
+
+```csharp
+ValidationResult
+```
+
+Que contiene:
+
+```text
+ValidationResult
+│
+├── IsValid
+│
+└── Errors
+```
+
+Ejemplo:
+
+```text
+IsValid = false
+```
+
+Errores:
+
+```text
+Nombre
+
+↓
+
+El nombre es obligatorio.
+```
+
+```text
+Email
+
+↓
+
+Correo inválido.
+```
+
+Observa que **no lanza una excepción** por defecto.
+
+Eso también es importante.
+
+---
+
+# RuleFor()
+
+Ahora viene uno de los conceptos más importantes de FluentValidation.
+
+Todo comienza con:
+
+```csharp
+RuleFor(...)
+```
+
+Su trabajo es indicar:
+
+> **¿Qué propiedad vamos a validar?**
+
+Ejemplo:
+
+```csharp
+RuleFor(x => x.Nombre)
+```
+
+Le estamos diciendo:
+
+```text
+La siguiente regla pertenece a:
+
+↓
+
+Nombre
+```
+
+---
+
+Otro ejemplo:
+
+```csharp
+RuleFor(x => x.Email)
+```
+
+Ahora la regla pertenece al Email.
+
+---
+
+Otro:
+
+```csharp
+RuleFor(x => x.Edad)
+```
+
+Ahora pertenece a Edad.
+
+---
+
+# ¿Qué recibe RuleFor?
+
+Recibe una expresión Lambda.
+
+```csharp
+x => x.Nombre
+```
+
+No recibe un string.
+
+NO hacemos esto:
+
+```csharp
+RuleFor("Nombre")
+```
+
+¿Por qué?
+
+Porque la lambda ofrece ventajas muy importantes:
+
+- Seguridad de tipos (*type-safe*).
+- Refactorización automática desde Visual Studio.
+- IntelliSense.
+- Detección de errores en compilación.
+- Mejor rendimiento al evitar búsquedas por nombre.
+
+---
+
+# Nuestra segunda regla
+
+```csharp
+RuleFor(x => x.PrimerApellido)
+    .NotEmpty();
+```
+
+Ya tenemos dos reglas.
+
+Internamente el Validator ahora luce así:
+
+```text
+Validator
+
+├── Nombre → NotEmpty
+
+└── PrimerApellido → NotEmpty
+```
+
+---
+
+# Tercera regla
+
+```csharp
+RuleFor(x => x.Email)
+    .NotEmpty()
+    .EmailAddress();
+```
+
+Aquí aparece el patrón **Fluent Interface**.
+
+Cada método devuelve el mismo objeto para poder seguir encadenando reglas.
+
+Visualmente:
+
+```text
+RuleFor()
+
+↓
+
+NotEmpty()
+
+↓
+
+EmailAddress()
+
+↓
+
+WithMessage()
+
+↓
+
+When()
+
+↓
+
+Cascade()
+
+↓
+
+...
+```
+
+---
+
+# Cuarta regla
+
+```csharp
+RuleFor(x => x.Edad)
+    .GreaterThan(0);
+```
+
+Ahora el Validator tiene cuatro reglas.
+
+```text
+Nombre
+
+↓
+
+NotEmpty()
+
+──────────────────
+
+Apellido
+
+↓
+
+NotEmpty()
+
+──────────────────
+
+Email
+
+↓
+
+NotEmpty()
+
+↓
+
+EmailAddress()
+
+──────────────────
+
+Edad
+
+↓
+
+GreaterThan(0)
+```
+
+---
+
+# ¿Qué pasa con un JSON inválido?
+
+Supongamos que llega:
+
+```json
+{
+    "nombre": "",
+    "primerApellido": "",
+    "email": "abc",
+    "edad": -10
+}
+```
+
+El resultado será conceptualmente:
+
+```text
+ValidationResult
+
+IsValid = false
+
+Errores
+
+Nombre
+
+↓
+
+'Nombre' must not be empty.
+
+──────────────────
+
+PrimerApellido
+
+↓
+
+'Primer Apellido' must not be empty.
+
+──────────────────
+
+Email
+
+↓
+
+'Email' is not a valid email.
+
+──────────────────
+
+Edad
+
+↓
+
+'Edad' must be greater than '0'.
+```
+
+---
+
+# ¿Por qué no escribir un solo `if`?
+
+Muchos desarrolladores preguntan:
+
+> "¿No sería más fácil hacer varios `if`?"
+
+Para un ejemplo pequeño, sí.
+
+Pero imagina una factura electrónica con:
+
+- 35 campos.
+- 12 listas.
+- Validaciones condicionales.
+- Consultas a base de datos.
+- Reglas reutilizables.
+
+Un bloque de `if` crecería rápidamente y sería difícil de mantener.
+
+Con FluentValidation, cada regla es una unidad independiente, fácil de leer, probar y extender.
+
+---
+
+# Buenas prácticas desde hoy
+
+### ✅ Un Validator por cada Command
+
+```text
+CrearPersonaNaturalCommand
+        │
+        ▼
+CrearPersonaNaturalValidator
+```
+
+No reutilices un mismo Validator para crear, actualizar y eliminar.
+
+Cada caso de uso tiene requisitos distintos.
+
+---
+
+### ✅ El Validator solo valida
+
+No hagas esto:
+
+```csharp
+public CrearPersonaNaturalValidator(IPersonaRepository repository)
+{
+    repository.Insertar(...);
+}
+```
+
+Un Validator **nunca** debe modificar datos.
+
+Solo valida.
+
+---
+
+### ✅ Sin lógica de negocio
+
+Incorrecto:
+
+```csharp
+RuleFor(x => x)
+    .Must(cliente => cliente.PuedeFacturar());
+```
+
+La decisión de si un cliente puede facturar pertenece al **Dominio**, no al Validator.
+
+---
+
+# Resumen de la lección
+
+Hoy aprendiste conceptos fundamentales que usarás durante todo el curso:
+
+- `AbstractValidator<T>` es el contenedor donde se registran las reglas.
+- `RuleFor()` selecciona la propiedad que se va a validar.
+- Las reglas se configuran en el constructor, pero **no se ejecutan allí**.
+- La validación ocurre cuando se llama a `Validate()` o `ValidateAsync()`.
+- Un `ValidationResult` contiene el estado de la validación y la colección de errores.
+- Los validadores pertenecen a la capa **Application**, porque validan la entrada de los casos de uso.
+
+---
+
+## Ejercicio para TribuSoft
+
+Antes de pasar a la siguiente lección, te propongo un ejercicio.
+
+Crea esta estructura en tu proyecto:
+
+```text
+TribuSoft.Application
+│
+└── Personas
+    └── Commands
+        └── CrearPersonaNatural
+            ├── CrearPersonaNaturalCommand.cs
+            └── CrearPersonaNaturalValidator.cs
+```
+
+Dentro del `CrearPersonaNaturalValidator`, implementa estas cuatro reglas:
+
+```csharp
+RuleFor(x => x.Nombre)
+    .NotEmpty();
+
+RuleFor(x => x.PrimerApellido)
+    .NotEmpty();
+
+RuleFor(x => x.Email)
+    .NotEmpty()
+    .EmailAddress();
+
+RuleFor(x => x.Edad)
+    .GreaterThan(0);
+```
+
+No te preocupes todavía por los mensajes personalizados o reglas avanzadas. En la siguiente lección aprenderemos a usar `WithMessage()`, `Cascade(CascadeMode.Stop)`, `MinimumLength()`, `MaximumLength()` y otras técnicas para convertir este validador básico en uno con calidad de producción.
+
+
+> Antes de continuar una pregunta yo tengo una validaciones parecidas en la capa de persistencia detro de Configurations, no estaré duplicando 
+
+codigo, mi codigo es :
+
+
+```csharp
+using TribuSoft.Domain.Entities;
+
+namespace TribuSoft.Infrastructure.Persistence.Configurations;
+
+internal sealed class PersonaNaturalConfiguration : IEntityTypeConfiguration<PersonaNatural>
+{
+    public void Configure(EntityTypeBuilder<PersonaNatural> builder)
+    {
+        builder.Property(p => p.PrimerNombre)
+            .HasColumnName("primer_nombre")
+            .HasMaxLength(60);
+
+        builder.Property(p => p.OtrosNombres)
+            .HasColumnName("otros_nombres")
+            .HasMaxLength(120);
+
+        builder.Property(p => p.PrimerApellido)
+            .HasColumnName("primer_apellido")
+            .HasMaxLength(60);
+
+        builder.Property(p => p.SegundoApellido)
+            .HasColumnName("segundo_apellido")
+            .HasMaxLength(60);
+    }
+}
+
+```
+
+Excelente pregunta. De hecho, **esta es una de las dudas que distingue a un desarrollador intermedio de un arquitecto de software**.
+
+La respuesta corta es:
+
+> **No, no estás duplicando código si cada validación tiene una responsabilidad diferente.**
+
+Lo importante es entender que **no todas las validaciones son iguales**. Vamos a analizarlo desde la arquitectura.
+
+---
+
+# Las tres capas validan cosas distintas
+
+En una aplicación con Clean Architecture existen **tres niveles de validación**.
+
+```text
+                Usuario
+                   │
+                   ▼
+        ① Application (FluentValidation)
+                   │
+                   ▼
+         ② Domain (Reglas del negocio)
+                   │
+                   ▼
+       ③ Infrastructure (EF Core)
+                   │
+                   ▼
+              SQL Server
+```
+
+Cada una tiene una responsabilidad distinta.
+
+---
+
+# ① FluentValidation (Application)
+
+Su responsabilidad es validar la **entrada del caso de uso**.
+
+Ejemplo:
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .NotEmpty()
+    .MaximumLength(60);
+```
+
+Pregunta que responde:
+
+> ¿El usuario envió un nombre válido?
+
+---
+
+# ② Domain
+
+Aquí viven las reglas del negocio.
+
+Ejemplo:
+
+```text
+Una Persona Jurídica debe tener NIT.
+
+Una Persona Natural debe tener Cédula.
+
+Un cliente bloqueado no puede facturar.
+
+Una factura cerrada no puede modificarse.
+```
+
+Estas reglas no tienen nada que ver con EF Core.
+
+---
+
+# ③ EF Core Configuration
+
+Tu código:
+
+```csharp
+builder.Property(p => p.PrimerNombre)
+    .HasColumnName("primer_nombre")
+    .HasMaxLength(60);
+```
+
+**No está validando al usuario.**
+
+Está diciéndole a EF Core cómo crear el modelo de la base de datos.
+
+La pregunta que responde es:
+
+> ¿Cómo se almacena esta propiedad en SQL Server?
+
+No:
+
+> ¿Es válido lo que escribió el usuario?
+
+Son cosas completamente diferentes.
+
+---
+
+# Veámoslo con tu ejemplo
+
+Tu configuración:
+
+```csharp
+builder.Property(p => p.PrimerNombre)
+    .HasMaxLength(60);
+```
+
+¿Qué significa realmente?
+
+Significa:
+
+```text
+SQL Server
+
+nvarchar(60)
+```
+
+No está diciendo:
+
+> "El usuario escribió más de 60 caracteres."
+
+Está diciendo:
+
+> "La columna solo admite 60 caracteres."
+
+---
+
+**Entonces...**
+
+Supongamos que alguien envía:
+
+```json
+{
+    "primerNombre": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+}
+```
+
+70 caracteres.
+
+¿Qué pasa si NO existe FluentValidation?
+
+La aplicación hará esto:
+
+```text
+HTTP
+
+↓
+
+Handler
+
+↓
+
+Repository
+
+↓
+
+SQL Server
+
+↓
+
+ERROR
+```
+
+SQL Server lanzará una excepción.
+
+Algo parecido a:
+
+```text
+String or binary data would be truncated.
+```
+
+El usuario recibirá un error 500 si no lo manejas correctamente.
+
+---
+
+Con FluentValidation sucede esto:
+
+```text
+HTTP
+
+↓
+
+Validator
+
+↓
+
+Longitud mayor de 60
+
+↓
+
+400 Bad Request
+```
+
+Nunca llega a SQL Server.
+
+Ese es el objetivo.
+
+---
+
+**Entonces...**
+
+¿Estoy duplicando el número 60?
+
+Sí.
+
+Pero **no la responsabilidad**.
+
+Y aquí está la diferencia.
+
+---
+
+# Un ejemplo del mundo real
+
+Imagina un edificio.
+
+La puerta tiene un aviso:
+
+```text
+Máximo 20 personas.
+```
+
+Eso sería FluentValidation.
+
+El arquitecto diseñó el piso para soportar:
+
+```text
+20 personas.
+```
+
+Eso sería SQL Server.
+
+Los dos dicen "20".
+
+¿Es duplicación?
+
+No.
+
+Uno informa al usuario.
+
+El otro protege la estructura.
+
+---
+
+# ¿Y si elimino HasMaxLength()?
+
+EF Core generará:
+
+```text
+nvarchar(max)
+```
+
+Entonces la base aceptará textos enormes.
+
+Aunque FluentValidation exista.
+
+No queremos eso.
+
+---
+
+# ¿Y si elimino FluentValidation?
+
+SQL Server seguirá protegido.
+
+Pero el usuario recibirá errores muy malos.
+
+---
+
+# Ambos son necesarios
+
+```text
+FluentValidation
+
+↓
+
+Experiencia del usuario
+```
+
+```text
+EF Core Configuration
+
+↓
+
+Protección del modelo de datos
+```
+
+---
+
+# Una comparación
+
+## FluentValidation
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .MaximumLength(60);
+```
+
+Pregunta:
+
+```text
+¿Lo que escribió el usuario es válido?
+```
+
+---
+
+## EF Core
+
+```csharp
+builder.Property(x => x.PrimerNombre)
+    .HasMaxLength(60);
+```
+
+Pregunta:
+
+```text
+¿Cómo se almacena esta propiedad?
+```
+
+---
+
+# ¿No sería mejor tener el número 60 en un solo lugar?
+
+¡Excelente observación!
+
+Y aquí entramos en un tema de arquitectura avanzada.
+
+Muchos equipos grandes evitan escribir:
+
+```csharp
+.MaximumLength(60)
+
+.HasMaxLength(60)
+```
+
+porque ese **60** aparece repetido.
+
+En su lugar crean una clase de constantes.
+
+Por ejemplo:
+
+```csharp
+public static class PersonaNaturalRules
+{
+    public const int PrimerNombreMaxLength = 60;
+    public const int OtrosNombresMaxLength = 120;
+    public const int PrimerApellidoMaxLength = 60;
+    public const int SegundoApellidoMaxLength = 60;
+}
+```
+
+Luego ambos usan la misma constante.
+
+### FluentValidation
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .MaximumLength(PersonaNaturalRules.PrimerNombreMaxLength);
+```
+
+### EF Core
+
+```csharp
+builder.Property(x => x.PrimerNombre)
+    .HasMaxLength(PersonaNaturalRules.PrimerNombreMaxLength);
+```
+
+Ahora el **60** existe en un solo lugar.
+
+---
+
+# ¿Dónde colocar esas constantes?
+
+Aquí es donde muchos proyectos difieren. En mi experiencia, para un proyecto como **TribuSoft** recomiendo que estas constantes formen parte del **Domain**, porque representan una restricción del modelo de negocio y no una decisión exclusiva de EF Core o de FluentValidation.
+
+Por ejemplo:
+
+```text
+TribuSoft.Domain
+│
+├── Entities
+├── ValueObjects
+├── Constants
+│   └── PersonaNaturalConstants.cs
+├── Exceptions
+└── Common
+```
+
+```csharp
+public static class PersonaNaturalConstants
+{
+    public const int PrimerNombreMaxLength = 60;
+    public const int OtrosNombresMaxLength = 120;
+    public const int PrimerApellidoMaxLength = 60;
+    public const int SegundoApellidoMaxLength = 60;
+}
+```
+
+Así:
+
+- **Application** puede usar esas constantes en FluentValidation.
+- **Infrastructure** puede usarlas en `HasMaxLength`.
+- Si mañana cambias `60` por `80`, lo haces en un único sitio.
+
+## Mi recomendación para TribuSoft
+
+Te recomiendo mantener **ambas validaciones**:
+
+- **FluentValidation** para validar la entrada y ofrecer mensajes claros al usuario.
+- **EF Core Configuration** para definir el esquema de la base de datos y garantizar que el modelo persistente tenga las restricciones correctas.
+
+Lo que **sí** conviene evitar es repetir los valores mágicos (`60`, `120`, etc.). Centralizarlos en una clase de constantes del dominio hará que tu código sea más consistente y fácil de mantener.
+
+Esta es, de hecho, una práctica muy utilizada en proyectos empresariales modernos con **.NET 10**, **DDD** y **Clean Architecture**.
+
+
+> Otra duda en mi capa Domain mi entidad tambien tiene un codigo parecido es correcto dejarlo asi, mi codigo es :
+
+```csharp
+using TribuSoft.Domain.ValueObjects;
+
+namespace TribuSoft.Domain.Entities;
+
+
+public sealed class PersonaNatural: Tercero
+{
+    public string PrimerNombre { get; private set; }
+    public string? OtrosNombres { get; private set; }
+    public string PrimerApellido { get; private set; }
+    public string? SegundoApellido { get; private set; }
+
+
+    [Obsolete("Usar solo para EF Core", error: false)]
+    private PersonaNatural() : base(){
+
+    }
+
+    public PersonaNatural(
+    string numeroDocumento,
+    string direccion,
+    string codigoMunicipio,
+    string primerNombre,
+    string primerApellido,
+    string? otrosNombres = null,
+    string? segundoApellido = null)
+        : base(TipoDocumento.CedulaCiudadania, numeroDocumento, direccion, codigoMunicipio)
+    {
+        ModificarNombres(primerNombre, otrosNombres, primerApellido, segundoApellido);
+    }
+
+    public void ModificarNombres(string primerNombre, string? otrosNombres, string primerApellido, string? segundoApellido)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(primerNombre);
+        ArgumentException.ThrowIfNullOrWhiteSpace(primerApellido);
+
+        PrimerNombre = primerNombre;
+        OtrosNombres = otrosNombres;
+        PrimerApellido = primerApellido;
+        SegundoApellido = segundoApellido;
+    }
+}
+```
+
+Otra excelente pregunta. Y aquí entramos en uno de los temas que más confusión genera cuando se aprende **DDD + Clean Architecture + FluentValidation**.
+
+La respuesta corta es:
+
+> **Sí, es correcto que tu entidad tenga validaciones, pero no deberían ser las mismas que las de FluentValidation.**
+
+Lo que debes evitar es que **las tres capas hagan exactamente lo mismo**. Veamos cómo se reparten las responsabilidades.
+
+---
+
+# Las tres validaciones NO son iguales
+
+En TribuSoft tendrás algo como esto:
+
+```text
+                   Usuario
+                      │
+                      ▼
+        FluentValidation (Application)
+                      │
+        ¿La petición es válida?
+                      │
+                      ▼
+         Entidad (Domain)
+                      │
+    ¿El objeto sigue siendo válido?
+                      │
+                      ▼
+       EF Core Configuration
+                      │
+ ¿Cómo se almacena en la base de datos?
+                      │
+                      ▼
+                SQL Server
+```
+
+Observa que cada una responde una pregunta diferente.
+
+---
+
+# Analicemos tu código
+
+Este método:
+
+```csharp
+public void ModificarNombres(
+    string primerNombre,
+    string? otrosNombres,
+    string primerApellido,
+    string? segundoApellido)
+{
+    ArgumentException.ThrowIfNullOrWhiteSpace(primerNombre);
+    ArgumentException.ThrowIfNullOrWhiteSpace(primerApellido);
+
+    PrimerNombre = primerNombre;
+    OtrosNombres = otrosNombres;
+    PrimerApellido = primerApellido;
+    SegundoApellido = segundoApellido;
+}
+```
+
+Muchos dirían:
+
+> "Eso ya lo valida FluentValidation."
+
+Y mi respuesta es:
+
+**No exactamente.**
+
+---
+
+# ¿Qué está protegiendo este método?
+
+Está protegiendo la **invariante** de la entidad.
+
+Una `PersonaNatural` nunca debería existir con:
+
+```text
+PrimerNombre = ""
+```
+
+Aunque alguien la cree desde:
+
+- una API
+- un Worker
+- una aplicación de consola
+- una prueba unitaria
+- otro microservicio
+
+La entidad debe protegerse sola.
+
+Eso es DDD.
+
+---
+
+# Imagina que mañana desaparece la API
+
+Supongamos que escribes un proceso de importación.
+
+```text
+Archivo CSV
+
+↓
+
+Importador
+
+↓
+
+PersonaNatural(...)
+```
+
+Ese proceso **no pasa por FluentValidation**.
+
+Entonces...
+
+¿Quién protege la entidad?
+
+La propia entidad.
+
+Por eso las entidades **no pueden confiar** en que alguien ya validó antes.
+
+---
+
+**Entonces...**
+
+Esto:
+
+```csharp
+ArgumentException.ThrowIfNullOrWhiteSpace(primerNombre);
+```
+
+Me parece correcto.
+
+Porque protege una regla fundamental:
+
+> Una Persona Natural debe tener nombre.
+
+Eso es una **invariante del dominio**.
+
+---
+
+# Pero...
+
+Aquí veo algo que mejoraría.
+
+Actualmente haces:
+
+```csharp
+ArgumentException.ThrowIfNullOrWhiteSpace(primerNombre);
+```
+
+Desde la perspectiva de DDD moderno, yo evitaría lanzar `ArgumentException` directamente.
+
+Preferiría una excepción del dominio.
+
+Por ejemplo:
+
+```csharp
+throw new DomainException(
+    "El primer nombre es obligatorio.");
+```
+
+O mejor aún:
+
+```csharp
+DomainValidationException.ThrowIfNullOrWhiteSpace(
+    primerNombre,
+    "El primer nombre es obligatorio.");
+```
+
+¿Por qué?
+
+Porque `ArgumentException` es una excepción genérica del framework.
+
+Mientras que una `DomainException` comunica claramente:
+
+> "Se intentó violar una regla del dominio."
+
+---
+
+# ¿Y qué pasa con la longitud?
+
+Aquí viene la parte interesante.
+
+Supongamos que tienes:
+
+```csharp
+builder.Property(x => x.PrimerNombre)
+    .HasMaxLength(60);
+```
+
+y
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .MaximumLength(60);
+```
+
+¿También deberías hacer esto?
+
+```csharp
+if (primerNombre.Length > 60)
+```
+
+La respuesta es:
+
+**Depende.**
+
+---
+
+# Mi criterio como arquitecto
+
+## Regla técnica
+
+```text
+Máximo 60 caracteres
+```
+
+No siempre es una regla del dominio.
+
+Puede existir únicamente porque SQL Server usa:
+
+```sql
+nvarchar(60)
+```
+
+En ese caso...
+
+No la pondría en la entidad.
+
+---
+
+## Regla del negocio
+
+Si el negocio dice:
+
+> El primer nombre nunca puede superar 60 caracteres.
+
+Entonces sí.
+
+La entidad debería protegerlo.
+
+---
+
+# ¿Cómo saberlo?
+
+Hazte esta pregunta:
+
+> Si mañana cambiamos SQL Server por MongoDB...
+
+¿La regla sigue existiendo?
+
+Si la respuesta es **sí**...
+
+Es dominio.
+
+Si la respuesta es **no**...
+
+Es infraestructura.
+
+---
+
+# Otro ejemplo
+
+```text
+Correo obligatorio
+```
+
+Eso normalmente es Application.
+
+---
+
+```text
+Correo con formato válido
+```
+
+También Application.
+
+---
+
+```text
+Cliente bloqueado no puede facturar
+```
+
+Dominio.
+
+---
+
+```text
+Una Persona Jurídica siempre debe tener NIT
+```
+
+Dominio.
+
+---
+
+```text
+nvarchar(60)
+```
+
+Infraestructura.
+
+---
+
+# Entonces, ¿cómo quedaría TribuSoft?
+
+## Application
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .NotEmpty()
+    .MaximumLength(60);
+```
+
+Valida la petición antes de ejecutar el caso de uso.
+
+---
+
+## Domain
+
+```csharp
+if (string.IsNullOrWhiteSpace(primerNombre))
+{
+    throw new DomainException(
+        "Toda Persona Natural debe tener un primer nombre.");
+}
+```
+
+Protege la invariante del dominio.
+
+---
+
+## Infrastructure
+
+```csharp
+builder.Property(x => x.PrimerNombre)
+       .HasMaxLength(60);
+```
+
+Define el esquema de la base de datos.
+
+---
+
+# Una mejora que te propondría
+
+En lugar de:
+
+```csharp
+ArgumentException.ThrowIfNullOrWhiteSpace(primerNombre);
+ArgumentException.ThrowIfNullOrWhiteSpace(primerApellido);
+```
+
+Yo escribiría algo como:
+
+```csharp
+public void ModificarNombres(
+    string primerNombre,
+    string? otrosNombres,
+    string primerApellido,
+    string? segundoApellido)
+{
+    if (string.IsNullOrWhiteSpace(primerNombre))
+        throw new DomainException("El primer nombre es obligatorio.");
+
+    if (string.IsNullOrWhiteSpace(primerApellido))
+        throw new DomainException("El primer apellido es obligatorio.");
+
+    PrimerNombre = primerNombre.Trim();
+    OtrosNombres = otrosNombres?.Trim();
+    PrimerApellido = primerApellido.Trim();
+    SegundoApellido = segundoApellido?.Trim();
+}
+```
+
+Fíjate en otro detalle: también hago `Trim()`. Esto ayuda a mantener la entidad en un estado consistente. Si alguien pasa `"  Rodney  "`, la entidad almacena `"Rodney"`.
+
+# Mi recomendación para TribuSoft
+
+Después de revisar el código que me has mostrado en varias conversaciones, haría esta distribución de responsabilidades:
+
+| Capa | Responsabilidad | Ejemplo |
+|------|-----------------|----------|
+| **Application (FluentValidation)** | Validar la entrada del caso de uso y devolver errores amigables al cliente. | `NotEmpty()`, `EmailAddress()`, `MaximumLength(60)` |
+| **Domain** | Proteger las invariantes del modelo y las reglas de negocio. | No permitir una `PersonaNatural` sin nombre o una `PersonaJuridica` sin NIT. |
+| **Infrastructure (EF Core)** | Configurar el mapeo y las restricciones de persistencia. | `HasMaxLength(60)`, `HasColumnName()`, `HasPrecision()` |
+
+Esta separación evita duplicar responsabilidades y mantiene cada capa enfocada en su propósito.
+
+---
+
+💡 Hay un tema muy importante que suele generar debate incluso entre desarrolladores senior: **¿Debe una entidad lanzar excepciones (`DomainException`) o devolver un `Result<T>` cuando una regla del dominio no se cumple?** Ese tema es clave en DDD moderno y lo abordaremos más adelante en el curso, comparando ambos enfoques y analizando cuándo conviene utilizar cada uno según el tipo de aplicación que estés construyendo.
+
+Fluent Validation parte 3 [Fluent Validation --Mensajes personalizados y control de validaciones ](/blog/fluent-validation-03-csharp)  

@@ -1,0 +1,544 @@
+---
+title: "Fluent Validation parte 3 Mensajes personalizados y control de validaciones"
+date: "2026-11-04"
+description: "Fluent Validation parte 3 Mensajes personalizados y control de validaciones"
+slug: "fluent-validation-03-csharp"
+category: "Netcore"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+¡Continuemos! En esta lección vamos a profundizar en algo fundamental para desarrollar APIs profesionales con .NET 10, FluentValidation 12 y Clean Architecture: los mensajes de validación y el control de cómo se ejecutan las reglas.
+
+Hasta ahora aprendiste a crear un Validator utilizando `AbstractValidator<T>` y a definir reglas con `RuleFor()`.
+
+Ahora vamos a mejorar nuestro `CrearPersonaNaturalValidator` para que los errores sean claros, consistentes y útiles para los usuarios de TribuSoft.
+
+# Curso FluentValidation Profesional – .NET 10 (2026)
+
+# Lección 3 – Mensajes personalizados y control de validaciones
+
+## 1. El problema de los mensajes predeterminados
+
+Supongamos que tienes esta regla:
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .NotEmpty();
+```
+
+Si recibimos una solicitud con el nombre vacío, FluentValidation devuelve un mensaje parecido a:
+
+```
+'Primer Nombre' must not be empty.
+```
+
+Funciona, pero tenemos dos problemas:
+
+1. El mensaje está en inglés.
+2. No necesariamente utiliza el lenguaje que queremos para nuestra API.
+
+En una aplicación empresarial como TribuSoft queremos controlar esos mensajes.
+
+## 2. WithMessage(): personalizar mensajes
+
+La forma más sencilla es utilizar `WithMessage()`.
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .NotEmpty()
+    .WithMessage("El primer nombre es obligatorio.");
+```
+
+Ahora, si el usuario no proporciona el nombre, recibirá:
+
+```
+El primer nombre es obligatorio.
+```
+
+Observa algo importante: `WithMessage()` se aplica a la regla inmediatamente anterior.
+
+Por ejemplo:
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .NotEmpty()
+    .WithMessage("El primer nombre es obligatorio.")
+    .MaximumLength(60)
+    .WithMessage("El primer nombre no puede superar los 60 caracteres.");
+```
+
+Tenemos dos reglas y cada una tiene su propio mensaje.
+
+## 3. Utilizar propiedades dinámicas en WithMessage()
+
+FluentValidation permite utilizar marcadores de posición.
+
+Por ejemplo:
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .NotEmpty()
+    .WithMessage("El campo {PropertyName} es obligatorio.");
+```
+
+También podemos utilizar:
+
+| Marcador            | Significado             |
+| ------------------- | ----------------------- |
+| `{PropertyName}`    | Nombre de la propiedad. |
+| `{PropertyValue}`   | Valor recibido.         |
+| `{MinLength}`       | Longitud mínima.        |
+| `{MaxLength}`       | Longitud máxima.        |
+| `{TotalLength}`     | Longitud recibida.      |
+| `{ComparisonValue}` | Valor de comparación.   |
+
+Ejemplo:
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .MaximumLength(60)
+    .WithMessage(
+        "El campo {PropertyName} no puede superar {MaxLength} caracteres.");
+```
+
+Si el valor supera los 60 caracteres, el mensaje será:
+
+```
+El campo Primer Nombre no puede superar 60 caracteres.
+```
+
+## 4. WithName(): cambiar el nombre de una propiedad
+
+Imagina que tu propiedad C# se llama:
+
+```
+PrimerNombre
+```
+
+Pero quieres mostrar:
+
+```
+Primer nombre
+```
+
+Puedes hacerlo así:
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .NotEmpty()
+    .WithName("Primer nombre")
+    .WithMessage("El campo {PropertyName} es obligatorio.");
+```
+
+Resultado:
+
+```
+El campo Primer nombre es obligatorio.
+```
+
+¿Qué diferencia hay entre `WithName()` y `OverridePropertyName()`?
+
+Esta diferencia es importante:
+
+- `WithName()` cambia el nombre utilizado en el mensaje, pero mantiene el nombre original de la propiedad en el error.
+- `OverridePropertyName()` cambia también el nombre de la propiedad que FluentValidation reporta en `ValidationFailure.PropertyName`.
+
+Por ejemplo:
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .NotEmpty()
+    .OverridePropertyName("nombre");
+```
+
+El error ahora identificará la propiedad como `nombre`.
+
+Mi recomendación: utiliza `WithName()` para mejorar los mensajes y reserva `OverridePropertyName()` para cuando necesites cambiar explícitamente la identificación del campo en el resultado.
+
+## 5. WithErrorCode(): asignar códigos a los errores
+
+Esta funcionalidad es especialmente interesante cuando desarrollas APIs REST que pueden ser consumidas por diferentes aplicaciones.
+
+Imagina que TribuSoft tiene:
+
+- Aplicación web en React.
+- Aplicación móvil.
+- API en .NET 10.
+- Otros sistemas que consumen sus servicios.
+
+No es conveniente que cada aplicación tenga que interpretar el texto del mensaje para saber qué error ocurrió.
+
+Por ejemplo, en lugar de depender de:
+
+```
+El primer nombre es obligatorio.
+```
+
+podemos identificar el error mediante un código:
+
+```
+PERSONA_NATURAL_NOMBRE_REQUIRED
+```
+
+Utilizamos `WithErrorCode()`:
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .NotEmpty()
+    .WithMessage("El primer nombre es obligatorio.")
+    .WithErrorCode("PERSONA_NATURAL_NOMBRE_REQUIRED");
+```
+
+Cuando validamos:
+
+```csharp
+var result = validator.Validate(command);
+
+foreach (var error in result.Errors)
+{
+    Console.WriteLine(error.PropertyName);
+    Console.WriteLine(error.ErrorMessage);
+    Console.WriteLine(error.ErrorCode);
+}
+```
+
+Obtenemos información similar a:
+
+```csharp
+PropertyName: PrimerNombre
+
+ErrorMessage:
+El primer nombre es obligatorio.
+
+ErrorCode:
+PERSONA_NATURAL_NOMBRE_REQUIRED
+```
+
+¿Por qué es importante?
+
+Porque React podría interpretar el código y decidir cómo mostrar el error, sin depender del idioma del mensaje.
+
+Por ejemplo:
+
+```csharp
+if (error.code === "PERSONA_NATURAL_NOMBRE_REQUIRED") {
+    // Mostrar mensaje junto al campo Nombre.
+}
+```
+
+Mi recomendación es utilizar códigos estables y consistentes en las APIs empresariales.
+
+Documentación: [Custom Error Codes – FluentValidation](https://docs.fluentvalidation.net/en/latest/error-codes.html?utm_source=chatgpt.com).
+
+## 6. WithSeverity(): nivel de importancia del error
+
+FluentValidation permite establecer tres niveles:
+
+| Nivel              | Significado |
+| ------------------ | ----------- |
+| `Severity.Error`   | Error       |
+| `Severity.Warning` | Advertencia |
+| `Severity.Info`    | Información |
+
+Por defecto, las reglas tienen `Severity.Error`.
+
+Ejemplo:
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .NotEmpty()
+    .WithMessage("El primer nombre es obligatorio.")
+    .WithSeverity(Severity.Error);
+```
+
+Ahora imaginemos que queremos advertir que un campo opcional no fue informado.
+
+```csharp
+RuleFor(x => x.OtrosNombres)
+    .NotEmpty()
+    .When(x => x.OtrosNombres is not null)
+    .WithMessage("Se recomienda informar los otros nombres.")
+    .WithSeverity(Severity.Warning);
+```
+
+Una advertencia importante:
+
+`Severity.Warning` no significa que FluentValidation permita continuar automáticamente.
+
+Si una regla falla, aunque tenga severidad `Warning` o `Info`, `ValidationResult.IsValid` seguirá siendo `false`.
+
+Por tanto, si quieres que una advertencia no impida ejecutar el caso de uso, tendrás que diseñar un tratamiento específico para las advertencias en tu aplicación. No debes asumir que FluentValidation las ignora.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://docs.fluentvalidation.net\&sz=32)
+
+FluentValidation documentation
+
+
+
+En TribuSoft utilizaría normalmente `Severity.Error` para las validaciones que impiden crear o actualizar una persona.
+
+## 7. WithState(): información adicional del error
+
+Esta funcionalidad es menos conocida, pero bastante interesante.
+
+Permite asociar información adicional a un error de validación.
+
+Ejemplo:
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .NotEmpty()
+    .WithMessage("El primer nombre es obligatorio.")
+    .WithState(x => new
+    {
+        Campo = "PrimerNombre",
+        Modulo = "Personas",
+        Operacion = "Crear"
+    });
+```
+
+Después podemos recuperar esa información:
+
+```csharp
+var result = validator.Validate(command);
+
+foreach (var error in result.Errors)
+{
+    Console.WriteLine(error.ErrorMessage);
+    Console.WriteLine(error.CustomState);
+}
+```
+
+¿Para qué sirve?
+
+Imagina que quieres registrar información adicional en tus logs o construir respuestas más completas para una aplicación cliente.
+
+Puedes utilizar `CustomState` para transportar metadatos asociados a cada error.
+
+Importante: `CustomState` no reemplaza a `ErrorCode`.
+
+- `ErrorCode`: identifica el tipo de error.
+- `CustomState`: contiene información adicional relacionada con ese error.
+
+# 8. Construyamos nuestro Validator completo para TribuSoft
+
+Ahora vamos a combinar lo aprendido.
+
+Nuestro Command:
+
+```csharp
+namespace TribuSoft.Application.Personas.Commands.CrearPersonaNatural;
+
+public sealed record CrearPersonaNaturalCommand
+{
+    public string PrimerNombre { get; init; } = string.Empty;
+
+    public string? OtrosNombres { get; init; }
+
+    public string PrimerApellido { get; init; } = string.Empty;
+
+    public string? SegundoApellido { get; init; }
+
+    public string Email { get; init; } = string.Empty;
+}
+```
+
+Nuestro Validator:
+
+`CrearPersonaNaturalValidator.cs`
+
+```csharp
+using FluentValidation;
+
+namespace TribuSoft.Application.Personas.Commands.CrearPersonaNatural;
+
+public sealed class CrearPersonaNaturalValidator
+    : AbstractValidator<CrearPersonaNaturalCommand>
+{
+    public CrearPersonaNaturalValidator()
+    {
+        // Primer nombre
+        RuleFor(x => x.PrimerNombre)
+            .NotEmpty()
+            .WithMessage("El primer nombre es obligatorio.")
+            .WithErrorCode("PERSONA_NATURAL_NOMBRE_REQUIRED")
+            .MaximumLength(60)
+            .WithMessage("El primer nombre no puede superar los 60 caracteres.")
+            .WithErrorCode("PERSONA_NATURAL_NOMBRE_MAX_LENGTH");
+
+        // Otros nombres
+        RuleFor(x => x.OtrosNombres)
+            .MaximumLength(120)
+            .WithMessage("Los otros nombres no pueden superar los 120 caracteres.")
+            .WithErrorCode("PERSONA_NATURAL_OTROS_NOMBRES_MAX_LENGTH");
+
+        // Primer apellido
+        RuleFor(x => x.PrimerApellido)
+            .NotEmpty()
+            .WithMessage("El primer apellido es obligatorio.")
+            .WithErrorCode("PERSONA_NATURAL_APELLIDO_REQUIRED")
+            .MaximumLength(60)
+            .WithMessage("El primer apellido no puede superar los 60 caracteres.")
+            .WithErrorCode("PERSONA_NATURAL_APELLIDO_MAX_LENGTH");
+
+        // Segundo apellido
+        RuleFor(x => x.SegundoApellido)
+            .MaximumLength(60)
+            .WithMessage("El segundo apellido no puede superar los 60 caracteres.")
+            .WithErrorCode("PERSONA_NATURAL_SEGUNDO_APELLIDO_MAX_LENGTH");
+
+        // Email
+        RuleFor(x => x.Email)
+            .NotEmpty()
+            .WithMessage("El correo electrónico es obligatorio.")
+            .WithErrorCode("PERSONA_NATURAL_EMAIL_REQUIRED")
+            .EmailAddress()
+            .WithMessage("El correo electrónico no tiene un formato válido.")
+            .WithErrorCode("PERSONA_NATURAL_EMAIL_INVALID");
+    }
+}
+```
+
+Fíjate en algo importante: cada regla tiene su propio mensaje y su propio código.
+
+Además, los nombres opcionales no tienen `NotEmpty()`, porque no queremos obligar al usuario a informar esos campos.
+
+Una observación arquitectónica: este Command es un ejemplo didáctico. En tu modelo real deberemos alinear los campos con `Tercero` y `PersonaNatural`, y no agregar `Email` si todavía no forma parte del contrato de creación.
+
+# 9. ¿Cómo obtener los errores y utilizarlos en nuestra API?
+
+Una vez que ejecutamos la validación:
+
+```csharp
+var validator = new CrearPersonaNaturalValidator();
+
+var command = new CrearPersonaNaturalCommand
+{
+    PrimerNombre = "",
+    PrimerApellido = "Zapata",
+    Email = "correo-invalido"
+};
+
+var result = validator.Validate(command);
+```
+
+Podemos comprobar:
+
+```csharp
+if (!result.IsValid)
+{
+    foreach (var error in result.Errors)
+    {
+        Console.WriteLine($"Campo: {error.PropertyName}");
+        Console.WriteLine($"Mensaje: {error.ErrorMessage}");
+        Console.WriteLine($"Código: {error.ErrorCode}");
+    }
+}
+```
+
+Podríamos obtener:
+
+```
+Campo: PrimerNombre
+Mensaje: El primer nombre es obligatorio.
+Código: PERSONA_NATURAL_NOMBRE_REQUIRED
+
+Campo: Email
+Mensaje: El correo electrónico no tiene un formato válido.
+Código: PERSONA_NATURAL_EMAIL_INVALID
+```
+
+Observa que `ValidationFailure` nos proporciona mucha más información que un simple mensaje de texto.
+
+En próximas lecciones veremos cómo transformar estos resultados en respuestas HTTP utilizando `ProblemDetails` (RFC 9457).
+
+# 10. Resumen de lo aprendido
+
+| Método                   | Responsabilidad                           |
+| ------------------------ | ----------------------------------------- |
+| `WithMessage()`          | Personalizar el mensaje.                  |
+| `WithName()`             | Cambiar el nombre mostrado en el mensaje. |
+| `OverridePropertyName()` | Cambiar el nombre reportado en el error.  |
+| `WithErrorCode()`        | Asignar un código al error.               |
+| `WithSeverity()`         | Establecer su nivel de importancia.       |
+| `WithState()`            | Asociar información adicional al error.   |
+
+Puedes consultar todos estos conceptos en la [documentación oficial de FluentValidation](https://docs.fluentvalidation.net/en/latest/index.html?utm_source=chatgpt.com).
+
+# 11. Ejercicio práctico
+
+Ahora quiero que hagas un pequeño ejercicio para afianzar lo aprendido.
+
+Completa el Validator de `PersonaNatural` con las siguientes condiciones:
+
+1. `PrimerNombre`: obligatorio, máximo 60 caracteres.
+2. `OtrosNombres`: opcional, máximo 120 caracteres.
+3. `PrimerApellido`: obligatorio, máximo 60 caracteres.
+4. `SegundoApellido`: opcional, máximo 60 caracteres.
+5. Cada error debe tener un mensaje personalizado.
+6. Cada regla debe tener su propio código de error.
+
+Comprueba lo aprendido
+
+1\. ¿Qué método permite personalizar el mensaje de una regla?
+
+WithName()
+
+WithMessage()
+
+WithState()
+
+
+
+2\. ¿Qué diferencia existe entre WithName() y OverridePropertyName()?
+
+Son exactamente iguales
+
+WithName cambia el nombre mostrado; OverridePropertyName cambia el nombre reportado
+
+OverridePropertyName cambia el mensaje
+
+
+
+3\. ¿Severity.Warning hace que IsValid sea true?
+
+Sí
+
+No
+
+
+
+4\. ¿Qué método permite identificar un error con un código?
+
+WithErrorCode()
+
+WithState()
+
+WithSeverity()
+
+
+
+Comprobar respuestas
+
+# Próxima lección: Lección 4 – Cascade Mode
+
+Aquí estudiaremos un concepto muy importante para evitar validaciones innecesarias y mensajes duplicados.
+
+Aprenderemos:
+
+- `CascadeMode.Stop`.
+- `CascadeMode.Continue`.
+- Diferencia entre Rule-Level y Class-Level Cascade.
+- Cómo detener la ejecución de una regla cuando falla.
+- Cómo configurar el comportamiento global.
+- Cuándo conviene utilizar cada estrategia.
+
+Y construiremos un ejemplo real:
+
+¿Qué sucede cuando el usuario envía un correo vacío y tenemos dos validaciones, `NotEmpty()` y `EmailAddress()`?
+
+Aprenderás a controlar exactamente cuántos errores devuelve FluentValidation.
+
+Mi recomendación: realiza primero el ejercicio y dime cuando estés listo. Seguiremos construyendo TribuSoft paso a paso, sin saltarnos los fundamentos.

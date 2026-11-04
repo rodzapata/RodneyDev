@@ -1,0 +1,487 @@
+---
+title: "LINQ parte 5 LINQ con CQRS, repositorios y separación de consultas y comandos"
+date: "2026-11-04"
+description: "LINQ parte 5 LINQ con CQRS, repositorios y separación de consultas y comandos"
+slug: "LINQ-05-csharp"
+category: "Netcore"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+# Siguiente paso: CQRS, repositorios y separación de consultas y comandos en .NET 10
+
+Vamos a avanzar hacia un tema fundamental para nuestra arquitectura AcSoft HVAC: CQRS (Command Query Responsibility Segregation).
+
+En las lecciones anteriores aprendimos:
+
+1. Collection Expressions en C# 14.
+2. LINQ y expresiones lambda.
+3. `IEnumerable` e `IQueryable`.
+4. Entity Framework Core y consultas SQL.
+5. `Include()` y `ThenInclude()`.
+6. Proyecciones con `Select()` y DTOs.
+
+Ahora vamos a conectar todo lo aprendido y tomar decisiones sobre cómo organizar nuestro código.
+
+## 1. ¿Qué es CQRS?
+
+CQRS significa Command Query Responsibility Segregation.
+
+Es un patrón arquitectónico que propone separar las operaciones que modifican información de las operaciones que solamente consultan información.
+
+Tenemos dos conceptos:
+
+Command
+
+Operaciones de escritura
+
+Modifican el estado del sistema.
+
+Ejemplos en AcSoft:
+
+- Crear una orden de trabajo.
+- Asignar un técnico.
+- Iniciar una sesión de trabajo.
+- Completar una actividad.
+- Cambiar el estado de una orden.
+
+Query
+
+Operaciones de lectura
+
+Consultan información sin modificarla.
+
+Ejemplos en AcSoft:
+
+- Consultar una orden.
+- Listar órdenes pendientes.
+- Consultar actividades.
+- Obtener reportes de mantenimiento.
+- Consultar el historial de un equipo.
+
+La regla fundamental es:
+
+Un Command modifica información y una Query devuelve información sin modificar el estado del sistema.
+
+Esto no significa que debamos tener dos bases de datos. Podemos implementar CQRS utilizando PostgreSQL y un único `DbContext`.
+
+## 2. ¿Por qué es importante para DDD?
+
+Recordemos que en nuestro proyecto tenemos una entidad principal:
+
+```
+WorkOrder
+```
+
+Esta entidad representa el agregado raíz de las órdenes de trabajo.
+
+Tiene responsabilidades relacionadas con las reglas del negocio:
+
+- Controlar sus asignaciones.
+- Gestionar sus actividades.
+- Validar cuándo puede completarse.
+- Controlar su estado.
+- Garantizar que las operaciones respeten las reglas del dominio.
+
+Por ejemplo, no deberíamos cambiar directamente el estado de una orden desde un controlador:
+
+```csharp
+// No recomendado
+workOrder.Status = WorkOrderStatus.Completed;
+```
+
+En lugar de eso, debemos utilizar un comportamiento del dominio:
+
+```csharp
+workOrder.Complete();
+```
+
+De esta manera, la entidad controla sus propias reglas.
+
+En cambio, cuando necesitamos mostrar una lista de órdenes, no necesitamos cargar el agregado completo. Podemos consultar PostgreSQL y construir directamente un DTO.
+
+Esta es una de las ventajas de combinar DDD y CQRS.
+
+## 3. Cómo organizar CQRS en nuestro proyecto
+
+Propongo esta estructura para AcSoft:
+
+```
+AcSoft.Application
+│
+└── Features
+    │
+    └── WorkOrders
+        │
+        ├── Commands
+        │   ├── CreateWorkOrder
+        │   │   ├── CreateWorkOrderCommand.cs
+        │   │   └── CreateWorkOrderHandler.cs
+        │   │
+        │   └── CompleteWorkOrder
+        │       ├── CompleteWorkOrderCommand.cs
+        │       └── CompleteWorkOrderHandler.cs
+        │
+        ├── Queries
+        │   ├── GetWorkOrderById
+        │   │   ├── GetWorkOrderByIdQuery.cs
+        │   │   └── GetWorkOrderByIdHandler.cs
+        │   │
+        │   └── GetPendingWorkOrders
+        │       ├── GetPendingWorkOrdersQuery.cs
+        │       └── GetPendingWorkOrdersHandler.cs
+        │
+        └── DTOs
+            ├── WorkOrderSummaryDto.cs
+            └── WorkOrderDetailsDto.cs
+```
+
+Y en Infrastructure:
+
+```
+AcSoft.Infrastructure
+│
+└── Persistence
+    │
+    ├── AcSoftDbContext.cs
+    │
+    └── Repositories
+        └── WorkOrderRepository.cs
+```
+
+La idea es que cada operación tenga una responsabilidad específica.
+
+## 4. Implementar un Command
+
+Vamos a utilizar nuestro caso real: crear una orden de trabajo.
+
+Primero definimos el Command.
+
+`CreateWorkOrderCommand.cs`
+
+```csharp
+public sealed record CreateWorkOrderCommand(
+    Guid CustomerId,
+    Guid EquipmentId);
+```
+
+Este objeto representa la intención de crear una orden.
+
+Ahora implementamos su Handler.
+
+`CreateWorkOrderHandler.cs`
+
+```csharp
+public sealed class CreateWorkOrderHandler
+{
+    private readonly IWorkOrderRepository _repository;
+    private readonly IUnitOfWork _unitOfWork;
+
+    public CreateWorkOrderHandler(
+        IWorkOrderRepository repository,
+        IUnitOfWork unitOfWork)
+    {
+        _repository = repository;
+        _unitOfWork = unitOfWork;
+    }
+
+    public async Task<Guid> Handle(
+        CreateWorkOrderCommand command,
+        CancellationToken cancellationToken)
+    {
+        var workOrder = WorkOrder.Create(
+            number: $"OT-{DateTime.UtcNow:yyyyMMddHHmmss}",
+            customerId: command.CustomerId,
+            equipmentId: command.EquipmentId);
+
+        await _repository.AddAsync(
+            workOrder,
+            cancellationToken);
+
+        await _unitOfWork.SaveChangesAsync(
+            cancellationToken);
+
+        return workOrder.Id;
+    }
+}
+```
+
+Aquí tenemos algo importante:
+
+El Handler no conoce Entity Framework Core ni PostgreSQL.
+
+Solamente conoce las abstracciones:
+
+```csharp
+IWorkOrderRepository
+IUnitOfWork
+```
+
+Además, la creación de la orden pasa por el método de fábrica del dominio:
+
+```csharp
+WorkOrder.Create(...)
+```
+
+Esto permite centralizar las reglas de creación dentro del dominio.
+
+Nota: el ejemplo supone que nuestros contratos tienen esos métodos; deben coincidir con las firmas definitivas de AcSoft.
+
+## 5. Implementar una Query
+
+Ahora queremos consultar las órdenes pendientes.
+
+Primero creamos el DTO:
+
+`WorkOrderSummaryDto.cs`
+
+```csharp
+public sealed record WorkOrderSummaryDto(
+    Guid Id,
+    string Number,
+    WorkOrderStatus Status,
+    DateTime CreatedAt);
+```
+
+Creamos la Query:
+
+`GetPendingWorkOrdersQuery.cs`
+
+```csharp
+public sealed record GetPendingWorkOrdersQuery;
+```
+
+Y su Handler:
+
+`GetPendingWorkOrdersHandler.cs`
+
+```csharp
+public sealed class GetPendingWorkOrdersHandler
+{
+    private readonly IWorkOrderRepository _repository;
+
+    public GetPendingWorkOrdersHandler(
+        IWorkOrderRepository repository)
+    {
+        _repository = repository;
+    }
+
+    public async Task<IReadOnlyList<WorkOrderSummaryDto>> Handle(
+        GetPendingWorkOrdersQuery query,
+        CancellationToken cancellationToken)
+    {
+        return await _repository.GetPendingAsync(
+            cancellationToken);
+    }
+}
+```
+
+Observa las diferencias:
+
+| Command                     | Query                    |
+| --------------------------- | ------------------------ |
+| Modifica información        | Consulta información     |
+| Utiliza agregado de dominio | Utiliza DTO              |
+| Puede guardar cambios       | No guarda cambios        |
+| Puede utilizar Unit of Work | No necesita Unit of Work |
+
+## 6. ¿Cómo implementamos la consulta en Infrastructure?
+
+En Infrastructure, nuestro repositorio implementa la consulta utilizando EF Core:
+
+```csharp
+public async Task<IReadOnlyList<WorkOrderSummaryDto>>
+    GetPendingAsync(
+        CancellationToken cancellationToken)
+{
+    return await _context.WorkOrders
+        .AsNoTracking()
+        .Where(x => x.Status == WorkOrderStatus.Pending)
+        .OrderByDescending(x => x.CreatedAt)
+        .Select(x => new WorkOrderSummaryDto(
+            x.Id,
+            x.Number,
+            x.Status,
+            x.CreatedAt))
+        .ToListAsync(cancellationToken);
+}
+```
+
+Fíjate en algo:
+
+No estamos utilizando `Include()`.
+
+No lo necesitamos porque estamos construyendo un DTO mediante `Select()`.
+
+Tampoco estamos cargando toda la entidad para después transformarla.
+
+## 7. ¿Es obligatorio utilizar repositorios para las Queries?
+
+Esta es una pregunta importante y hay diferentes enfoques válidos.
+
+Alternativa A: utilizar repositorios para lectura y escritura.
+
+```
+Application
+    │
+    └── IWorkOrderRepository
+              │
+              ▼
+Infrastructure
+    │
+    └── WorkOrderRepository
+              │
+              ▼
+          DbContext
+```
+
+Ventajas:
+
+- Centralización del acceso a datos.
+- Application depende de abstracciones.
+- Podemos mantener consultas y escrituras detrás de contratos.
+
+Alternativa B: utilizar repositorios para Commands y consultas independientes para Queries.
+
+```
+Command Handler
+      │
+      ▼
+IWorkOrderRepository
+      │
+      ▼
+WorkOrderRepository
+
+Query Handler
+      │
+      ▼
+IWorkOrderReadService
+      │
+      ▼
+EF Core / PostgreSQL
+```
+
+Ventajas:
+
+- Las consultas pueden optimizarse independientemente.
+- Podemos crear proyecciones específicas.
+- Evitamos cargar agregados completos para reportes y listados.
+
+¿Cuál recomiendo para AcSoft?
+
+Mi recomendación es comenzar con la alternativa A, que ya encaja con nuestra arquitectura actual, y evolucionar hacia la alternativa B cuando las consultas de lectura sean más complejas.
+
+No necesitamos introducir complejidad antes de que el proyecto la requiera.
+
+Una precisión: si queremos conservar Clean Architecture, la alternativa B debe utilizar una abstracción definida en Application, implementada en Infrastructure. Así evitamos que Application dependa directamente de EF Core.
+
+## 8. ¿Necesitamos MediatR para implementar CQRS?
+
+No. Esta es una confusión bastante frecuente.
+
+CQRS es un patrón arquitectónico. MediatR es una biblioteca que facilita la comunicación entre solicitudes y sus respectivos Handlers.
+
+Podemos implementar CQRS sin instalar ninguna biblioteca externa.
+
+Por ejemplo, podemos invocar directamente el Handler:
+
+```csharp
+var command = new CreateWorkOrderCommand(
+    customerId,
+    equipmentId);
+
+Guid workOrderId = await handler.Handle(
+    command,
+    cancellationToken);
+```
+
+Más adelante podemos implementar nuestro propio Mediator sencillo o evaluar MediatR.
+
+Mi recomendación es aprender primero el patrón sin depender de bibliotecas externas.
+
+## 9. ¿CQRS necesita dos bases de datos?
+
+No.
+
+Existen dos formas de implementar CQRS:
+
+CQRS lógico (el que utilizaremos inicialmente)
+
+Commands
+
+Escrituras
+
+PostgreSQL
+
+Una única base de datos
+
+Queries
+
+Lecturas
+
+CQRS con separación de modelos de almacenamiento
+
+Write Model
+
+Base de escritura
+
+Read Model
+
+Base de lectura
+
+Esta segunda arquitectura puede utilizar almacenamiento independiente, replicación o modelos de lectura especializados.
+
+Para AcSoft no necesitamos dos bases de datos. Una sola instancia de PostgreSQL es suficiente para comenzar.
+
+## 10. Una consideración importante para nuestro proyecto
+
+Recuerda que en AcSoft tenemos reglas de negocio como:
+
+- No permitir completar una orden con actividades obligatorias pendientes.
+- Permitir reasignar técnicos.
+- Controlar los tiempos efectivos, de espera y desplazamiento.
+- Validar las respuestas de las preguntas: Correcto, No correcto y No aplica.
+
+Estas reglas deben permanecer en el dominio, no en los Query Handlers ni en los controladores.
+
+También debemos revisar el mecanismo de generación del número de orden `OT-...`: utilizar solamente `DateTime.UtcNow` con precisión de segundos puede producir duplicados si se crean dos órdenes simultáneamente. Es preferible utilizar una secuencia o mecanismo que garantice unicidad.
+
+## 11. Ejercicio de aprendizaje
+
+Situación:
+
+Un técnico termina una actividad de mantenimiento y registra las respuestas de las preguntas.
+
+¿Qué tipo de operación debemos implementar?
+
+A. Query, porque estamos registrando información.
+
+B. Command, porque estamos modificando el estado del sistema.
+
+C. DTO, porque estamos enviando información.
+
+D. Select(), porque necesitamos consultar los datos.
+
+Comprobar respuesta
+
+La respuesta es B.
+
+¡Correcto!Registrar respuestas modifica información. Por tanto, corresponde a un Command que debe respetar las reglas de negocio del dominio.
+
+
+## Próxima lección: Validaciones con FluentValidation
+
+Te propongo continuar con un tema muy importante para nuestros Commands:
+
+FluentValidation en .NET 10.
+
+Aprenderemos a:
+
+1. Validar los datos de entrada de `CreateWorkOrderCommand`.
+2. Crear validadores independientes.
+3. Diferenciar validaciones de entrada de reglas de negocio del dominio.
+4. Integrar validaciones en los Handlers.
+5. Devolver errores correctamente desde nuestra API.
+
+Así iremos construyendo AcSoft progresivamente, sin introducir dependencias innecesarias y manteniendo DDD + Clean Architecture + CQRS.
