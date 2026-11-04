@@ -1,0 +1,410 @@
+---
+title: "LINQ parte 3, LINQ Include()"
+date: "2026-11-03"
+description: "LINQ parte 3, LINQ Include()"
+slug: "LINQ-03-csharp"
+category: "Netcore"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+# Continuemos: relaciones y carga de datos en Entity Framework Core 10
+
+En esta lección vamos a estudiar uno de los temas más importantes para trabajar con EF Core en nuestro proyecto AcSoft HVAC.
+
+Cuando consultamos una orden de trabajo, normalmente no queremos obtener solamente la orden. También podemos necesitar:
+
+- El técnico asignado.
+- Las asignaciones anteriores.
+- Las actividades de mantenimiento.
+- Las preguntas y respuestas.
+- Las lecturas de amperaje y voltaje.
+
+Para esto existen tres estrategias de carga de datos:
+
+1. Eager Loading: cargar las relaciones desde la consulta inicial.
+2. Explicit Loading: cargar las relaciones posteriormente, de forma explícita.
+3. Lazy Loading: cargar las relaciones automáticamente cuando se accede a ellas.
+
+Vamos a estudiar cada una y cuándo conviene utilizarla.
+
+## 1. Eager Loading: Include()
+
+`Include()` permite cargar una entidad junto con sus relaciones desde la consulta inicial.
+
+Imagina que nuestra entidad `WorkOrder` tiene una colección de asignaciones:
+
+```csharp
+public class WorkOrder
+{
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; } = string.Empty;
+
+    private readonly List<WorkOrderAssignment> _assignments = [];
+
+    public IReadOnlyCollection<WorkOrderAssignment> Assignments
+        => _assignments.AsReadOnly();
+}
+```
+
+Si consultamos una orden:
+
+```csharp
+var workOrder = await _context.WorkOrders
+    .FirstOrDefaultAsync(
+        x => x.Id == workOrderId,
+        cancellationToken);
+```
+
+EF Core obtiene la orden, pero no necesariamente carga sus asignaciones.
+
+Para cargar también las asignaciones:
+
+```csharp
+var workOrder = await _context.WorkOrders
+    .Include(x => x.Assignments)
+    .FirstOrDefaultAsync(
+        x => x.Id == workOrderId,
+        cancellationToken);
+```
+
+La expresión:
+
+```csharp
+.Include(x => x.Assignments)
+```
+
+le indica a EF Core que incluya esa relación en la consulta.
+
+Conceptualmente, podría generar un SQL parecido a:
+
+```sql
+SELECT ...
+FROM "WorkOrders" AS w
+LEFT JOIN "WorkOrderAssignments" AS a
+    ON w."Id" = a."WorkOrderId"
+WHERE w."Id" = @workOrderId;
+```
+
+El SQL exacto depende del mapeo y de la estrategia de consulta.
+
+## 2. ThenInclude(): cargar relaciones de varios niveles
+
+Ahora imaginemos que cada asignación de una orden tiene un técnico.
+
+La relación sería:
+
+```
+WorkOrder
+   │
+   └── Assignments
+          │
+          └── Technician
+```
+
+Podemos cargar la orden, sus asignaciones y los técnicos correspondientes utilizando `ThenInclude()`:
+
+```csharp
+var workOrder = await _context.WorkOrders
+    .Include(x => x.Assignments)
+        .ThenInclude(x => x.Technician)
+    .FirstOrDefaultAsync(
+        x => x.Id == workOrderId,
+        cancellationToken);
+```
+
+Observa la diferencia:
+
+- `Include()` carga una relación directa.
+- `ThenInclude()` permite continuar navegando desde la relación anterior.
+
+### Otro ejemplo en AcSoft
+
+Supongamos que una orden tiene actividades y cada actividad tiene preguntas:
+
+```
+WorkOrder
+   │
+   └── Activities
+          │
+          └── Questions
+```
+
+La consulta sería:
+
+```csharp
+var workOrder = await _context.WorkOrders
+    .Include(x => x.Activities)
+        .ThenInclude(x => x.Questions)
+    .FirstOrDefaultAsync(
+        x => x.Id == workOrderId,
+        cancellationToken);
+```
+
+Esto puede ser útil cuando el técnico abre una orden y necesita consultar todas las actividades y sus preguntas.
+
+Importante: los nombres `Assignments`, `Technician`, `Activities` y `Questions` son ilustrativos. Deben coincidir con las propiedades de navegación reales de tus entidades.
+
+## 3. Cargar varias relaciones con Include()
+
+Una orden de trabajo puede tener diferentes relaciones independientes.
+
+Por ejemplo:
+
+```
+WorkOrder
+   ├── Assignments
+   │      └── Technician
+   │
+   └── Activities
+          └── Questions
+```
+
+Podemos cargar ambas ramas:
+
+```csharp
+var workOrder = await _context.WorkOrders
+    .Include(x => x.Assignments)
+        .ThenInclude(x => x.Technician)
+    .Include(x => x.Activities)
+        .ThenInclude(x => x.Questions)
+    .FirstOrDefaultAsync(
+        x => x.Id == workOrderId,
+        cancellationToken);
+```
+
+Cada `Include()` inicia una nueva rama de navegación.
+
+Esto es muy útil para recuperar un agregado completo cuando la aplicación necesita trabajar con sus relaciones.
+
+Sin embargo, hay algo importante que debemos considerar.
+
+### El problema de las consultas con muchas relaciones
+
+Cuando cargamos varias colecciones mediante `Include()`, EF Core puede generar una consulta con múltiples `JOIN`.
+
+Si una orden tiene:
+
+- 5 asignaciones.
+- 10 actividades.
+
+Una consulta que combine ambas colecciones podría producir hasta 50 combinaciones de filas para esa orden, antes de que EF Core reconstruya las entidades.
+
+Este fenómeno se conoce como Cartesian Explosion.
+
+No significa que `Include()` sea malo. Significa que debemos elegir cuidadosamente qué relaciones necesitamos cargar.
+
+## 4. AsSplitQuery(): evitar combinaciones excesivas
+
+EF Core permite utilizar `AsSplitQuery()` para dividir la carga de varias colecciones en consultas SQL separadas.
+
+Por ejemplo:
+
+```csharp
+var workOrder = await _context.WorkOrders
+    .Include(x => x.Assignments)
+        .ThenInclude(x => x.Technician)
+    .Include(x => x.Activities)
+        .ThenInclude(x => x.Questions)
+    .AsSplitQuery()
+    .FirstOrDefaultAsync(
+        x => x.Id == workOrderId,
+        cancellationToken);
+```
+
+En lugar de una consulta grande con múltiples combinaciones, EF Core puede ejecutar varias consultas.
+
+| Estrategia       | Ventaja                         | Desventaja                             |
+| ---------------- | ------------------------------- | -------------------------------------- |
+| Consulta única   | Menos viajes a la base de datos | Puede generar muchas filas duplicadas  |
+| `AsSplitQuery()` | Reduce combinaciones excesivas  | Puede requerir más viajes a PostgreSQL |
+
+Una consideración importante: las consultas divididas pueden observar datos diferentes entre consultas si otros procesos modifican la base de datos simultáneamente. Si necesitas una visión consistente, debes considerar el nivel de aislamiento de la transacción.
+
+Mi recomendación es no utilizar `AsSplitQuery()` automáticamente en todas las consultas. Primero identifica si estás cargando varias colecciones grandes.
+
+## 5. Explicit Loading: cargar una relación cuando la necesitas
+
+Con Explicit Loading, primero consultas la entidad y después decides cargar una relación específica.
+
+Por ejemplo:
+
+```csharp
+var workOrder = await _context.WorkOrders
+    .FirstOrDefaultAsync(
+        x => x.Id == workOrderId,
+        cancellationToken);
+```
+
+Posteriormente, puedes cargar las asignaciones:
+
+```csharp
+if (workOrder is not null)
+{
+    await _context.Entry(workOrder)
+        .Collection(x => x.Assignments)
+        .LoadAsync(cancellationToken);
+}
+```
+
+Si necesitas cargar el técnico de una asignación:
+
+```csharp
+var assignment = workOrder.Assignments.First();
+
+await _context.Entry(assignment)
+    .Reference(x => x.Technician)
+    .LoadAsync(cancellationToken);
+```
+
+La diferencia entre los métodos es:
+
+- `Collection()`: para relaciones de uno a muchos o muchos a muchos.
+- `Reference()`: para una relación de referencia, como una asignación y su técnico.
+
+Explicit Loading es útil cuando no sabes de antemano si necesitarás una relación.
+
+Sin embargo, debes tener cuidado: si cargas una relación para cada elemento de una lista, puedes generar muchas consultas a la base de datos.
+
+## 6. Lazy Loading: carga automática de relaciones
+
+Lazy Loading permite que EF Core cargue una relación automáticamente cuando accedes a ella.
+
+Por ejemplo:
+
+```csharp
+var workOrder = await _context.WorkOrders
+    .FirstOrDefaultAsync(
+        x => x.Id == workOrderId,
+        cancellationToken);
+```
+
+Después:
+
+```csharp
+var assignments = workOrder!.Assignments;
+```
+
+Si Lazy Loading está habilitado y la navegación está configurada para utilizarlo, EF Core puede ejecutar una consulta adicional automáticamente.
+
+Esto parece cómodo, pero tiene un riesgo importante.
+
+### El problema N+1
+
+Imagina que consultamos 100 órdenes:
+
+```csharp
+var workOrders = await _context.WorkOrders
+    .ToListAsync(cancellationToken);
+```
+
+Después recorremos sus asignaciones:
+
+```csharp
+foreach (var workOrder in workOrders)
+{
+    var assignments = workOrder.Assignments;
+}
+```
+
+Si Lazy Loading está habilitado, podríamos terminar ejecutando:
+
+- 1 consulta para obtener las órdenes.
+- 100 consultas adicionales para obtener las asignaciones.
+
+En total, 101 consultas.
+
+Este problema se conoce como N+1 Queries.
+
+Por eso, para nuestro proyecto AcSoft, prefiero utilizar Eager Loading o consultas explícitas bien controladas.
+
+Lazy Loading no es necesariamente incorrecto, pero puede ocultar consultas a la base de datos dentro del acceso a propiedades.
+
+## 7. Comparación de las tres estrategias
+
+Recomendado para consultas planificadas
+
+Eager Loading
+
+```csharp
+.Include(x => x.Assignments)
+```
+
+Carga las relaciones desde la consulta inicial. Es útil cuando sabes qué datos necesitas.
+
+Carga bajo demanda explícita
+
+Explicit Loading
+
+```csharp
+await context.Entry(order)
+    .Collection(x => x.Assignments)
+    .LoadAsync();
+```
+
+Tú decides cuándo cargar una relación adicional.
+
+Usar con precaución
+
+Lazy Loading
+
+```csharp
+var assignments = order.Assignments;
+```
+
+La relación se carga automáticamente al acceder a ella, si está configurado.
+
+## 8. ¿Qué estrategia utilizaremos en AcSoft?
+
+Para nuestro proyecto HVAC, propongo lo siguiente:
+
+| Caso de uso                                          | Estrategia                |
+| ---------------------------------------------------- | ------------------------- |
+| Consultar una orden para editarla                    | Eager Loading selectivo   |
+| Consultar órdenes para una tabla                     | Proyección con `Select()` |
+| Consultar actividades y preguntas                    | Eager Loading             |
+| Cargar información adicional opcional                | Explicit Loading          |
+| Consultar reportes                                   | Proyecciones LINQ         |
+| Consultar una lista de órdenes con muchas relaciones | Evaluar `AsSplitQuery()`  |
+
+Hay una consideración adicional de DDD:
+
+No siempre debemos cargar todas las relaciones de un agregado.
+
+Si `WorkOrder` es nuestro agregado raíz, debemos cargar lo necesario para ejecutar las reglas de negocio de ese agregado. No necesitamos recuperar todos los datos relacionados para cada operación.
+
+Por ejemplo, para cambiar el estado de una orden, posiblemente no necesitamos cargar todas las preguntas y respuestas de sus actividades.
+
+## 9. Ejercicio práctico
+
+Pregunta
+
+Tenemos una consulta que obtiene 100 órdenes de trabajo. Luego recorremos las órdenes y accedemos a `Assignments`.
+
+Si Lazy Loading está habilitado y cada orden carga sus asignaciones por separado, ¿cuántas consultas SQL podríamos ejecutar?
+
+A. 1 consulta
+
+B. 10 consultas
+
+C. 101 consultas
+
+D. 1000 consultas
+
+Comprobar respuesta
+
+Correcto! la respuesta es C,  consulta para las órdenes y 100 consultas adicionales para sus asignaciones. Este es el problema N+1.
+
+### Próximo paso
+
+Ahora que conocemos `Include()`, `ThenInclude()` y las estrategias de carga, el siguiente tema será:
+
+Proyecciones con Select() y DTOs en EF Core.
+
+Aprenderemos a devolver directamente un `WorkOrderDto` desde PostgreSQL, sin cargar toda la entidad `WorkOrder`.
+
+Esto será especialmente útil para nuestras consultas de órdenes de trabajo en AcSoft, porque nos permitirá construir endpoints eficientes y separar los datos que necesita la API de las entidades de nuestro dominio.
+
+LINQ parte 4 [LINQ con Entity Framework and .net 10 ](/blog/LINQ-04-csharp)

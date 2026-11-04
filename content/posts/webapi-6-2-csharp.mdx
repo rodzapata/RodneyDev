@@ -39,7 +39,7 @@ En este paso crearemos las interfaces. Recuerda que las interfaces de persistenc
 
 ### `IMaintenancePlanRepository.cs`
 
-```
+```csharp
 using AcSoft.Domain.Entities;
 
 namespace AcSoft.Application.Abstractions.Persistence;
@@ -56,7 +56,7 @@ Este método debe recuperar el plan junto con sus `MaintenancePlanActivity`.
 
 ### `IActivityRepository.cs`
 
-```
+```csharp
 using AcSoft.Domain.Entities;
 
 namespace AcSoft.Application.Abstractions.Persistence;
@@ -77,7 +77,7 @@ Es importante que las preguntas estén cargadas, porque posteriormente las copia
 
 Si ya tienes esta interfaz, no la reemplaces completamente. Agrega el método `Add` si todavía no existe.
 
-```
+```csharp
 using AcSoft.Domain.Entities;
 
 namespace AcSoft.Application.Abstractions.Persistence;
@@ -96,7 +96,7 @@ public interface IWorkOrderRepository
 
 Si ya tienes esta interfaz, conserva la que estás utilizando. La idea es que tenga una operación para guardar los cambios:
 
-```
+```csharp
 namespace AcSoft.Application.Abstractions.Persistence;
 
 public interface IUnitOfWork
@@ -114,7 +114,7 @@ Como ya habíamos definido, la solicitud debe indicar el cliente, el equipo y el
 
 `CreateWorkOrderFromMaintenancePlanRequest.cs`
 
-```
+```csharp
 namespace AcSoft.Application.WorkOrders.CreateFromMaintenancePlan;
 
 public sealed record CreateWorkOrderFromMaintenancePlanRequest(
@@ -131,7 +131,7 @@ En una aplicación real, el número de una OT debe ser único. Para evitar que e
 
 `IWorkOrderNumberGenerator.cs`
 
-```
+```csharp
 namespace AcSoft.Application.Abstractions;
 
 public interface IWorkOrderNumberGenerator
@@ -161,7 +161,7 @@ Este es el componente central del caso de uso.
 
 `CreateWorkOrderFromMaintenancePlanHandler.cs`
 
-```
+```csharp
 using AcSoft.Application.Abstractions;
 using AcSoft.Application.Abstractions.Persistence;
 using AcSoft.Domain.Entities;
@@ -269,7 +269,7 @@ El Handler no crea directamente `WorkOrderActivityQuestion` ni `ActivityAnswer`.
 
 En lugar de eso, delega esa responsabilidad al dominio:
 
-```
+```csharp
 workOrder.AddActivity(
     activity: activity,
     moment: planActivity.Moment,
@@ -279,7 +279,7 @@ workOrder.AddActivity(
 
 Dentro de `WorkOrder.AddActivity()` ya tenemos:
 
-```
+```csharp
 var workOrderActivity = WorkOrderActivity.Create(
     workOrderId: Id,
     activityId: activity.Id,
@@ -312,7 +312,7 @@ Más adelante podemos mejorar el modelo para que las actividades del catálogo s
 
 En `AcSoft.Api`, dentro de tu configuración de servicios, agrega:
 
-```
+```csharp
 using AcSoft.Application.WorkOrders.CreateFromMaintenancePlan;
 
 builder.Services.AddScoped<
@@ -323,7 +323,7 @@ No estamos usando MediatR. El controlador puede inyectar directamente el Handler
 
 Por ejemplo:
 
-```
+```csharp
 public sealed class WorkOrdersController : ControllerBase
 {
     private readonly CreateWorkOrderFromMaintenancePlanHandler _handler;
@@ -342,7 +342,7 @@ Todavía no estamos implementando el endpoint completo, porque primero necesitam
 
 En este momento, `MaintenancePlanActivity` contiene:
 
-```
+```csharp
 public Guid ActivityId { get; private set; }
 
 public ExecutionMoment Moment { get; private set; }
@@ -363,3 +363,5 @@ Como tu proyecto HVAC contempla rutinas según los días transcurridos desde la 
 No la agregaría todavía al Handler de creación de órdenes. Primero terminemos el flujo básico y luego construiremos la programación de las rutinas.
 
 El siguiente paso concreto es implementar `MaintenancePlanRepository` y `ActivityRepository` en `AcSoft.Infrastructure` con EF Core, incluyendo las relaciones necesarias para cargar las actividades y preguntas.
+
+paso a paso con [webapi parte 6-3 La responsabilidad del Handler](/blog/webapi-6-3-csharp)

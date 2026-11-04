@@ -1,0 +1,391 @@
+---
+title: "LINQ parte 4 LINQ Proyecciones con Select() y DTOs en EF Core."
+date: "2026-11-03"
+description: "LINQ parte 34 LINQ Proyecciones con Select() y DTOs en EF Core."
+slug: "LINQ-04-csharp"
+category: "Netcore"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+# Siguiente paso: Proyecciones con Select() y DTOs en EF Core 10
+
+Vamos a continuar con nuestro aprendizaje de C# 14 y .NET 10, aplicándolo directamente a AcSoft HVAC.
+
+En la lección anterior aprendimos a utilizar `Include()` y `ThenInclude()` para cargar relaciones. Ahora veremos una técnica que suele ser incluso más importante para construir APIs eficientes: proyectar los datos que necesitamos mediante `Select()`.
+
+La idea es sencilla:
+
+> No siempre necesitamos recuperar una entidad completa de la base de datos. Podemos consultar únicamente los campos que necesita nuestra API.
+
+Esto nos permite reducir datos transferidos, evitar cargas innecesarias y mantener separados los modelos del dominio de los DTOs de la aplicación.
+
+## 1. ¿Qué es una proyección?
+
+Imagina que tenemos nuestra entidad `WorkOrder`:
+
+```csharp
+public class WorkOrder
+{
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; } = string.Empty;
+
+    public WorkOrderStatus Status { get; private set; }
+
+    public Guid CustomerId { get; private set; }
+
+    public Guid EquipmentId { get; private set; }
+
+    public DateTime CreatedAt { get; private set; }
+}
+```
+
+Cuando consultamos la entidad completa:
+
+```csharp
+var workOrders = await _context.WorkOrders
+    .ToListAsync(cancellationToken);
+```
+
+EF Core obtiene todas las columnas mapeadas de esa entidad.
+
+Pero imagina que estamos construyendo una pantalla que solamente necesita:
+
+- Número de orden.
+- Estado.
+- Fecha de creación.
+
+No necesitamos recuperar `CustomerId` ni `EquipmentId`.
+
+Para eso utilizamos `Select()`.
+
+## 2. Crear un DTO para consultar las órdenes
+
+En nuestro proyecto `AcSoft.Application`, podemos crear el siguiente DTO:
+
+Ruta sugerida:
+
+```
+AcSoft.Application
+└── Features
+    └── WorkOrders
+        └── DTOs
+            └── WorkOrderSummaryDto.cs
+```
+
+Código:
+
+```csharp
+namespace AcSoft.Application.Features.WorkOrders.DTOs;
+
+public sealed record WorkOrderSummaryDto(
+    Guid Id,
+    string Number,
+    WorkOrderStatus Status,
+    DateTime CreatedAt);
+```
+
+Este DTO representa los datos que necesitamos mostrar en una lista de órdenes.
+
+Observa que utilizamos `record`.
+
+Un `record` es apropiado para DTOs porque representa principalmente datos y proporciona igualdad basada en sus valores.
+
+El DTO pertenece a Application, no a Domain.
+
+## 3. Utilizar Select() para construir el DTO
+
+Ahora podemos consultar las órdenes y construir directamente el DTO:
+
+```csharp
+var workOrders = await _context.WorkOrders
+    .Select(x => new WorkOrderSummaryDto(
+        x.Id,
+        x.Number,
+        x.Status,
+        x.CreatedAt))
+    .ToListAsync(cancellationToken);
+```
+
+Aquí sucede algo muy interesante.
+
+EF Core no necesita recuperar toda la entidad `WorkOrder`.
+
+Puede generar una consulta SQL similar a esta:
+
+```sql
+SELECT
+    "Id",
+    "Number",
+    "Status",
+    "CreatedAt"
+FROM "WorkOrders";
+```
+
+La consulta solamente recupera las columnas utilizadas en la proyección.
+
+### ¿Qué diferencia existe entre ambas consultas?
+
+Consulta de la entidad completa
+
+```csharp
+var orders = await _context.WorkOrders
+    .ToListAsync(cancellationToken);
+```
+
+Recupera las columnas de la entidad `WorkOrder` y materializa las entidades.
+
+Consulta con proyección
+
+```csharp
+var orders = await _context.WorkOrders
+    .Select(x => new WorkOrderSummaryDto(
+        x.Id,
+        x.Number,
+        x.Status,
+        x.CreatedAt))
+    .ToListAsync(cancellationToken);
+```
+
+Recupera solamente las columnas necesarias para construir el DTO.
+
+Además, como estamos proyectando a un DTO que no es una entidad, EF Core no realiza seguimiento de cambios de una entidad `WorkOrder` en esta consulta.
+
+Por eso, en este caso no necesitamos agregar `AsNoTracking()` para evitar el seguimiento de la entidad proyectada.
+
+## 4. Proyectar datos de relaciones
+
+Ahora vamos a trabajar con un ejemplo más cercano a nuestro negocio HVAC.
+
+Imagina que cada orden tiene un cliente y un equipo de aire acondicionado.
+
+Queremos devolver:
+
+- Número de orden.
+- Estado.
+- Nombre del cliente.
+- Nombre del equipo.
+
+Podemos crear este DTO:
+
+```csharp
+public sealed record WorkOrderDetailsDto(
+    Guid Id,
+    string Number,
+    WorkOrderStatus Status,
+    string CustomerName,
+    string EquipmentName);
+```
+
+La consulta podría ser:
+
+```csharp
+var workOrder = await _context.WorkOrders
+    .Where(x => x.Id == workOrderId)
+    .Select(x => new WorkOrderDetailsDto(
+        x.Id,
+        x.Number,
+        x.Status,
+        x.Customer.Name,
+        x.Equipment.Name))
+    .FirstOrDefaultAsync(cancellationToken);
+```
+
+Observa que accedemos directamente a las propiedades de navegación:
+
+```csharp
+x.Customer.Name
+```
+
+Y:
+
+```csharp
+x.Equipment.Name
+```
+
+No necesitamos utilizar `Include()` para esta proyección.
+
+EF Core puede traducir las expresiones de navegación a SQL y recuperar los datos necesarios.
+
+Esta es una diferencia fundamental entre consultar entidades completas y construir DTOs mediante `Select()`.
+
+## 5. Filtrar, ordenar y proyectar
+
+Podemos combinar varios operadores LINQ en una misma consulta.
+
+Por ejemplo, obtener las órdenes pendientes de un cliente, ordenadas por fecha de creación:
+
+```csharp
+var orders = await _context.WorkOrders
+    .Where(x =>
+        x.CustomerId == customerId &&
+        x.Status == WorkOrderStatus.Pending)
+    .OrderByDescending(x => x.CreatedAt)
+    .Select(x => new WorkOrderSummaryDto(
+        x.Id,
+        x.Number,
+        x.Status,
+        x.CreatedAt))
+    .ToListAsync(cancellationToken);
+```
+
+El orden de los operadores en el código no significa que EF Core ejecute cada operación individualmente en memoria.
+
+EF Core construye una consulta y normalmente traduce estos operadores a una sola instrucción SQL.
+
+Conceptualmente:
+
+```sql
+SELECT
+    "Id",
+    "Number",
+    "Status",
+    "CreatedAt"
+FROM "WorkOrders"
+WHERE
+    "CustomerId" = @customerId
+    AND "Status" = @pending
+ORDER BY "CreatedAt" DESC;
+```
+
+Esto es precisamente lo que buscamos en nuestros endpoints de consulta.
+
+## 6. Proyección con paginación
+
+Ahora vamos a combinar lo aprendido.
+
+Supongamos que nuestro endpoint devuelve las órdenes de trabajo de un cliente, con paginación.
+
+```csharp
+public sealed record PagedResult<T>(
+    IReadOnlyList<T> Items,
+    int PageNumber,
+    int PageSize,
+    int TotalCount);
+```
+
+Podemos implementar una consulta de la siguiente manera:
+
+```csharp
+public async Task<PagedResult<WorkOrderSummaryDto>>
+    GetByCustomerAsync(
+        Guid customerId,
+        int pageNumber,
+        int pageSize,
+        CancellationToken cancellationToken)
+{
+    var query = _context.WorkOrders
+        .Where(x => x.CustomerId == customerId);
+
+    var totalCount = await query
+        .CountAsync(cancellationToken);
+
+    var items = await query
+        .OrderByDescending(x => x.CreatedAt)
+        .ThenBy(x => x.Id)
+        .Skip((pageNumber - 1) * pageSize)
+        .Take(pageSize)
+        .Select(x => new WorkOrderSummaryDto(
+            x.Id,
+            x.Number,
+            x.Status,
+            x.CreatedAt))
+        .ToListAsync(cancellationToken);
+
+    return new PagedResult<WorkOrderSummaryDto>(
+        items,
+        pageNumber,
+        pageSize,
+        totalCount);
+}
+```
+
+Esta consulta realiza dos operaciones en PostgreSQL:
+
+1. Cuenta las órdenes del cliente.
+2. Obtiene la página solicitada con las columnas necesarias.
+
+El `ThenBy(x => x.Id)` agrega un criterio de ordenación estable cuando varias órdenes tienen la misma fecha.
+
+En una implementación real también debemos validar que `pageNumber` y `pageSize` sean valores válidos y establecer un límite máximo de elementos por página.
+
+## 7. ¿Dónde debe estar esta consulta en Clean Architecture?
+
+Esta es una parte importante para nuestro proyecto.
+
+La consulta SQL no debe estar en el controlador de la API.
+
+Una distribución apropiada sería:
+
+[Distribucion de Api](/img/distribucion-de_api.png)  
+
+<Image
+  src="/img/distribucion-de_api.png"
+  alt="Distribucion de api"
+  width="600px"
+/>
+
+Por ejemplo, en Application podemos definir:
+
+```csharp
+public interface IWorkOrderRepository
+{
+    Task<IReadOnlyList<WorkOrderSummaryDto>>
+        GetPendingAsync(
+            CancellationToken cancellationToken);
+}
+```
+
+Y en Infrastructure implementar el contrato con EF Core.
+
+Una observación importante: para consultas complejas de lectura, no siempre necesitamos devolver entidades del dominio. Podemos devolver DTOs directamente.
+
+Esto es compatible con Clean Architecture y también con una separación de responsabilidades más orientada a CQRS.
+
+# 8. Ejercicio práctico
+
+Vamos a comprobar que entendiste la diferencia entre `Include()` y `Select()`.
+
+Pregunta
+
+Tenemos esta consulta:
+
+```csharp
+var result = await _context.WorkOrders
+    .Select(x => new WorkOrderSummaryDto(
+        x.Id,
+        x.Number,
+        x.Status,
+        x.CreatedAt))
+    .ToListAsync(cancellationToken);
+```
+
+¿Es necesario utilizar `Include()` para cargar los datos de `WorkOrder` antes de construir el DTO?
+
+A. Sí, siempre debemos utilizar Include().
+
+B. No, EF Core puede traducir la proyección a SQL y obtener las columnas necesarias.
+
+C. Sí, porque Select() solamente funciona con listas en memoria.
+
+D. No, porque Select() siempre ejecuta la consulta inmediatamente.
+
+Comprobar respuesta
+
+La respueta es B,
+
+¡Correcto!Select() permite proyectar directamente los datos que necesitamos. EF Core puede traducir la consulta a SQL sin cargar previamente toda la entidad.
+
+## ¿Qué sigue?
+
+El siguiente paso que te recomiendo es estudiar consultas de lectura y escritura en DDD: cuándo utilizar repositorios y cuándo utilizar proyecciones directas con EF Core.
+
+Esto nos permitirá tomar una decisión importante en AcSoft:
+
+- Para modificar una orden, recuperar el agregado `WorkOrder` y ejecutar sus reglas de negocio.
+- Para mostrar reportes o listados, consultar directamente y proyectar a DTOs.
+- Para evitar consultas innecesarias, elegir las relaciones y columnas que realmente necesitamos.
+
+Esta separación es una de las bases de una arquitectura limpia y eficiente con .NET 10.

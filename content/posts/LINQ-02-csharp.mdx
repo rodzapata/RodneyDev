@@ -365,7 +365,7 @@ Estos son los siguientes métodos que vale la pena dominar:
 
 Por ejemplo, para cargar una orden junto con sus asignaciones:
 
-```
+```csharp
 var workOrder = await _context.WorkOrders
     .Include(x => x.Assignments)
     .FirstOrDefaultAsync(
@@ -381,7 +381,7 @@ Pregunta: ¿Cuál es la diferencia entre estos dos ejemplos?
 
 Opción A
 
-```
+```csharp
 var orders = await _context.WorkOrders
     .ToListAsync();
 
@@ -391,7 +391,7 @@ var pending = orders
 
 Opción B
 
-```
+```csharp
 var pending = await _context.WorkOrders
     .Where(x => x.Status == WorkOrderStatus.Pending)
     .ToListAsync();
@@ -407,8 +407,12 @@ D. No existe ninguna diferencia.
 
 Comprobar respuesta
 
+La respuesta correct es B.
+
 
 
 Mi propuesta para el siguiente tema: estudiar `Include()`, `ThenInclude()`, relaciones entre entidades y carga de datos (Eager Loading, Lazy Loading y Explicit Loading).
 
 Es un tema especialmente importante para nuestro proyecto AcSoft, porque una orden de trabajo está relacionada con técnicos, asignaciones, actividades, preguntas y respuestas.
+
+LINQ parte 3 [LINQ con Entity Framework and .net 10 ](/blog/LINQ-03-csharp)
