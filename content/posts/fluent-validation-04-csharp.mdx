@@ -1,0 +1,368 @@
+---
+title: "Fluent Validation parte 4 -- Cascade Modes"
+date: "2026-11-05"
+description: "Fluent Validation parte 4 -- Cascade Modes"
+slug: "fluent-validation-04-csharp"
+category: "Netcore"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+# Lección 4. Cascade Mode en FluentValidation 12
+
+En esta lección vamos a aprender a controlar cuándo FluentValidation debe detener una validación y cuándo debe continuar, algo importante para evitar errores innecesarios y ofrecer respuestas claras desde nuestra API de TribuSoft.
+
+El concepto clave es que FluentValidation permite controlar dos niveles de ejecución:
+
+1. Rule-Level Cascade Mode: controla la ejecución de validadores dentro de una misma propiedad.
+2. Class-Level Cascade Mode: controla si se continúa ejecutando las demás reglas del validator.
+
+Vamos a estudiarlos por separado y después veremos cómo configurarlos en nuestro proyecto.
+
+## 1. ¿Qué problema resuelve Cascade Mode?
+
+Imagina que tenemos esta regla para validar el código de un municipio:
+
+```csharp
+RuleFor(x => x.CodigoMunicipio)
+    .NotEmpty()
+    .Length(5)
+    .Matches(@"^\d+$");
+```
+
+Tenemos tres validaciones:
+
+- `NotEmpty()`: el código no puede estar vacío.
+- `Length(5)`: debe tener exactamente cinco caracteres.
+- `Matches()`: debe contener únicamente números.
+
+¿Qué sucede si recibimos una cadena vacía?
+
+Por defecto, FluentValidation utiliza el comportamiento `Continue`: intenta ejecutar los validadores de la cadena y recopila los errores que correspondan.
+
+Esto puede generar mensajes redundantes. Por ejemplo, no tiene mucho sentido informarle al usuario que el código debe tener cinco caracteres y ser numérico cuando primero debe ingresar un valor.
+
+Para controlar ese comportamiento utilizamos `CascadeMode`.
+
+## 2. Rule-Level Cascade Mode
+
+Controla qué sucede entre los validadores de una misma regla `RuleFor()`.
+
+Podemos configurarlo así:
+
+```csharp
+RuleFor(x => x.CodigoMunicipio)
+    .Cascade(CascadeMode.Stop)
+    .NotEmpty()
+    .Length(5)
+    .Matches(@"^\d+$");
+```
+
+Con `CascadeMode.Stop`, FluentValidation detiene la ejecución de esa cadena cuando encuentra el primer error.
+
+Ejemplo: si `CodigoMunicipio` llega vacío:
+
+- Se ejecuta `NotEmpty()`.
+- La validación falla.
+- No se ejecutan `Length(5)` ni `Matches()` para esa propiedad.
+
+Flujo con CascadeMode.Stop
+
+`NotEmpty()`
+
+Falla
+
+Se detiene la cadena
+
+Length() y Matches() no se ejecutan.
+
+Si el código es `"123"`, `NotEmpty()` pasa, `Length(5)` falla y `Matches()` ya no se ejecuta.
+
+## 3. Class-Level Cascade Mode
+
+Ahora vamos al segundo nivel.
+
+Supongamos que nuestro `CrearPersonaNaturalValidator` tiene estas reglas:
+
+```csharp
+RuleFor(x => x.PrimerNombre)
+    .NotEmpty();
+
+RuleFor(x => x.PrimerApellido)
+    .NotEmpty();
+
+RuleFor(x => x.Email)
+    .NotEmpty()
+    .EmailAddress();
+```
+
+Por defecto, FluentValidation continúa evaluando las demás propiedades aunque encuentre errores.
+
+Pero podemos cambiar ese comportamiento:
+
+```csharp
+public sealed class CrearPersonaNaturalValidator
+    : AbstractValidator<CrearPersonaNaturalCommand>
+{
+    public CrearPersonaNaturalValidator()
+    {
+        ClassLevelCascadeMode = CascadeMode.Stop;
+
+        RuleFor(x => x.PrimerNombre)
+            .NotEmpty();
+
+        RuleFor(x => x.PrimerApellido)
+            .NotEmpty();
+
+        RuleFor(x => x.Email)
+            .NotEmpty()
+            .EmailAddress();
+    }
+}
+```
+
+¿Qué sucede ahora?
+
+Si `PrimerNombre` está vacío, FluentValidation:
+
+1. Ejecuta la regla de `PrimerNombre`.
+2. Encuentra un error.
+3. Detiene la ejecución del validator.
+4. No evalúa `PrimerApellido` ni `Email`.
+
+En este caso, obtendremos como máximo un error para todo el validator.
+
+Diferencia fundamental:
+
+| Configuración    | Comportamiento                                       |
+| ---------------- | ---------------------------------------------------- |
+| Rule-Level Stop  | Detiene los validadores restantes de una propiedad.  |
+| Class-Level Stop | Detiene las reglas restantes del validator completo. |
+| Continue         | Continúa con las siguientes validaciones.            |
+
+La documentación oficial explica ambos niveles y confirma que son configuraciones independientes.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://docs.fluentvalidation.net\&sz=32)
+
+FluentValidation documentation+1
+
+
+
+## 4. Configuración recomendada para TribuSoft
+
+Aquí viene una decisión importante de arquitectura.
+
+En un ERP como TribuSoft, normalmente queremos que el usuario reciba todos los errores relevantes de un formulario en una sola respuesta.
+
+Por ejemplo, si está creando una persona natural y faltan el nombre, el apellido y el correo, queremos informar los tres errores, no obligarlo a corregir uno por uno.
+
+Por eso recomiendo esta configuración:
+
+```csharp
+public sealed class CrearPersonaNaturalValidator
+    : AbstractValidator<CrearPersonaNaturalCommand>
+{
+    public CrearPersonaNaturalValidator()
+    {
+        // Detiene validaciones innecesarias dentro de una misma propiedad.
+        RuleLevelCascadeMode = CascadeMode.Stop;
+
+        // Continúa validando las demás propiedades.
+        ClassLevelCascadeMode = CascadeMode.Continue;
+
+        RuleFor(x => x.PrimerNombre)
+            .NotEmpty()
+            .WithMessage("El primer nombre es obligatorio.")
+            .MaximumLength(60)
+            .WithMessage("El primer nombre no puede superar los 60 caracteres.");
+
+        RuleFor(x => x.PrimerApellido)
+            .NotEmpty()
+            .WithMessage("El primer apellido es obligatorio.")
+            .MaximumLength(60)
+            .WithMessage("El primer apellido no puede superar los 60 caracteres.");
+
+        RuleFor(x => x.Email)
+            .NotEmpty()
+            .WithMessage("El correo electrónico es obligatorio.")
+            .EmailAddress()
+            .WithMessage("El correo electrónico no tiene un formato válido.");
+    }
+}
+```
+
+Con esta configuración:
+
+- Si `PrimerNombre` está vacío, devuelve el error de obligatoriedad, sin continuar con los demás validadores de esa propiedad.
+- Si `PrimerApellido` está vacío, también devuelve su error.
+- Si `Email` está vacío, devuelve el error de obligatoriedad.
+- Las demás propiedades siguen validándose.
+
+
+
+Recomendación
+
+&#x20;Para formularios de creación y edición en TribuSoft, comenzaría con `RuleLevelCascadeMode = CascadeMode.Stop` y `ClassLevelCascadeMode = CascadeMode.Continue`.
+
+
+
+Esto permite obtener errores completos sin ejecutar validaciones posteriores que dependen de una validación anterior.
+
+## 5. Configuración global en .NET 10
+
+No es necesario repetir estas dos propiedades en cada validator. FluentValidation permite definir valores predeterminados globales durante el inicio de la aplicación.
+
+Por ejemplo, en `Program.cs`:
+
+```csharp
+using FluentValidation;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Configuración global de FluentValidation.
+ValidatorOptions.Global.DefaultRuleLevelCascadeMode =
+    CascadeMode.Stop;
+
+ValidatorOptions.Global.DefaultClassLevelCascadeMode =
+    CascadeMode.Continue;
+```
+
+Con esto, todos los validators tendrán esos comportamientos por defecto.
+
+Si un validator necesita un comportamiento diferente, puede sobrescribirlos localmente:
+
+```csharp
+public CrearPersonaNaturalValidator()
+{
+    ClassLevelCascadeMode = CascadeMode.Stop;
+
+    // Reglas...
+}
+```
+
+La configuración local prevalece sobre la configuración global para ese validator.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://docs.fluentvalidation.net\&sz=32)
+
+FluentValidation documentation+1
+
+
+
+Importante para FluentValidation 12: no utilices `AbstractValidator.CascadeMode`, `ValidatorOptions.Global.CascadeMode` ni `CascadeMode.StopOnFirstFailure`. Son APIs antiguas que fueron eliminadas. Utiliza `RuleLevelCascadeMode` y `ClassLevelCascadeMode`.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://docs.fluentvalidation.net\&sz=32)
+
+FluentValidation documentation
+
+
+
+## 6. Ejercicio práctico
+
+Vamos a comprobar que comprendiste los dos niveles.
+
+Tenemos este validator:
+
+```csharp
+public sealed class PersonaValidator
+    : AbstractValidator<CrearPersonaNaturalCommand>
+{
+    public PersonaValidator()
+    {
+        RuleLevelCascadeMode = CascadeMode.Stop;
+        ClassLevelCascadeMode = CascadeMode.Continue;
+
+        RuleFor(x => x.PrimerNombre)
+            .NotEmpty()
+            .MinimumLength(3)
+            .MaximumLength(60);
+
+        RuleFor(x => x.PrimerApellido)
+            .NotEmpty()
+            .MinimumLength(3);
+
+        RuleFor(x => x.Email)
+            .NotEmpty()
+            .EmailAddress();
+    }
+}
+```
+
+Y recibimos este objeto:
+
+```
+var command = new CrearPersonaNaturalCommand
+{
+    PrimerNombre = "",
+    PrimerApellido = "Lo",
+    Email = ""
+};
+```
+
+Comprueba tus conocimientos
+
+0/4 respondidas
+
+1\. ¿Cuántos errores produce la regla PrimerNombre?
+
+1 error
+
+2 errores
+
+3 errores
+
+Respuesta 1
+
+Correcto
+
+NotEmpty() falla y RuleLevelCascadeMode = Stop impide ejecutar MinimumLength() y MaximumLength().
+
+2\. ¿Se ejecutará la regla PrimerApellido aunque PrimerNombre haya fallado?
+
+Sí
+
+No
+
+Respuesta Si,
+
+ClassLevelCascadeMode = Continue permite continuar con las demás reglas del validator.
+
+3\. ¿Cuántos errores producirá PrimerApellido?
+
+0 errores
+
+1 error
+
+2 errores
+
+Respuesa 1 error:
+
+NotEmpty() pasa porque 'Lo' no está vacío, pero MinimumLength(3) falla. En este caso se produce un solo error. ¡Ojo! La respuesta correcta es 1 error.
+
+
+4\. ¿Se ejecutará la regla Email?
+
+Sí
+
+No
+
+Rspuestsa Si.
+
+l validator continúa con las demás propiedades. Email genera un error por NotEmpty() y se detiene antes de EmailAddress().
+
+Comprobar respuestas
+
+## Resumen de la lección
+
+Qué debes recordar:
+
+- `RuleLevelCascadeMode` controla los validadores de una misma propiedad.
+- `ClassLevelCascadeMode` controla las reglas del validator completo.
+- `Stop` detiene la ejecución en el nivel donde se configura.
+- `Continue` permite seguir validando.
+- Para TribuSoft recomiendo detener las validaciones innecesarias de cada propiedad, pero continuar validando las demás.
+
+Próxima lección 5: condiciones con `When()`, `Unless()` y `Otherwise()`. Aprenderemos a validar propiedades dependiendo del tipo de persona, por ejemplo, campos obligatorios para una persona jurídica que no necesariamente aplican a una persona natural.
+
+Fluent Validation parte 5 [Fluent Validation --condiciones con When(), Unless() y Otherwise() ](/blog/fluent-validation-05-csharp)  
+
