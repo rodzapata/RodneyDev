@@ -1,0 +1,284 @@
+---
+title: "Crear webapi Parte 6-6  User Secrets en tu proyecto en proyecto Api"
+date: "2026-11-06"
+description: "Crear webapi Parte 6-6  User Secrets en tu proyecto en proyecto Api"
+slug: "webapi-6-6-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Vamos a configurar User Secrets en tu proyecto `AcSoft.Api` para proteger la contraseña de PostgreSQL y evitar que quede almacenada en `appsettings.json` o se suba accidentalmente a Git.
+
+User Secrets es una funcionalidad de .NET que permite guardar información sensible fuera de los archivos del proyecto, durante el desarrollo local.
+
+## 1. Inicializar User Secrets
+
+Abre una terminal en la carpeta donde se encuentra tu proyecto `AcSoft.Api.csproj`.
+
+Ejecuta:
+
+```
+dotnet user-secrets init
+```
+
+Este comando agrega una propiedad similar a esta en tu archivo `.csproj`:
+
+```csharp
+<PropertyGroup>
+    <UserSecretsId>acsoft-api-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</UserSecretsId>
+</PropertyGroup>
+```
+
+El identificador será generado automáticamente por .NET.
+
+## 2. Guardar la cadena de conexión
+
+Ejecuta este comando desde la carpeta del proyecto API:
+
+```
+dotnet user-secrets set "ConnectionStrings:AcSoftConnection" "Host=localhost;Port=5432;Database=acsoft;Username=postgres;Password=TU_PASSWORD"
+```
+
+Reemplaza `TU_PASSWORD` por tu contraseña real.
+
+La sintaxis:
+
+```
+ConnectionStrings:AcSoftConnection
+```
+
+representa esta estructura de configuración:
+
+```json
+{
+  "ConnectionStrings": {
+    "AcSoftConnection": "..."
+  }
+}
+```
+
+No necesitas crear manualmente ningún archivo JSON para guardar el secreto.
+
+## 3. ¿Cómo queda appsettings.json?
+
+Ahora puedes eliminar la cadena de conexión del archivo.
+
+Tu `appsettings.json` quedaría así:
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*"
+}
+```
+
+La contraseña ya no estará en este archivo.
+
+## 4. ¿Cómo queda DependencyInjection.cs?
+
+No necesitas cambiar la lógica que ya implementamos. Quedaría así:
+
+```csharp
+using AcSoft.Application.Abstractions.Persistence;
+using AcSoft.Infrastructure.Persistence;
+using AcSoft.Infrastructure.Persistence.Repositories;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace AcSoft.Infrastructure;
+
+public static class DependencyInjection
+{
+    public static IServiceCollection AddInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        var connectionString =
+            configuration.GetConnectionString("AcSoftConnection")
+            ?? throw new InvalidOperationException(
+                "No se encontró la cadena de conexión AcSoftConnection.");
+
+        services.AddDbContext<AcDbContext>(options =>
+            options.UseNpgsql(connectionString));
+
+        services.AddScoped<IMaintenancePlanRepository, MaintenancePlanRepository>();
+
+        services.AddScoped<IActivityRepository, ActivityRepository>();
+
+        return services;
+    }
+}
+```
+
+## 5. ¿Cómo queda Program.cs?
+
+En tu API solamente debes pasar la configuración:
+
+```csharp
+using AcSoft.Application.Features.WorkOrders.Commands;
+using AcSoft.Infrastructure;
+
+namespace AcSoft.Api;
+
+public class Program
+{
+    public static void Main(string[] args)
+    {
+        var builder = WebApplication.CreateBuilder(args);
+
+        builder.Services.AddControllers();
+
+        builder.Services.AddInfrastructure(builder.Configuration);
+
+        builder.Services.AddScoped<CreateWorkOrderHandler>();
+        builder.Services.AddScoped<CreateWorkOrderFromMaintenancePlanHandler>();
+
+        builder.Services.AddOpenApi();
+
+        var app = builder.Build();
+
+        if (app.Environment.IsDevelopment())
+        {
+            app.MapOpenApi();
+        }
+
+        app.UseHttpsRedirection();
+
+        app.UseAuthorization();
+
+        app.MapControllers();
+
+        app.Run();
+    }
+}
+```
+
+¿Por qué funciona sin configurar User Secrets manualmente en `Program.cs`?
+
+Porque `WebApplication.CreateBuilder(args)` carga automáticamente User Secrets cuando el entorno es `Development` y el proyecto tiene configurado su `UserSecretsId`.
+
+## 6. Comandos útiles
+
+Puedes administrar tus secretos desde la terminal:
+
+| Comando                                                              | Función                                  |
+| -------------------------------------------------------------------- | ---------------------------------------- |
+| `dotnet user-secrets init`                                           | Inicializa User Secrets.                 |
+| `dotnet user-secrets set "ConnectionStrings:AcSoftConnection" "..."` | Guarda o actualiza un secreto.           |
+| `dotnet user-secrets list`                                           | Muestra los secretos guardados.          |
+| `dotnet user-secrets remove "ConnectionStrings:AcSoftConnection"`    | Elimina un secreto.                      |
+| `dotnet user-secrets clear`                                          | Elimina todos los secretos del proyecto. |
+
+## 7. ¿Y cuando publiques AcSoft?
+
+User Secrets es exclusivamente para desarrollo local. En producción debes utilizar variables de entorno o un gestor de secretos.
+
+Por ejemplo, la variable de entorno equivalente sería:
+
+```
+ConnectionStrings__AcSoftConnection
+```
+
+.NET interpreta los dos guiones bajos (`__`) como separadores de configuración.
+
+## 8. Resumen de cómo queda nuestra configuración
+
+AcSoft.Api
+
+Program.cs → llama a AddInfrastructure(builder.Configuration).
+
+AcSoft.Infrastructure
+
+DependencyInjection.cs → configura AcDbContext y registra repositorios.
+
+User Secrets
+
+Almacena la cadena de conexión y contraseña fuera del repositorio.
+
+Mi recomendación: utiliza este mismo mecanismo para futuras credenciales de Supabase, servicios externos o claves de API. Así mantendrás las configuraciones sensibles fuera del código fuente.
+
+El siguiente paso será comprobar que `AcDbContext` se conecta correctamente a PostgreSQL y que EF Core puede construir el modelo con todas las relaciones que configuramos.
+
+> si voy a trabajar en otro equipo y clono el repositorio, tengo que ejecutar nuevamente el comando :
+
+```
+dotnet user-secrets init
+dotnet user-secrets set "ConnectionStrings:AcSoftConnection" "Host=localhost;Port=5432;Database=acsoft;Username=postgres;Password=TU_PASSWORD"
+en el otro pc ?
+```
+
+¡Exactamente! Cuando clones el repositorio en otro equipo, tendrás que configurar nuevamente los secretos en ese equipo.
+
+Pero hay una diferencia importante entre los dos comandos:
+
+### 1. `dotnet user-secrets init`
+
+No necesitas ejecutarlo nuevamente si ya inicializaste User Secrets en el proyecto y el `UserSecretsId` quedó guardado en el `.csproj`.
+
+Por ejemplo, este código viajará con tu repositorio:
+
+```
+<PropertyGroup>
+    <UserSecretsId>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</UserSecretsId>
+</PropertyGroup>
+```
+
+### 2. `dotnet user-secrets set`
+
+Sí debes ejecutarlo en el otro PC, porque los secretos no se comparten mediante Git.
+
+Cada equipo tiene su propio almacenamiento local.
+
+### 3. Flujo de trabajo en otro equipo
+
+Después de clonar el repositorio:
+
+```
+git clone https://github.com/usuario/AcSoft.git
+
+cd AcSoft
+
+cd AcSoft.Api
+
+dotnet user-secrets set "ConnectionStrings:AcSoftConnection" "Host=localhost;Port=5432;Database=acsoft;Username=postgres;Password=TU_PASSWORD"
+```
+
+Después puedes verificar:
+
+```
+dotnet user-secrets list
+```
+
+### 4. Así funciona en diferentes entornos
+
+| Entorno                | Almacenamiento                            |
+| ---------------------- | ----------------------------------------- |
+| PC principal           | User Secrets local                        |
+| Segundo PC             | User Secrets local                        |
+| GitHub                 | No almacena contraseñas                   |
+| Servidor de producción | Variables de entorno o gestor de secretos |
+
+Una buena práctica para AcSoft
+
+`appsettings.json`
+
+Configuración general, sin contraseñas.
+
+`User Secrets`
+
+Credenciales de desarrollo local.
+
+Variables de entorno
+
+Credenciales del servidor de producción.
+
+En conclusión: inicializas User Secrets una sola vez en el proyecto; configuras los valores secretos en cada equipo donde vayas a trabajar.
+

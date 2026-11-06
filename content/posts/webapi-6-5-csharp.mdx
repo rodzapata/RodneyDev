@@ -1,0 +1,408 @@
+---
+title: "Crear webapi Parte 6-5  Configuración de ActivityQuestion"
+date: "2026-11-06"
+description: "Crear webapi Parte 6-5  Configuración de ActivityQuestion"
+slug: "webapi-6-5-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Perfecto. Ahora sí tenemos las entidades necesarias para terminar las relaciones y comenzar a implementar los repositorios.
+
+Hay un detalle importante en tu diseño: `ActivityQuestion` tiene una propiedad de navegación `Question`, y su identificador se obtiene mediante `Question.Id`:
+
+```csharp
+public Question Question { get; private set; } = null!;
+
+public Guid QuestionId => Question.Id;
+```
+
+Esto significa que `QuestionId` es una propiedad calculada, no una propiedad persistente convencional. Vamos a indicarle expresamente a EF Core que la columna de relación es `Question.Id`, utilizando la navegación `Question` y sin intentar mapear `QuestionId` como columna independiente.
+
+## 1. Configuración de ActivityQuestion
+
+Crea el archivo:
+
+`AcSoft.Infrastructure/Persistence/Configurations/ActivityQuestionConfiguration.cs`
+
+## 1. Configuración de ActivityQuestion
+
+Crea `AcSoft.Infrastructure/Persistence/Configurations/ActivityQuestionConfiguration.cs`:
+
+```csharp
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class ActivityQuestionConfiguration
+    : IEntityTypeConfiguration<ActivityQuestion>
+{
+    public void Configure(EntityTypeBuilder<ActivityQuestion> builder)
+    {
+        builder.ToTable("ActivityQuestions");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.ActivityId)
+            .IsRequired();
+
+        builder.Property(x => x.Sequence)
+            .IsRequired();
+
+        builder.Property(x => x.IsRequired)
+            .IsRequired();
+
+        // QuestionId es una propiedad calculada del dominio.
+        builder.Ignore(x => x.QuestionId);
+
+        // EF Core utiliza una FK de sombra llamada QuestionId.
+        builder.HasOne(x => x.Question)
+            .WithMany()
+            .HasForeignKey("QuestionId")
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasIndex("ActivityId", "Sequence")
+            .IsUnique();
+    }
+}
+```
+
+La FK de sombra `QuestionId` permite que EF Core persista la relación sin que tengamos que agregar una propiedad modificable a tu entidad de dominio.
+
+## 2. Configuración de Question
+
+Crea `AcSoft.Infrastructure/Persistence/Configurations/QuestionConfiguration.cs`:
+
+```csharp
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class QuestionConfiguration
+    : IEntityTypeConfiguration<Question>
+{
+    public void Configure(EntityTypeBuilder<Question> builder)
+    {
+        builder.ToTable("Questions");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.Code)
+            .HasMaxLength(30)
+            .IsRequired();
+
+        builder.HasIndex(x => x.Code)
+            .IsUnique();
+
+        builder.Property(x => x.Text)
+            .HasMaxLength(500)
+            .IsRequired();
+
+        builder.Property(x => x.AnswerType)
+            .IsRequired();
+
+        builder.Property(x => x.MeasurementType)
+            .IsRequired(false);
+    }
+}
+```
+
+Por ahora los enums se almacenarán como números, que es el comportamiento predeterminado de EF Core. Más adelante podemos decidir si conviene almacenarlos como texto.
+
+## 3. Actualizar MaintenancePlanActivityConfiguration
+
+Asegúrate de que la configuración tenga las dos relaciones:
+
+```csharp
+builder.HasOne<MaintenancePlan>()
+    .WithMany(x => x.Activities)
+    .HasForeignKey(x => x.MaintenancePlanId)
+    .OnDelete(DeleteBehavior.Cascade);
+
+builder.HasOne<Activity>()
+    .WithMany()
+    .HasForeignKey(x => x.ActivityId)
+    .OnDelete(DeleteBehavior.Restrict);
+```
+
+Con esto, el plan tiene sus actividades y cada actividad del plan referencia una actividad del catálogo.
+
+## 4. Implementar MaintenancePlanRepository
+
+Ahora sí, crearemos el primer repositorio.
+
+Ruta:
+
+`AcSoft.Infrastructure/Persistence/Repositories/MaintenancePlanRepository.cs`
+
+```csharp
+using AcSoft.Application.Abstractions.Persistence;
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace AcSoft.Infrastructure.Persistence.Repositories;
+
+public sealed class MaintenancePlanRepository : IMaintenancePlanRepository
+{
+    private readonly AcDbContext _context;
+
+    public MaintenancePlanRepository(AcDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task<MaintenancePlan?> GetByIdWithActivitiesAsync(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        return await _context.MaintenancePlans
+            .AsNoTracking()
+            .Include(x => x.Activities)
+            .FirstOrDefaultAsync(
+                x => x.Id == id,
+                cancellationToken);
+    }
+}
+```
+
+Aquí utilizamos:
+
+- `Include`: carga las actividades asociadas al plan.
+- `AsNoTracking`: evita que EF Core haga seguimiento de las entidades, porque en este caso solo necesitamos consultar el plan.
+- `FirstOrDefaultAsync`: devuelve el plan o `null` si no existe.
+
+## 5. Implementar ActivityRepository
+
+Ruta:
+
+`AcSoft.Infrastructure/Persistence/Repositories/ActivityRepository.cs`
+
+```csharp
+using AcSoft.Application.Abstractions.Persistence;
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace AcSoft.Infrastructure.Persistence.Repositories;
+
+public sealed class ActivityRepository : IActivityRepository
+{
+    private readonly AcDbContext _context;
+
+    public ActivityRepository(AcDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task<Activity?> GetByIdWithQuestionsAsync(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        return await _context.Activities
+            .AsNoTracking()
+            .Include(x => x.Questions)
+                .ThenInclude(x => x.Question)
+            .FirstOrDefaultAsync(
+                x => x.Id == id,
+                cancellationToken);
+    }
+}
+```
+
+La parte más importante es:
+
+```csharp
+.Include(x => x.Questions)
+    .ThenInclude(x => x.Question)
+```
+
+Esto carga:
+
+1. La actividad del catálogo.
+2. Sus asociaciones `ActivityQuestion`.
+3. La entidad `Question` relacionada con cada asociación.
+
+Es precisamente lo que necesita `WorkOrder.AddActivity()` para crear las preguntas de la orden de trabajo.
+
+## 6. Actualizar AcDbContext
+
+Tu contexto debe exponer los conjuntos que utilizaremos.
+
+Actualiza `AcDbContext.cs`:
+
+```csharp
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace AcSoft.Infrastructure.Persistence;
+
+public class AcDbContext : DbContext
+{
+    public AcDbContext(DbContextOptions<AcDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<WorkOrder> WorkOrders => Set<WorkOrder>();
+
+    public DbSet<MaintenancePlan> MaintenancePlans =>
+        Set<MaintenancePlan>();
+
+    public DbSet<MaintenancePlanActivity> MaintenancePlanActivities =>
+        Set<MaintenancePlanActivity>();
+
+    public DbSet<Activity> Activities => Set<Activity>();
+
+    public DbSet<ActivityQuestion> ActivityQuestions =>
+        Set<ActivityQuestion>();
+
+    public DbSet<Question> Questions => Set<Question>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+
+        modelBuilder.ApplyConfigurationsFromAssembly(
+            typeof(AcDbContext).Assembly);
+    }
+}
+```
+
+He eliminado el constructor sin parámetros protegido de tu ejemplo porque no lo necesitamos para la configuración habitual de un `DbContext` mediante inyección de dependencias.
+
+## 7. Registrar los repositorios en inyección de dependencias
+
+En el lugar donde registras los servicios de Infrastructure, agrega:
+
+```csharp
+services.AddScoped<IMaintenancePlanRepository, MaintenancePlanRepository>();
+services.AddScoped<IActivityRepository, ActivityRepository>();
+```
+
+Necesitarás estos `using`:
+
+```csharp
+using AcSoft.Application.Abstractions.Persistence;
+using AcSoft.Infrastructure.Persistence.Repositories;
+```
+
+No crees otra configuración de DI si ya tienes una clase de extensión para registrar los servicios de Infrastructure: agrega las dos líneas allí.
+
+## 8. Así queda el flujo completo
+
+CreateWorkOrderFromMaintenancePlanHandler
+
+Caso de uso en Application
+
+MaintenancePlanRepository
+
+Carga el plan y sus MaintenancePlanActivity.
+
+ActivityRepository
+
+Carga cada Activity con sus ActivityQuestion y Question.
+
+WorkOrder.AddActivity()
+
+Agrega las actividades y configura las preguntas en la orden.
+
+IUnitOfWork.SaveChangesAsync()
+
+Persiste la nueva orden de trabajo.
+
+## 9. Una comprobación importante antes de ejecutar
+
+Hay un detalle que debemos verificar: `ActivityQuestion.QuestionId` es una propiedad calculada y estamos configurando una FK de sombra con ese mismo nombre. Si EF Core presenta un conflicto al construir el modelo, podemos cambiar el nombre de la FK de sombra, por ejemplo, a `QuestionForeignKey`, sin modificar la lógica del dominio.
+
+Por ahora, no ejecutes migraciones hasta comprobar que todas las configuraciones están cargando correctamente.
+
+Siguiente paso: compila la solución y dime si aparecen errores. Después revisaremos las configuraciones de EF Core y probaremos que el plan se carga con todas sus actividades y preguntas.
+
+Tu `DependencyInjection.cs` está correcto para registrar los dos repositorios. Sin embargo, todavía le falta registrar `AcDbContext` para que EF Core pueda inyectarlo en `MaintenancePlanRepository` y `ActivityRepository`.
+
+Vamos a completarlo.
+
+## 1. DependencyInjection.cs
+
+Si utilizas PostgreSQL con Npgsql, quedaría así:
+
+```csharp
+using AcSoft.Application.Abstractions.Persistence;
+using AcSoft.Infrastructure.Persistence;
+using AcSoft.Infrastructure.Persistence.Repositories;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace AcSoft.Infrastructure;
+
+public static class DependencyInjection
+{
+    public static IServiceCollection AddInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        var connectionString =
+            configuration.GetConnectionString("AcSoftConnection")
+            ?? throw new InvalidOperationException(
+                "No se encontró la cadena de conexión AcSoftConnection.");
+
+        services.AddDbContext<AcDbContext>(options =>
+            options.UseNpgsql(connectionString));
+
+        services.AddScoped<IMaintenancePlanRepository, MaintenancePlanRepository>();
+
+        services.AddScoped<IActivityRepository, ActivityRepository>();
+
+        return services;
+    }
+}
+```
+
+¿Qué agregamos?
+
+- `AddDbContext`: registra el contexto de EF Core.
+- `UseNpgsql`: indica que utilizaremos PostgreSQL.
+- `GetConnectionString`: obtiene la cadena de conexión desde la configuración.
+
+## 2. Actualizar Program.cs
+
+Como ahora `AddInfrastructure` recibe `IConfiguration`, cambia la llamada:
+
+```csharp
+builder.Services.AddInfrastructure(builder.Configuration);
+```
+
+## 3. appsettings.json
+
+En tu proyecto `AcSoft.Api`, agrega la configuración:
+
+```json
+{
+  "ConnectionStrings": {
+    "AcSoftConnection": "Host=localhost;Port=5432;Database=acsoft;Username=postgres;Password=tu_password"
+  }
+}
+```
+
+No guardes contraseñas reales en el repositorio Git. Para desarrollo puedes utilizar User Secrets y, en producción, variables de entorno.
+
+## 4. Resultado de la arquitectura
+
+La responsabilidad queda distribuida así:
+
+| Proyecto       | Responsabilidad                                             |
+| -------------- | ----------------------------------------------------------- |
+| Application    | Define las interfaces de los repositorios.                  |
+| Infrastructure | Implementa repositorios y configura EF Core.                |
+| API            | Proporciona la configuración y llama a `AddInfrastructure`. |
+
+Una pregunta antes de continuar: ¿ya tienes instalado el proveedor `Npgsql.EntityFrameworkCore.PostgreSQL` en `AcSoft.Infrastructure` y configurada tu conexión a PostgreSQL, o todavía no hemos realizado esa parte?
+
+
+paso a paso con [webapi parte 6-6 User Secrets en tu proyecto en proyecto Api](/blog/webapi-6-6-csharp)

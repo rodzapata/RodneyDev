@@ -1,0 +1,517 @@
+---
+title: "Crear webapi Parte 6-3 MaintenancePlanRepository"
+date: "2026-11-05"
+description: "Crear webapi Parte 6-3 MaintenancePlanRepository"
+slug: "webapi-6-3-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+> con la estructura que te pasé podrias generame como quedan los archivos, que me enrredé
+
+¡Claro! Vamos a organizarlo de una forma más sencilla. Te voy a mostrar cómo quedan los archivos dentro de la estructura que ya tienes, separando lo que debes crear de lo que debes conservar.
+
+La idea es que no tengas que reorganizar todo tu proyecto.
+
+# 1. Estructura de `AcSoft.Application`
+
+Esta sería la estructura para el paso que estamos desarrollando:
+
+```
+AcSoft.Application
+│
+├── Abstractions
+│   │
+│   ├── Persistence
+│   │   ├── IUnitOfWork.cs                         (YA EXISTE)
+│   │   ├── IWorkOrderRepository.cs                (YA EXISTE)
+│   │   ├── IWorkSessionRepository.cs              (YA EXISTE)
+│   │   ├── IMaintenancePlanRepository.cs           (NUEVO)
+│   │   └── IActivityRepository.cs                  (NUEVO)
+│   │
+│   └── Services
+│       └── IWorkOrderNumberGenerator.cs            (NO LO VAMOS A CREAR AÚN)
+│
+├── Features
+│   │
+│   ├── WorkOrders
+│   │   │
+│   │   ├── Commands
+│   │   │   ├── CreateWorkOrderHandler.cs           (YA EXISTE)
+│   │   │   └── CreateWorkOrderFromMaintenancePlanHandler.cs (NUEVO)
+│   │   │
+│   │   ├── DTOs
+│   │   │   ├── CreateWorkOrderRequest.cs           (YA EXISTE)
+│   │   │   └── CreateWorkOrderFromMaintenancePlanRequest.cs (NUEVO)
+│   │   │
+│   │   ├── Queries
+│   │   └── Validators
+│   │
+│   └── WorkSessions
+│       └── Commands
+│           └── StartWorkSessionHandler.cs          (YA EXISTE)
+│
+└── UseCases
+```
+
+Importante: no vamos a crear todavía `IWorkOrderNumberGenerator`. Para mantener el código sencillo y consistente con tu implementación actual, usaremos temporalmente el mismo formato de número de OT.
+
+# 2. Archivo nuevo: `IMaintenancePlanRepository.cs`
+
+Ruta:
+
+`Abstractions/Persistence/IMaintenancePlanRepository.cs`
+
+```csharp
+using AcSoft.Domain.Entities;
+
+namespace AcSoft.Application.Abstractions.Persistence;
+
+public interface IMaintenancePlanRepository
+{
+    Task<MaintenancePlan?> GetByIdWithActivitiesAsync(
+        Guid id,
+        CancellationToken cancellationToken);
+}
+```
+
+Este repositorio permite obtener un plan de mantenimiento junto con las actividades que tiene configuradas.
+
+# 3. Archivo nuevo: `IActivityRepository.cs`
+
+Ruta:
+
+`Abstractions/Persistence/IActivityRepository.cs`
+
+```csharp
+using AcSoft.Domain.Entities;
+
+namespace AcSoft.Application.Abstractions.Persistence;
+
+public interface IActivityRepository
+{
+    Task<Activity?> GetByIdWithQuestionsAsync(
+        Guid id,
+        CancellationToken cancellationToken);
+}
+```
+
+Este repositorio permite consultar una actividad del catálogo con sus preguntas.
+
+Por ejemplo, una actividad de medición de corriente podría tener preguntas para registrar las mediciones de las fases R, S y T.
+
+# 4. Archivo nuevo: `CreateWorkOrderFromMaintenancePlanRequest.cs`
+
+Ruta:
+
+`Features/WorkOrders/DTOs/CreateWorkOrderFromMaintenancePlanRequest.cs`
+
+```csharp
+namespace AcSoft.Application.Features.WorkOrders.DTOs;
+
+public sealed record CreateWorkOrderFromMaintenancePlanRequest(
+    Guid CustomerId,
+    Guid EquipmentId,
+    Guid MaintenancePlanId);
+```
+
+Este DTO contiene los datos necesarios para crear una orden desde un plan preventivo.
+
+# 5. Archivo nuevo: `CreateWorkOrderFromMaintenancePlanHandler.cs`
+
+Ruta:
+
+`Features/WorkOrders/Commands/CreateWorkOrderFromMaintenancePlanHandler.cs`
+
+Este será el Handler que coordina la creación de la orden desde el plan.
+
+```csharp
+using AcSoft.Application.Abstractions.Persistence;
+using AcSoft.Application.Features.WorkOrders.DTOs;
+using AcSoft.Domain.Entities;
+using AcSoft.Domain.Enums;
+
+namespace AcSoft.Application.Features.WorkOrders.Commands;
+
+public sealed class CreateWorkOrderFromMaintenancePlanHandler
+{
+    private readonly IMaintenancePlanRepository _maintenancePlanRepository;
+    private readonly IActivityRepository _activityRepository;
+    private readonly IWorkOrderRepository _workOrderRepository;
+    private readonly IUnitOfWork _unitOfWork;
+
+    public CreateWorkOrderFromMaintenancePlanHandler(
+        IMaintenancePlanRepository maintenancePlanRepository,
+        IActivityRepository activityRepository,
+        IWorkOrderRepository workOrderRepository,
+        IUnitOfWork unitOfWork)
+    {
+        _maintenancePlanRepository = maintenancePlanRepository;
+        _activityRepository = activityRepository;
+        _workOrderRepository = workOrderRepository;
+        _unitOfWork = unitOfWork;
+    }
+
+    public async Task<Guid> HandleAsync(
+        CreateWorkOrderFromMaintenancePlanRequest request,
+        CancellationToken cancellationToken)
+    {
+        // 1. Obtener el plan de mantenimiento.
+        var maintenancePlan =
+            await _maintenancePlanRepository.GetByIdWithActivitiesAsync(
+                request.MaintenancePlanId,
+                cancellationToken);
+
+        if (maintenancePlan is null)
+        {
+            throw new InvalidOperationException(
+                "El plan de mantenimiento no existe.");
+        }
+
+        // 2. Validar que el plan esté activo.
+        if (maintenancePlan.Status != MaintenancePlanStatus.Active)
+        {
+            throw new InvalidOperationException(
+                "Solo se pueden generar órdenes desde un plan activo.");
+        }
+
+        // 3. Generar el número de la orden.
+        var workOrderNumber = $"OT-{DateTime.UtcNow:yyyyMMddHHmmss}";
+
+        // 4. Crear la orden de trabajo.
+        var workOrder = WorkOrder.Create(
+            number: workOrderNumber,
+            customerId: request.CustomerId,
+            equipmentId: request.EquipmentId);
+
+        // 5. Recorrer las actividades del plan.
+        foreach (var planActivity in maintenancePlan.Activities
+                     .OrderBy(x => x.Moment)
+                     .ThenBy(x => x.Sequence))
+        {
+            // Consultar la actividad del catálogo con sus preguntas.
+            var activity =
+                await _activityRepository.GetByIdWithQuestionsAsync(
+                    planActivity.ActivityId,
+                    cancellationToken);
+
+            if (activity is null)
+            {
+                throw new InvalidOperationException(
+                    $"No se encontró la actividad del catálogo " +
+                    $"con identificador {planActivity.ActivityId}.");
+            }
+
+            // Agregar la actividad a la orden.
+            workOrder.AddActivity(
+                activity: activity,
+                moment: planActivity.Moment,
+                sequence: planActivity.Sequence,
+                isUnplanned: false);
+        }
+
+        // 6. Agregar la orden al repositorio.
+        await _workOrderRepository.AddAsync(
+            workOrder,
+            cancellationToken);
+
+        // 7. Guardar los cambios.
+        await _unitOfWork.SaveChangesAsync(
+            cancellationToken);
+
+        // 8. Retornar el identificador de la orden.
+        return workOrder.Id;
+    }
+}
+```
+
+Este código conserva tus convenciones actuales:
+
+- `HandleAsync`
+- `AddAsync`
+- `SaveChangesAsync`
+- `CancellationToken`
+
+Y utiliza las mismas interfaces que ya tienes.
+
+# 6. Archivos que NO debes modificar
+
+Por ahora, conserva tus archivos existentes tal como están:
+
+### `IWorkOrderRepository.cs`
+
+```csharp
+using AcSoft.Domain.Entities;
+
+namespace AcSoft.Application.Abstractions.Persistence;
+
+public interface IWorkOrderRepository
+{
+    Task AddAsync(
+        WorkOrder workOrder,
+        CancellationToken cancellationToken);
+
+    Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken);
+}
+```
+
+### `IUnitOfWork.cs`
+
+```csharp
+namespace AcSoft.Application.Abstractions.Persistence;
+
+public interface IUnitOfWork
+{
+    Task<int> SaveChangesAsync(
+        CancellationToken cancellationToken);
+}
+```
+
+### `CreateWorkOrderHandler.cs`
+
+También lo conservamos. Ese Handler continúa siendo útil para crear órdenes que no provienen de un plan preventivo.
+
+# 7. Registrar el Handler en `AcSoft.Api`
+
+En el archivo donde configuras los servicios de tu API, agrega:
+
+```csharp
+using AcSoft.Application.Features.WorkOrders.Commands;
+
+builder.Services.AddScoped<CreateWorkOrderFromMaintenancePlanHandler>();
+```
+
+No olvides que los repositorios nuevos también deberán registrarse cuando implementemos sus clases concretas en `AcSoft.Infrastructure`.
+
+## Resumen
+
+Por ahora, debes crear solamente estos cuatro archivos:
+
+IMaintenancePlanRepository.cs
+
+Nuevo
+
+IActivityRepository.cs
+
+Nuevo
+
+CreateWorkOrderFromMaintenancePlanRequest.cs
+
+Nuevo
+
+CreateWorkOrderFromMaintenancePlanHandler.cs
+
+Nuevo
+
+El siguiente paso será crear las implementaciones de `IMaintenancePlanRepository` e `IActivityRepository` en `AcSoft.Infrastructure`, usando tu `DbContext` actual.
+
+
+
+Perfecto. Vamos a implementar los dos repositorios en `AcSoft.Infrastructure`, respetando la estructura que ya tenemos y usando EF Core.
+
+El objetivo es que:
+
+1. `MaintenancePlanRepository` cargue el plan junto con sus actividades (`MaintenancePlanActivity`).
+2. `ActivityRepository` cargue una actividad del catálogo junto con sus preguntas.
+3. El `CreateWorkOrderFromMaintenancePlanHandler` pueda utilizar ambos repositorios sin conocer detalles de EF Core.
+
+## 1. Estructura de carpetas
+
+Agregaremos estos archivos dentro de tu proyecto Infrastructure:
+
+```
+AcSoft.Infrastructure
+├── Persistence
+│   ├── Context
+│   │   └── AcSoftDbContext.cs
+│   └── Repositories
+│       ├── MaintenancePlanRepository.cs
+│       └── ActivityRepository.cs
+```
+
+Asumo que tu `DbContext` se llama `AcSoftDbContext`. Si actualmente tiene otro nombre o ubicación, conservamos el que ya tienes.
+
+## 2. Antes de escribir las implementaciones
+
+Necesito confirmar los nombres reales de las propiedades de navegación para construir correctamente los `Include` y `ThenInclude`, sin inventar relaciones que después no coincidan con tus entidades.
+
+Compárteme el código actual de estos archivos:
+
+- `MaintenancePlan.cs`
+- `MaintenancePlanActivity.cs`
+- `Activity.cs`
+- La entidad que representa las preguntas de una actividad.
+- `AcSoftDbContext.cs` (o el nombre que tenga tu contexto).
+
+Con eso implementaremos los dos repositorios usando `Include` y `ThenInclude`, revisaremos las relaciones uno-a-muchos y evitaremos consultas innecesarias.
+
+Importante: no vamos a modificar tus entidades de dominio solo para adaptarlas a EF Core. Primero revisaremos cómo están construidas y, si hace falta, configuraremos las relaciones mediante `IEntityTypeConfiguration<T>` en Infrastructure.
+
+> continuemos
+
+Continuemos. El siguiente paso es revisar las entidades para implementar los repositorios sin asumir nombres de propiedades ni relaciones.
+
+Compárteme primero `MaintenancePlan.cs` y `MaintenancePlanActivity.cs`.
+
+Empezaremos por `MaintenancePlanRepository`; después revisaremos `Activity.cs` y la entidad de preguntas para implementar `ActivityRepository`.
+
+Así avanzamos paso a paso, conservando tu arquitectura actual y evitando cambios innecesarios.
+
+Excelente. Con estas dos entidades ya podemos definir cómo EF Core debe cargar las actividades del plan.
+
+Hay un detalle importante: `MaintenancePlan` expone `Activities` como `IReadOnlyCollection`, pero internamente utiliza `_activities`. Esto está bien desde DDD: el dominio controla las modificaciones y EF Core puede trabajar con el campo privado mediante una configuración adecuada.
+
+## 1. Relación que tenemos
+
+La relación es:
+
+MaintenancePlan (1)
+
+Un plan puede tener varias actividades.
+
+MaintenancePlanActivity (N)
+
+Cada registro identifica una actividad del catálogo, su momento y su secuencia.
+
+Actualmente `MaintenancePlanActivity` tiene `ActivityId`, pero no tiene una propiedad de navegación `Activity`. Por tanto, no podemos utilizar todavía:
+
+```csharp
+.Include(x => x.Activities)
+    .ThenInclude(x => x.Activity)
+```
+
+No debemos agregar esa navegación sin revisar primero cómo está definida `Activity`.
+
+## 2. Configuración de MaintenancePlan
+
+Podemos configurar la relación utilizando el campo privado `_activities`.
+
+Crea el archivo:
+
+`AcSoft.Infrastructure/Persistence/Configurations/MaintenancePlanConfiguration.cs`
+
+```csharp
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class MaintenancePlanConfiguration
+    : IEntityTypeConfiguration<MaintenancePlan>
+{
+    public void Configure(EntityTypeBuilder<MaintenancePlan> builder)
+    {
+        builder.ToTable("MaintenancePlans");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.Code)
+            .HasMaxLength(30)
+            .IsRequired();
+
+        builder.HasIndex(x => x.Code)
+            .IsUnique();
+
+        builder.Property(x => x.Name)
+            .HasMaxLength(150)
+            .IsRequired();
+
+        builder.Property(x => x.Description)
+            .HasMaxLength(500);
+
+        builder.Property(x => x.Status)
+            .IsRequired();
+
+        builder.HasMany(x => x.Activities)
+            .WithOne()
+            .HasForeignKey(x => x.MaintenancePlanId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.Navigation(x => x.Activities)
+            .HasField("_activities")
+            .UsePropertyAccessMode(PropertyAccessMode.Field);
+    }
+}
+```
+
+### ¿Qué estamos configurando?
+
+- `HasMany`: un plan puede tener muchas actividades.
+- `WithOne()`: cada actividad pertenece a un solo plan, sin necesitar una propiedad de navegación inversa.
+- `HasForeignKey`: `MaintenancePlanActivity.MaintenancePlanId` es la llave foránea.
+- `OnDelete(Cascade)`: si se elimina un plan, EF Core elimina sus registros asociados.
+- `HasField("_activities")`: EF Core utiliza la colección privada del agregado, sin modificarla desde fuera.
+- `HasIndex(x => x.Code).IsUnique()`: evita códigos duplicados.
+
+## 3. Configuración de MaintenancePlanActivity
+
+Crea:
+
+`AcSoft.Infrastructure/Persistence/Configurations/MaintenancePlanActivityConfiguration.cs`
+
+```csharp
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class MaintenancePlanActivityConfiguration
+    : IEntityTypeConfiguration<MaintenancePlanActivity>
+{
+    public void Configure(EntityTypeBuilder<MaintenancePlanActivity> builder)
+    {
+        builder.ToTable("MaintenancePlanActivities");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.MaintenancePlanId)
+            .IsRequired();
+
+        builder.Property(x => x.ActivityId)
+            .IsRequired();
+
+        builder.Property(x => x.Moment)
+            .IsRequired();
+
+        builder.Property(x => x.Sequence)
+            .IsRequired();
+
+        builder.HasIndex(x => new
+        {
+            x.MaintenancePlanId,
+            x.Moment,
+            x.Sequence
+        })
+        .IsUnique();
+    }
+}
+```
+
+El índice único refuerza en la base de datos la regla que ya tienes en `AddActivity`: no puede repetirse la secuencia para un mismo momento dentro del mismo plan.
+
+Una precisión: todavía no configuramos la relación entre `MaintenancePlanActivity` y `Activity`, porque necesitamos revisar tu entidad `Activity` y decidir si agregaremos una propiedad de navegación o mantendremos la relación únicamente mediante `ActivityId`.
+
+## 4. Siguiente paso
+
+Compárteme ahora el código de:
+
+1. `Activity.cs`.
+2. La entidad que representa las preguntas de una actividad.
+3. Tu `AcSoftDbContext.cs`.
+
+Con eso implementaremos la relación con las preguntas y después construiremos `MaintenancePlanRepository` con la consulta:
+
+```csharp
+.Include(x => x.Activities)
+```
+
+Así podremos probar la carga completa del plan antes de pasar al repositorio de actividades.
+
+paso a paso con [webapi parte 6-4 MaintenancePlanRepository](/blog/webapi-6-4-csharp)
+

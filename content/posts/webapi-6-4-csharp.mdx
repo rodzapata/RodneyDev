@@ -1,0 +1,189 @@
+---
+title: "Crear webapi Parte 6-4  Configuration"
+date: "2026-11-05"
+description: "Crear webapi Parte 6-4  Configuration"
+slug: "webapi-6-4-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+
+Perfecto. Ya tenemos dos datos importantes:
+
+- Tu contexto real se llama `AcDbContext`, no `AcSoftDbContext`.
+- `Activity` tiene una colección privada `_questions`, que podemos configurar de la misma manera que `_activities` en `MaintenancePlan`.
+
+Además, podemos configurar la relación entre `MaintenancePlanActivity` y `Activity` sin agregar una propiedad de navegación a tu entidad de dominio. Esto mantiene el modelo limpio.
+
+## 1. Actualizar MaintenancePlanActivityConfiguration
+
+Agregaremos la relación con `Activity` mediante `ActivityId`.
+
+En `MaintenancePlanActivityConfiguration.cs`, agrega:
+
+```csharp
+builder.HasOne<Activity>()
+    .WithMany()
+    .HasForeignKey(x => x.ActivityId)
+    .OnDelete(DeleteBehavior.Restrict);
+```
+
+La configuración completa de las relaciones quedaría así:
+
+```csharp
+builder.HasOne<MaintenancePlan>()
+    .WithMany(x => x.Activities)
+    .HasForeignKey(x => x.MaintenancePlanId)
+    .OnDelete(DeleteBehavior.Cascade);
+
+builder.HasOne<Activity>()
+    .WithMany()
+    .HasForeignKey(x => x.ActivityId)
+    .OnDelete(DeleteBehavior.Restrict);
+```
+
+¿Por qué `Restrict` en la actividad?
+
+Porque una actividad del catálogo podría estar siendo utilizada por varios planes. No queremos que eliminar una actividad provoque la eliminación de información relacionada con esos planes.
+
+## 2. Configuración de Activity
+
+Crea:
+
+`AcSoft.Infrastructure/Persistence/Configurations/ActivityConfiguration.cs`
+
+```csharp
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class ActivityConfiguration
+    : IEntityTypeConfiguration<Activity>
+{
+    public void Configure(EntityTypeBuilder<Activity> builder)
+    {
+        builder.ToTable("Activities");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.Code)
+            .HasMaxLength(30)
+            .IsRequired();
+
+        builder.HasIndex(x => x.Code)
+            .IsUnique();
+
+        builder.Property(x => x.Name)
+            .HasMaxLength(150)
+            .IsRequired();
+
+        builder.Property(x => x.Description)
+            .HasMaxLength(500)
+            .IsRequired();
+
+        builder.HasMany(x => x.Questions)
+            .WithOne()
+            .HasForeignKey(x => x.ActivityId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.Navigation(x => x.Questions)
+            .HasField("_questions")
+            .UsePropertyAccessMode(PropertyAccessMode.Field);
+    }
+}
+```
+
+Esta configuración presupone que `ActivityQuestion` tiene una propiedad `ActivityId`, como sugiere la llamada `ActivityQuestion.Create(Id, ...)`.
+
+## 3. Actualizar AcDbContext
+
+Actualmente tienes:
+
+```csharp
+public DbSet<WorkOrder> WorkOrders { get; set; }
+```
+
+Más adelante agregaremos los demás `DbSet`, pero no quiero asumir todavía todas tus entidades.
+
+Por ahora, las configuraciones se pueden registrar mediante:
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    base.OnModelCreating(modelBuilder);
+
+    modelBuilder.ApplyConfigurationsFromAssembly(
+        typeof(AcDbContext).Assembly);
+}
+```
+
+Esto permite que EF Core descubra automáticamente las clases que implementan `IEntityTypeConfiguration<T>` dentro del ensamblado de Infrastructure.
+
+## 4. Necesito revisar dos entidades más
+
+Antes de construir `ActivityRepository`, compárteme:
+
+- `ActivityQuestion.cs`
+- `Question.cs`
+
+Quiero comprobar cómo están relacionadas las preguntas, si tienen respuestas o tipos de respuesta, y cómo se representa `IsRequired`.
+
+Después implementaremos `ActivityRepository` con:
+
+```csharp
+return await _context.Activities
+    .Include(x => x.Questions)
+    // Aquí completaremos la relación con Question.
+    .FirstOrDefaultAsync(
+        x => x.Id == id,
+        cancellationToken);
+```
+
+Importante: todavía no ejecutes migraciones. Primero terminaremos de configurar las relaciones y revisaremos el modelo completo. Así evitamos generar migraciones incompletas o incorrectas.
+
+
+> ahun no tengo el codigo de MaintenancePlanRepository.cs y ActivityRepository.cs esto se hace mas adelante ?
+
+
+¡Correcto! Todavía no hemos creado `MaintenancePlanRepository.cs` ni `ActivityRepository.cs`. Estamos preparando primero las configuraciones de EF Core para que los repositorios puedan cargar correctamente las relaciones.
+
+Sin embargo, no necesitamos esperar mucho más. El orden que seguiremos será:
+
+1.
+
+   En progreso
+
+   &#x20;Configurar las relaciones de `MaintenancePlan` y `MaintenancePlanActivity`.
+
+2. Revisar `ActivityQuestion` y `Question` para configurar las preguntas.
+
+3. Crear `MaintenancePlanRepository.cs`.
+
+4. Crear `ActivityRepository.cs`.
+
+5. Verificar que ambos implementen las interfaces de `AcSoft.Application.Abstractions.Persistence`.
+
+6. Registrar y probar los repositorios mediante inyección de dependencias.
+
+Los dos archivos se crearán aquí:
+
+```
+AcSoft.Infrastructure
+└── Persistence
+    └── Repositories
+        ├── MaintenancePlanRepository.cs
+        └── ActivityRepository.cs
+```
+
+¿Por qué estamos haciendo esto en ese orden?
+
+Porque los repositorios utilizarán `Include` y `ThenInclude` de EF Core. Primero debemos conocer las relaciones reales de tus entidades para evitar errores de compilación y consultas incompletas.
+
+Compárteme `ActivityQuestion.cs` y `Question.cs` y continuamos con la implementación.
+
+
+paso a paso con [webapi parte 6-5 Configuración de ActivityQuestion](/blog/webapi-6-5-csharp)

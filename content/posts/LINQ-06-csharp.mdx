@@ -1,0 +1,356 @@
+---
+title: "LINQ parte 6 LINQ -- Validaciones con FluentValidation"
+date: "2026-11-05"
+description: "LINQ parte 6 -- Validaciones con FluentValidation"
+slug: "LINQ-06-csharp"
+category: "Netcore"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+# Lección: FluentValidation en .NET 10 y C# 14
+
+En la lección anterior estudiamos CQRS y cómo separar las operaciones de escritura (Commands) de las operaciones de lectura (Queries).
+
+Ahora vamos a incorporar FluentValidation a nuestro proyecto AcSoft HVAC para validar los datos que llegan a los casos de uso antes de ejecutar las operaciones.
+
+El objetivo es aprender a validar correctamente sin mezclar las responsabilidades de Application y Domain.
+
+## 1. ¿Qué es FluentValidation?
+
+FluentValidation es una biblioteca que permite definir reglas de validación mediante código C#.
+
+Por ejemplo, podemos validar que:
+
+- El identificador del cliente no esté vacío.
+- El identificador del equipo sea válido.
+- El número de orden tenga una longitud permitida.
+- Una fecha no sea anterior a otra.
+- Un correo electrónico tenga un formato válido.
+
+En lugar de escribir muchos `if` dentro de nuestros Handlers, podemos mantener las validaciones organizadas en clases independientes.
+
+## 2. ¿Dónde debemos validar: Application o Domain?
+
+Esta distinción es muy importante cuando trabajamos con DDD y Clean Architecture.
+
+| Tipo de validación      | Capa recomendada                            | Ejemplo                                                         |
+| ----------------------- | ------------------------------------------- | --------------------------------------------------------------- |
+| Datos de entrada        | Application                                 | `CustomerId` no puede estar vacío.                              |
+| Formato y longitud      | Application                                 | Nombre máximo de 60 caracteres.                                 |
+| Reglas de negocio       | Domain                                      | No completar una orden con actividades obligatorias pendientes. |
+| Transiciones de estado  | Domain                                      | No cerrar una orden que todavía no ha comenzado.                |
+| Existencia de registros | Application / Domain Service, según el caso | Verificar que el equipo exista.                                 |
+
+Regla importante: FluentValidation no debe reemplazar las reglas de negocio de nuestras entidades.
+
+Por ejemplo, si una orden no puede completarse porque tiene actividades pendientes, esa regla debe seguir protegida por el Domain, aunque también mostremos un mensaje de validación en la interfaz.
+
+## 3. Instalar FluentValidation
+
+Instalaremos los paquetes en el proyecto `AcSoft.Application`, porque allí están nuestros Commands, Queries y Validators.
+
+Desde la terminal, ubicados en la solución:
+
+```csharp
+dotnet add AcSoft.Application package FluentValidation
+
+dotnet add AcSoft.Application package FluentValidation.DependencyInjectionExtensions
+```
+
+El segundo paquete nos permite registrar automáticamente los validadores en el contenedor de inyección de dependencias.
+
+## 4. Crear nuestro primer Validator
+
+Recordemos nuestro Command para crear una orden de trabajo:
+
+`AcSoft.Application/Features/WorkOrders/Commands/CreateWorkOrder/CreateWorkOrderCommand.cs`
+
+```csharp
+namespace AcSoft.Application.Features.WorkOrders.Commands.CreateWorkOrder;
+
+public sealed record CreateWorkOrderCommand(
+    Guid CustomerId,
+    Guid EquipmentId
+);
+```
+
+Ahora creamos el validador en la misma carpeta:
+
+`CreateWorkOrderCommandValidator.cs`
+
+```csharp
+using FluentValidation;
+
+namespace AcSoft.Application.Features.WorkOrders.Commands.CreateWorkOrder;
+
+public sealed class CreateWorkOrderCommandValidator
+    : AbstractValidator<CreateWorkOrderCommand>
+{
+    public CreateWorkOrderCommandValidator()
+    {
+        RuleFor(x => x.CustomerId)
+            .NotEmpty()
+            .WithMessage("El cliente es obligatorio.");
+
+        RuleFor(x => x.EquipmentId)
+            .NotEmpty()
+            .WithMessage("El equipo es obligatorio.");
+    }
+}
+```
+
+Veamos qué significa cada parte:
+
+- `AbstractValidator<T>`: clase base que proporciona FluentValidation.
+- `RuleFor()`: indica qué propiedad queremos validar.
+- `NotEmpty()`: comprueba que el valor no esté vacío.
+- `WithMessage()`: establece el mensaje que recibiremos cuando falle la validación.
+
+Por ejemplo, si recibimos este Command:
+
+```csharp
+var command = new CreateWorkOrderCommand(
+    Guid.Empty,
+    Guid.Empty
+);
+```
+
+Las dos reglas fallarán.
+
+## 5. Agregar más reglas de validación
+
+Supongamos que posteriormente agregamos un número de orden y una descripción:
+
+```csharp
+public sealed record CreateWorkOrderCommand(
+    Guid CustomerId,
+    Guid EquipmentId,
+    string Number,
+    string Description
+);
+```
+
+Podemos ampliar nuestro Validator:
+
+```csharp
+public sealed class CreateWorkOrderCommandValidator
+    : AbstractValidator<CreateWorkOrderCommand>
+{
+    public CreateWorkOrderCommandValidator()
+    {
+        RuleFor(x => x.CustomerId)
+            .NotEmpty()
+            .WithMessage("El cliente es obligatorio.");
+
+        RuleFor(x => x.EquipmentId)
+            .NotEmpty()
+            .WithMessage("El equipo es obligatorio.");
+
+        RuleFor(x => x.Number)
+            .NotEmpty()
+            .WithMessage("El número de orden es obligatorio.")
+            .MaximumLength(30)
+            .WithMessage("El número de orden no puede superar los 30 caracteres.");
+
+        RuleFor(x => x.Description)
+            .NotEmpty()
+            .WithMessage("La descripción es obligatoria.")
+            .MinimumLength(10)
+            .WithMessage("La descripción debe tener al menos 10 caracteres.")
+            .MaximumLength(500)
+            .WithMessage("La descripción no puede superar los 500 caracteres.");
+    }
+}
+```
+
+Observa que podemos encadenar varias reglas sobre una misma propiedad.
+
+## 6. Registrar los validadores en Dependency Injection
+
+Ahora debemos registrar los validadores para que .NET pueda inyectarlos automáticamente.
+
+En `AcSoft.Api/Program.cs`:
+
+```csharp
+using AcSoft.Application.Features.WorkOrders.Commands.CreateWorkOrder;
+using FluentValidation;
+
+builder.Services.AddValidatorsFromAssemblyContaining<
+    CreateWorkOrderCommandValidator>();
+```
+
+Esto busca y registra los validadores del ensamblado donde se encuentra `CreateWorkOrderCommandValidator`.
+
+Importante: instalar FluentValidation y registrar los validadores no significa que se ejecutarán automáticamente cuando llegue una petición HTTP. Debemos invocarlos desde nuestro flujo de ejecución.
+
+## 7. Integrar FluentValidation en nuestro Handler
+
+Ahora viene una parte fundamental: utilizar el validador antes de ejecutar la operación.
+
+Nuestro Handler puede recibir `IValidator<CreateWorkOrderCommand>` mediante inyección de dependencias.
+
+```csharp
+using AcSoft.Application.Abstractions.Persistence;
+using AcSoft.Domain.Entities;
+using FluentValidation;
+
+namespace AcSoft.Application.Features.WorkOrders.Commands.CreateWorkOrder;
+
+public sealed class CreateWorkOrderHandler
+{
+    private readonly IWorkOrderRepository _repository;
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly IValidator<CreateWorkOrderCommand> _validator;
+
+    public CreateWorkOrderHandler(
+        IWorkOrderRepository repository,
+        IUnitOfWork unitOfWork,
+        IValidator<CreateWorkOrderCommand> validator)
+    {
+        _repository = repository;
+        _unitOfWork = unitOfWork;
+        _validator = validator;
+    }
+
+    public async Task<Guid> Handle(
+        CreateWorkOrderCommand command,
+        CancellationToken cancellationToken)
+    {
+        // 1. Validar los datos de entrada.
+        var validationResult = await _validator.ValidateAsync(
+            command,
+            cancellationToken);
+
+        // 2. Detener la operación si existen errores.
+        if (!validationResult.IsValid)
+        {
+            throw new ValidationException(validationResult.Errors);
+        }
+
+        // 3. Crear la entidad del dominio.
+        var workOrder = WorkOrder.Create(
+            number: command.Number,
+            customerId: command.CustomerId,
+            equipmentId: command.EquipmentId);
+
+        // 4. Agregar la entidad al repositorio.
+        await _repository.AddAsync(
+            workOrder,
+            cancellationToken);
+
+        // 5. Guardar los cambios.
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return workOrder.Id;
+    }
+}
+```
+
+El flujo ahora queda así:
+
+API
+
+Recibe la petición HTTP
+
+CreateWorkOrderCommand
+
+Representa la solicitud
+
+FluentValidation
+
+Comprueba los datos de entrada
+
+Hay errores
+
+Responder HTTP 400
+
+Es válido
+
+Ejecutar el Handler
+
+Domain + Repository + UnitOfWork
+
+Ejecutar las reglas del negocio y persistir
+
+## 8. ¿Cómo devolver los errores al cliente HTTP?
+
+Cuando FluentValidation encuentra errores, lanzamos una `ValidationException`.
+
+Pero no debemos dejar que esa excepción llegue sin tratamiento al cliente. En nuestra API conviene capturarla mediante un manejador global de excepciones y devolver HTTP 400 con `ValidationProblemDetails`.
+
+Un ejemplo del resultado esperado sería:
+
+```json
+{
+  "title": "One or more validation errors occurred.",
+  "status": 400,
+  "errors": {
+    "CustomerId": [
+      "El cliente es obligatorio."
+    ],
+    "EquipmentId": [
+      "El equipo es obligatorio."
+    ]
+  }
+}
+```
+
+Así, React o Kotlin pueden recibir los errores y mostrarlos junto a los campos correspondientes.
+
+Más adelante implementaremos este tratamiento global para evitar repetir bloques `try/catch` en cada endpoint.
+
+## 9. ¿Debemos validar también dentro del Domain?
+
+Sí, cuando se trate de invariantes o reglas de negocio.
+
+Por ejemplo:
+
+```csharp
+public void Complete()
+{
+    if (_activities.Any(x => x.IsRequired && !x.IsCompleted))
+    {
+        throw new DomainException(
+            "No se puede completar la orden porque existen actividades pendientes.");
+    }
+
+    Status = WorkOrderStatus.Completed;
+}
+```
+
+Aunque FluentValidation validara previamente algunos datos, el Domain debe proteger sus propias reglas.
+
+Recuerda:
+
+- FluentValidation valida la solicitud.
+- Domain protege la integridad del negocio.
+- Application coordina la ejecución del caso de uso.
+
+## 10. Ejercicio práctico
+
+Antes de continuar, quiero comprobar que tienes clara la diferencia.
+
+En AcSoft tenemos esta regla:
+
+> Un técnico intenta completar una orden de trabajo, pero todavía existen actividades obligatorias sin responder.
+
+¿Dónde debería implementarse principalmente esta validación?
+
+A. En FluentValidation, dentro de Application.
+
+B. En la entidad WorkOrder, dentro de Domain.
+
+C. Solamente en React, antes de enviar la petición.
+
+Respuesta es B.
+
+¡Correcto!
+La entidad WorkOrder debe proteger esta regla porque es una invariante del negocio. La interfaz puede anticipar el error, pero el Domain debe 
+
+garantizar que la orden no se complete incorrectamente.
+
+Comprobar respuesta
+
+Próxima lección: implementaremos un manejo global de excepciones en .NET 10 con `IExceptionHandler` y `ProblemDetails`, para convertir errores de validación, dominio y recursos no encontrados en respuestas HTTP consistentes.
