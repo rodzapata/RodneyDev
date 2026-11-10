@@ -21,13 +21,13 @@ public Guid QuestionId => Question.Id;
 
 Esto significa que `QuestionId` es una propiedad calculada, no una propiedad persistente convencional. Vamos a indicarle expresamente a EF Core que la columna de relación es `Question.Id`, utilizando la navegación `Question` y sin intentar mapear `QuestionId` como columna independiente.
 
-## 1. Configuración de ActivityQuestion
+**1. Configuración de ActivityQuestion**
 
 Crea el archivo:
 
 `AcSoft.Infrastructure/Persistence/Configurations/ActivityQuestionConfiguration.cs`
 
-## 1. Configuración de ActivityQuestion
+**1. Configuración de ActivityQuestion**
 
 Crea `AcSoft.Infrastructure/Persistence/Configurations/ActivityQuestionConfiguration.cs`:
 

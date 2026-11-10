@@ -1,0 +1,18 @@
+---
+title: "SQL Apuntes "
+date: "2026-09-11"
+description: "SQL Apuntes "
+slug: "sql"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","sql"]
+published: true
+featured: true
+---
+
+Tenia un campo Text en sqlserver que no me mostraba en excel la descripcion del campo,
+cambie el SELECT en el procedimiento almacenado quedando
+
+```sql
+SELECT TRIM(CAST(observa02 AS VARCHAR(8000)))
+FROM tabla where numfac=mynumfac
+```

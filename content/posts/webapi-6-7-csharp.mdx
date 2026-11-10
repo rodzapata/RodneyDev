@@ -1,0 +1,361 @@
+---
+title: "Crear webapi Parte 6-7  configurar la persistencia de WorkOrderActivity y sus preguntas y respuestas."
+date: "2026-11-10"
+description: "Crear webapi Parte 6-7  configurar la persistencia de WorkOrderActivity y sus preguntas y respuestas."
+slug: "webapi-6-7-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+¡Perfecto! Ya tenemos funcionando la conexión entre AcSoft, EF Core 10 y PostgreSQL. También hemos corregido los problemas de materialización de `AnswerValue` y de la clave foránea `QuestionId`.
+
+Continuemos con el siguiente paso: configurar la persistencia de `WorkOrderActivity` y sus preguntas y respuestas.
+
+### Paso 1. Crear `WorkOrderActivityConfiguration`
+
+La configuración deberá contemplar:
+
+1. La tabla `WorkOrderActivities` y sus propiedades.
+2. La relación con `WorkOrder`.
+3. La relación con `Activity`.
+4. La colección `_questions`.
+5. La colección `_answers`.
+6. La relación de las respuestas con `AnswerValue`, que acabamos de diseñar.
+
+### Paso 2. Necesito revisar una clase
+
+Antes de escribir la configuración, compárteme el código completo de:
+
+```
+WorkOrderActivityQuestion
+```
+
+Esta clase es importante porque necesitamos conocer sus propiedades, constructor y relaciones para configurar correctamente la colección de preguntas.
+
+No vamos a modificar tu estructura actual ni crear configuraciones innecesarias. Continuaremos paso a paso y mantendremos el diseño DDD que hemos construido.
+
+
+Perfecto. Tu clase `WorkOrderActivityQuestion` está bien diseñada para el propósito que buscamos: guardar una fotografía (snapshot) de la pregunta del catálogo en el momento en que se crea la orden de trabajo.
+
+Esto es importante porque, si posteriormente modificas el texto o el tipo de respuesta de una pregunta en el catálogo, las órdenes de trabajo anteriores conservarán la información original.
+
+Veo que almacenas estos datos directamente:
+
+- `QuestionId`: referencia a la pregunta original.
+- `QuestionCode` y `QuestionText`: copia de los datos descriptivos.
+- `AnswerType` y `MeasurementType`: copia de la configuración de respuesta.
+- `Sequence` e `IsRequired`: configuración de la pregunta para esa ejecución.
+
+No necesitas una propiedad de navegación hacia `Question` en esta clase. El `QuestionId` es suficiente para conservar la referencia.
+
+### Paso siguiente: configuración de EF Core
+
+Con la clase que compartiste, podemos configurar `WorkOrderActivityQuestion` así:
+
+Crea el archivo `WorkOrderActivityQuestionConfiguration.cs` en tu proyecto AcSoft.Infrastructure, dentro de la carpeta donde estás guardando las configuraciones de EF Core.
+
+```csharp
+
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class WorkOrderActivityQuestionConfiguration
+    : IEntityTypeConfiguration<WorkOrderActivityQuestion>
+{
+    public void Configure(
+        EntityTypeBuilder<WorkOrderActivityQuestion> builder)
+    {
+        builder.ToTable("WorkOrderActivityQuestions");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.WorkOrderActivityId)
+            .IsRequired();
+
+        builder.Property(x => x.QuestionId)
+            .IsRequired();
+
+        builder.Property(x => x.QuestionCode)
+            .HasMaxLength(30)
+            .IsRequired();
+
+        builder.Property(x => x.QuestionText)
+            .HasMaxLength(500)
+            .IsRequired();
+
+        builder.Property(x => x.Sequence)
+            .IsRequired();
+
+        builder.Property(x => x.IsRequired)
+            .IsRequired();
+
+        builder.Property(x => x.AnswerType)
+            .IsRequired();
+
+        builder.Property(x => x.MeasurementType);
+
+        // Evita repetir la misma posición dentro
+        // de una ejecución de actividad.
+        builder.HasIndex(x => new
+        {
+            x.WorkOrderActivityId,
+            x.Sequence
+        })
+        .IsUnique();
+    }
+}
+
+```
+
+### Dos decisiones importantes
+
+1\. No configuramos una relación con `Question`. Aunque guardamos `QuestionId`, no necesitamos una navegación hacia el catálogo. Así conservamos el snapshot sin depender de que la pregunta original siga existiendo.
+
+2\. La secuencia es única por ejecución de actividad. Por ejemplo, una misma actividad no podrá tener dos preguntas con `Sequence = 1`.
+
+La relación entre `WorkOrderActivity` y sus preguntas la configuraremos desde `WorkOrderActivityConfiguration`, utilizando la colección `_questions`.
+
+Antes de continuar: crea esta configuración y dime si compila. Después revisaremos `WorkOrderActivityConfiguration`, incluyendo la colección de respuestas `_answers`.
+
+> continuemos 
+
+Excelente. Ahora vamos a configurar la entidad principal `WorkOrderActivity`.
+
+Esta configuración tendrá cuatro responsabilidades:
+
+1. Relacionar la ejecución con su `WorkOrder`.
+2. Relacionarla con la actividad del catálogo (`Activity`).
+3. Configurar la colección de preguntas `_questions`.
+4. Configurar la colección de respuestas `_answers`.
+
+### 1. WorkOrderActivityConfiguration.cs
+
+Crea este archivo en `AcSoft.Infrastructure/Persistence/Configurations`:
+
+```csharp
+
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class WorkOrderActivityConfiguration
+    : IEntityTypeConfiguration<WorkOrderActivity>
+{
+    public void Configure(EntityTypeBuilder<WorkOrderActivity> builder)
+    {
+        builder.ToTable("WorkOrderActivities");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.WorkOrderId)
+            .IsRequired();
+
+        builder.Property(x => x.ActivityId)
+            .IsRequired();
+
+        builder.Property(x => x.Moment)
+            .IsRequired();
+
+        builder.Property(x => x.Sequence)
+            .IsRequired();
+
+        builder.Property(x => x.IsUnplanned)
+            .IsRequired();
+
+        builder.Property(x => x.IsCompleted)
+            .IsRequired();
+
+        // Relación con WorkOrder.
+        builder.HasOne<WorkOrder>()
+            .WithMany(x => x.Activities)
+            .HasForeignKey(x => x.WorkOrderId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Relación con Activity del catálogo.
+        builder.HasOne<Activity>()
+            .WithMany()
+            .HasForeignKey(x => x.ActivityId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // Preguntas configuradas para esta ejecución.
+        builder.HasMany(x => x.Questions)
+            .WithOne()
+            .HasForeignKey(x => x.WorkOrderActivityId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.Navigation(x => x.Questions)
+            .HasField("_questions")
+            .UsePropertyAccessMode(PropertyAccessMode.Field);
+
+        // Evita repetir una actividad en la misma posición.
+        builder.HasIndex(x => new
+        {
+            x.WorkOrderId,
+            x.Moment,
+            x.Sequence
+        })
+        .IsUnique();
+    }
+}
+
+```
+
+### 2. Una aclaración sobre las respuestas
+
+Todavía no hemos configurado `_answers`. No quiero darte una configuración incompleta porque `ActivityAnswer` contiene `AnswerValue`, y este último tiene otra colección interna de mediciones.
+
+La relación que queremos representar es:
+
+WorkOrderActivity
+
+WorkOrderActivityQuestion
+
+Preguntas guardadas como snapshot.
+
+ActivityAnswer
+
+Respuestas asociadas a cada pregunta.
+
+AnswerValue
+
+Estado, número, texto o mediciones.
+
+Por ahora, haz lo siguiente: agrega `WorkOrderActivityConfiguration.cs` y verifica que compile.
+
+Después revisaremos la configuración de las respuestas y sus mediciones, sin modificar innecesariamente tus clases de dominio.
+
+> compila exitosamente, continuemos
+
+Muy bien. Ya tenemos configuradas las preguntas y la estructura principal de `WorkOrderActivity`.
+
+Ahora vamos a conectar las respuestas con cada ejecución de actividad. Recuerda que una respuesta pertenece a una pregunta de la ejecución, no directamente a la pregunta del catálogo.
+
+### 1. Actualizar WorkOrderActivityConfiguration
+
+Agrega este bloque al final del método `Configure`, después de la configuración de `Questions`:
+
+```csharp
+
+// Respuestas de esta ejecución.
+builder.HasMany(x => x.Answers)
+    .WithOne()
+    .HasForeignKey("WorkOrderActivityId")
+    .OnDelete(DeleteBehavior.Cascade);
+
+builder.Navigation(x => x.Answers)
+    .HasField("_answers")
+    .UsePropertyAccessMode(PropertyAccessMode.Field);
+
+```
+
+Usamos `"WorkOrderActivityId"` como clave foránea porque `ActivityAnswer` no tiene actualmente una propiedad pública con ese nombre. EF Core creará una propiedad de sombra para almacenarla.
+
+### 2. Crear ActivityAnswerConfiguration
+
+Esta configuración establece la relación entre `ActivityAnswer` y su objeto de valor `AnswerValue`.
+
+Crea `ActivityAnswerConfiguration.cs`:
+
+```
+
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class ActivityAnswerConfiguration
+    : IEntityTypeConfiguration<ActivityAnswer>
+{
+    public void Configure(EntityTypeBuilder<ActivityAnswer> builder)
+    {
+        builder.ToTable("ActivityAnswers");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.QuestionId)
+            .IsRequired();
+
+        // AnswerValue es un objeto de valor propiedad
+        // de ActivityAnswer.
+        builder.OwnsOne(x => x.Value, answer =>
+        {
+            answer.Property(x => x.Type)
+                .HasColumnName("AnswerType")
+                .IsRequired();
+
+            answer.Property(x => x.Status)
+                .HasColumnName("AnswerStatus");
+
+            answer.Property(x => x.NumericValue)
+                .HasColumnName("NumericValue");
+
+            answer.Property(x => x.TextValue)
+                .HasColumnName("TextValue")
+                .HasMaxLength(1000);
+
+            // Mediciones asociadas a la respuesta.
+            answer.OwnsMany(x => x.Measurements, measurement =>
+            {
+                measurement.ToTable("AnswerMeasurements");
+
+                measurement.WithOwner()
+                    .HasForeignKey("ActivityAnswerId");
+
+                measurement.Property<int>("Id");
+
+                measurement.HasKey("ActivityAnswerId", "Id");
+
+                measurement.Property(x => x.Point)
+                    .HasMaxLength(50)
+                    .IsRequired();
+
+                measurement.OwnsOne(x => x.Value, value =>
+                {
+                    value.Property(x => x.Type)
+                        .HasColumnName("MeasurementType")
+                        .IsRequired();
+
+                    value.Property(x => x.Value)
+                        .HasColumnName("MeasuredValue")
+                        .IsRequired();
+                });
+            });
+
+            answer.Navigation(x => x.Measurements)
+                .HasField("_measurements")
+                .UsePropertyAccessMode(PropertyAccessMode.Field);
+        });
+
+        builder.Navigation(x => x.Value)
+            .IsRequired();
+    }
+}
+
+```
+
+### ¿Qué tablas estamos preparando?
+
+| Tabla                | Contenido                            |
+| -------------------- | ------------------------------------ |
+| `ActivityAnswers`    | Respuestas y valores simples         |
+| `AnswerMeasurements` | Mediciones asociadas a una respuesta |
+
+Por ejemplo, una respuesta de tipo medición podría guardar:
+
+- Punto: `RS` — Valor: `12.5 A`.
+- Punto: `RT` — Valor: `12.8 A`.
+- Punto: `ST` — Valor: `12.6 A`.
+
+Las tres mediciones pertenecen a una misma respuesta.
+
+Importante: esta configuración es el siguiente paso de mapeo, pero debemos validarla con el modelo real de EF Core, especialmente la colección `_measurements` y la relación de propiedad de `AnswerValue`.
+
+Agrega los cambios y comprueba que compile. Luego probaremos la construcción del modelo con `CanConnectAsync` para detectar cualquier problema de configuración antes de avanzar.

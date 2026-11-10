@@ -38,7 +38,7 @@ El identificador será generado automáticamente por .NET.
 Ejecuta este comando desde la carpeta del proyecto API:
 
 ```
-dotnet user-secrets set "ConnectionStrings:AcSoftConnection" "Host=localhost;Port=5432;Database=acsoft;Username=postgres;Password=TU_PASSWORD"
+dotnet user-secrets set "ConnectionStrings:AcSoftConnection" "Host=localhost;Port=5432;Database=mydatabase;Username=postgres;Password=TU_PASSWORD"
 ```
 
 Reemplaza `TU_PASSWORD` por tu contraseña real.
@@ -209,7 +209,7 @@ El siguiente paso será comprobar que `AcDbContext` se conecta correctamente a P
 
 > si voy a trabajar en otro equipo y clono el repositorio, tengo que ejecutar nuevamente el comando :
 
-```
+```bash
 dotnet user-secrets init
 dotnet user-secrets set "ConnectionStrings:AcSoftConnection" "Host=localhost;Port=5432;Database=acsoft;Username=postgres;Password=TU_PASSWORD"
 en el otro pc ?
@@ -225,7 +225,7 @@ No necesitas ejecutarlo nuevamente si ya inicializaste User Secrets en el proyec
 
 Por ejemplo, este código viajará con tu repositorio:
 
-```
+```xml
 <PropertyGroup>
     <UserSecretsId>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</UserSecretsId>
 </PropertyGroup>
@@ -241,7 +241,7 @@ Cada equipo tiene su propio almacenamiento local.
 
 Después de clonar el repositorio:
 
-```
+```bash
 git clone https://github.com/usuario/AcSoft.git
 
 cd AcSoft
@@ -253,7 +253,7 @@ dotnet user-secrets set "ConnectionStrings:AcSoftConnection" "Host=localhost;Por
 
 Después puedes verificar:
 
-```
+```bash
 dotnet user-secrets list
 ```
 
@@ -281,4 +281,392 @@ Variables de entorno
 Credenciales del servidor de producción.
 
 En conclusión: inicializas User Secrets una sola vez en el proyecto; configuras los valores secretos en cada equipo donde vayas a trabajar.
+
+Perfecto. Ahora tenemos la relación completa y podemos definir el mapeo.
+
+En tu modelo, `ActivityAnswer` es una entidad dependiente de `WorkOrderActivity`, mientras que `AnswerValue` es un objeto de valor contenido en ella.
+
+La estructura que vamos a persistir será:
+
+```
+WorkOrderActivity
+    └── ActivityAnswer
+          └── AnswerValue
+                └── MeasurementReading (0..N)
+                      └── MeasurementValue
+```
+
+Una decisión importante: conservaremos `AnswerValue`, `MeasurementReading` y `MeasurementValue` como Value Objects. No necesitamos convertirlos en entidades del dominio.
+
+## 1. Ajuste necesario en AnswerValue
+
+El error de EF Core aparece porque intenta enlazar el constructor privado con parámetros que incluyen una colección. EF Core no puede enlazar una navegación o colección de objetos relacionados mediante los parámetros del constructor.
+
+Podemos conservar tus fábricas estáticas y agregar un constructor privado sin parámetros para facilitar la materialización.
+
+Ahora sí tenemos las piezas necesarias para configurar correctamente la persistencia de las respuestas.
+
+Te propongo mantener el diseño DDD que ya tienes, con un pequeño ajuste en los Value Objects para que EF Core pueda materializarlos.
+
+## 1. Ajustar `AnswerValue`
+
+El cambio principal es agregar un constructor privado sin parámetros y utilizar una colección interna para las mediciones.
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record AnswerValue
+{
+    private readonly List<MeasurementReading> _measurements = [];
+
+    private AnswerValue() { }
+
+    private AnswerValue(
+        AnswerType type,
+        AnswerStatus? status = null,
+        decimal? numericValue = null,
+        string? textValue = null,
+        IReadOnlyCollection<MeasurementReading>? measurements = null)
+    {
+        Type = type;
+        Status = status;
+        NumericValue = numericValue;
+        TextValue = textValue;
+
+        if (measurements is not null)
+            _measurements.AddRange(measurements);
+    }
+
+    public AnswerType Type { get; private set; }
+
+    public AnswerStatus? Status { get; private set; }
+
+    public decimal? NumericValue { get; private set; }
+
+    public string? TextValue { get; private set; }
+
+    public IReadOnlyCollection<MeasurementReading> Measurements =>
+        _measurements.AsReadOnly();
+
+    // Conserva aquí tus métodos FromStatus, FromNumeric,
+    // FromText, FromMeasurements, Matches y MatchesMeasurementType.
+}
+```
+
+Puedes conservar las implementaciones de tus métodos de fábrica tal como están. No necesitas cambiar las reglas de validación.
+
+## 2. Ajustar `MeasurementReading`
+
+También necesita un constructor privado sin parámetros y propiedades con setters privados.
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record MeasurementReading
+{
+    private MeasurementReading() { }
+
+    private MeasurementReading(
+        string point,
+        MeasurementValue value)
+    {
+        Point = point;
+        Value = value;
+    }
+
+    public string Point { get; private set; } = null!;
+
+    public MeasurementValue Value { get; private set; } = null!;
+
+    public static MeasurementReading Create(
+        string point,
+        MeasurementValue value)
+    {
+        if (string.IsNullOrWhiteSpace(point))
+            throw new ArgumentException(
+                "El punto de medición es obligatorio.",
+                nameof(point));
+
+        ArgumentNullException.ThrowIfNull(value);
+
+        return new MeasurementReading(point.Trim(), value);
+    }
+}
+```
+
+## 3. Ajustar `MeasurementValue`
+
+Aplicamos el mismo criterio:
+
+```csharp
+namespace AcSoft.Domain.ValueObjects;
+
+public sealed record MeasurementValue
+{
+    private MeasurementValue() { }
+
+    private MeasurementValue(
+        MeasurementType type,
+        decimal value)
+    {
+        Type = type;
+        Value = value;
+    }
+
+    public MeasurementType Type { get; private set; }
+
+    public decimal Value { get; private set; }
+
+    // Conserva tus métodos FromVoltage, FromCurrent,
+    // FromPressure, FromTemperature, FromCapacitance y FromMass.
+}
+```
+
+Los setters son privados: el código externo no puede modificar directamente los valores. Seguimos manteniendo la encapsulación del dominio.
+
+## 4. Crear `ActivityAnswerConfiguration`
+
+Ubicación:
+
+`AcSoft.Infrastructure/Persistence/Configurations/ActivityAnswerConfiguration.cs`
+
+Aquí configuramos `AnswerValue` como un objeto propiedad mediante `OwnsOne`, y sus mediciones mediante `OwnsMany`.
+
+```csharp
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class ActivityAnswerConfiguration
+    : IEntityTypeConfiguration<ActivityAnswer>
+{
+    public void Configure(EntityTypeBuilder<ActivityAnswer> builder)
+    {
+        builder.ToTable("ActivityAnswers");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.QuestionId)
+            .IsRequired();
+
+        builder.OwnsOne(x => x.Value, answer =>
+        {
+            answer.Property(x => x.Type)
+                .HasColumnName("AnswerType")
+                .IsRequired();
+
+            answer.Property(x => x.Status)
+                .HasColumnName("AnswerStatus");
+
+            answer.Property(x => x.NumericValue)
+                .HasColumnName("NumericValue");
+
+            answer.Property(x => x.TextValue)
+                .HasColumnName("TextValue")
+                .HasMaxLength(1000);
+
+            answer.OwnsMany(x => x.Measurements, measurement =>
+            {
+                measurement.ToTable("AnswerMeasurements");
+
+                measurement.WithOwner()
+                    .HasForeignKey("ActivityAnswerId");
+
+                measurement.Property<int>("Id");
+
+                measurement.HasKey("ActivityAnswerId", "Id");
+
+                measurement.Property(x => x.Point)
+                    .HasMaxLength(50)
+                    .IsRequired();
+
+                measurement.OwnsOne(x => x.Value, value =>
+                {
+                    value.Property(x => x.Type)
+                        .HasColumnName("MeasurementType")
+                        .IsRequired();
+
+                    value.Property(x => x.Value)
+                        .HasColumnName("MeasuredValue")
+                        .IsRequired();
+                });
+            });
+        });
+    }
+}
+```
+
+## 5. Configurar la relación en `WorkOrderActivity`
+
+Tu entidad tiene una colección `_answers`. Debemos indicarle a EF Core que utilice ese campo como almacenamiento interno.
+
+En la futura `WorkOrderActivityConfiguration`, agrega:
+
+```csharp
+builder.HasMany(x => x.Answers)
+    .WithOne()
+    .HasForeignKey("WorkOrderActivityId")
+    .OnDelete(DeleteBehavior.Cascade);
+
+builder.Navigation(x => x.Answers)
+    .HasField("_answers")
+    .UsePropertyAccessMode(PropertyAccessMode.Field);
+```
+
+Esto permite que EF Core cargue las respuestas sin necesitar un método público para agregarlas.
+
+## 6. ¿Cómo quedará la persistencia?
+
+Con esta configuración tendremos dos tablas relacionadas:
+
+ActivityAnswers
+
+| Columna             | Contenido                  |
+| ------------------- | -------------------------- |
+| Id                  | Identificador de respuesta |
+| WorkOrderActivityId | Ejecución relacionada      |
+| QuestionId          | Pregunta respondida        |
+| AnswerType          | Tipo de respuesta          |
+| AnswerStatus        | Estado, si aplica          |
+| NumericValue        | Valor numérico, si aplica  |
+| TextValue           | Texto, si aplica           |
+
+AnswerMeasurements
+
+| Columna          | Contenido             |
+| ---------------- | --------------------- |
+| ActivityAnswerId | Respuesta relacionada |
+| Id               | Identificador interno |
+| Point            | Punto de medición     |
+| MeasurementType  | Magnitud              |
+| MeasuredValue    | Valor medido          |
+
+Por ejemplo, una respuesta de medición de corriente podría almacenar:
+
+| Point | MeasurementType | MeasuredValue |
+| ----- | --------------- | ------------- |
+| RS    | Current         | 12.5          |
+| RT    | Current         | 12.8          |
+| ST    | Current         | 12.3          |
+
+Así conservamos las distintas mediciones de una misma respuesta.
+
+Importante: esta configuración todavía debe integrarse con la configuración completa de `WorkOrderActivity` y sus preguntas. No ejecutes migraciones hasta revisar el modelo completo.
+
+## Siguiente paso
+
+Primero implementa estos ajustes y dime si compila. Después construimos `WorkOrderActivityConfiguration` completa, incluyendo la relación con `WorkOrderActivityQuestion`, y revisamos que EF Core pueda construir el modelo sin errores.
+
+Este error ya es diferente al anterior y está relacionado con la configuración de ActivityQuestion.
+
+> me esta saliendo error en esta linea: canConnect = await context.Database.CanConnectAsync();
+
+
+Recuerda que anteriormente compartiste esta propiedad:
+```csharp
+public Question Question { get; private set; } = null!;
+
+public Guid QuestionId => Question.Id;
+```
+
+El problema está en QuestionId.
+1. ¿Por qué ocurre?
+QuestionId es una propiedad calculada: obtiene su valor desde Question.Id.
+
+Pero EF Core está intentando mapearla como una propiedad persistente. Como no tiene setter ni un campo privado asociado, EF Core no sabe cómo asignarle un valor cuando recupera los datos de PostgreSQL.
+
+Además, en nuestra configuración anterior habíamos utilizado:
+
+```csharp
+builder.Ignore(x => x.QuestionId);
+
+builder.HasOne(x => x.Question)
+    .WithMany()
+    .HasForeignKey("QuestionId")
+    .OnDelete(DeleteBehavior.Restrict);
+```
+
+La intención era utilizar una clave foránea de sombra, pero debemos asegurarnos de que EF Core no intente mapear también la propiedad calculada.
+2. Mi recomendación: modificar ActivityQuestion
+Para este proyecto prefiero una solución más sencilla y explícita: mantener QuestionId como una propiedad persistente con setter privado.
+
+Modifica tu clase ActivityQuestion de esta manera:
+```csharp
+public sealed class ActivityQuestion
+{
+    private ActivityQuestion() { }
+
+    private ActivityQuestion(
+        Guid id,
+        Guid activityId,
+        Question question,
+        int sequence,
+        bool isRequired)
+    {
+        Id = id;
+        ActivityId = activityId;
+        Question = question;
+        QuestionId = question.Id;
+        Sequence = sequence;
+        IsRequired = isRequired;
+    }
+
+    public Guid Id { get; private set; }
+
+    public Guid ActivityId { get; private set; }
+
+    public Guid QuestionId { get; private set; }
+
+    public Question Question { get; private set; } = null!;
+
+    public int Sequence { get; private set; }
+
+    public bool IsRequired { get; private set; }
+
+    // Conserva aquí tu método Create.
+}
+
+```
+
+Observa este cambio:
+```csharp
+public Guid QuestionId { get; private set; }
+```
+
+Ahora QuestionId es una propiedad real, no calculada.
+
+Cuando creas la relación:
+QuestionId = question.Id;
+
+
+Y EF Core puede asignarla al materializar la entidad.
+3. Modificar ActivityQuestionConfiguration
+Ahora elimina:
+
+```csharp
+builder.Ignore(x => x.QuestionId);
+```
+
+Y configura la relación así:
+
+```csharp
+builder.HasOne(x => x.Question)
+    .WithMany()
+    .HasForeignKey(x => x.QuestionId)
+    .OnDelete(DeleteBehavior.Restrict);
+```
+
+Con esto EF Core utilizará la propiedad QuestionId directamente.
+4. ¿Por qué prefiero esta solución?
+Alternativa	Evaluación
+Propiedad calculada + FK de sombra	Válida, pero menos explícita
+QuestionId con setter privado	Recomendada
+
+En DDD no hay ningún inconveniente en tener una clave foránea como propiedad privada de una entidad. Lo importante es que el dominio controle su modificación.
+
+Haz estos dos cambios y vuelve a ejecutar la API. Si aparece otro error, revisaremos el siguiente mapeo sin cambiar innecesariamente las entidades que ya funcionan.
+
+paso a paso con [webapi parte 6-7 configurar la persistencia de WorkOrderActivity y sus preguntas y respuestas](/blog/webapi-6-7-csharp)
 
