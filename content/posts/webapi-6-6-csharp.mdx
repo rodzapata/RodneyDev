@@ -19,13 +19,13 @@ Abre una terminal en la carpeta donde se encuentra tu proyecto `AcSoft.Api.cspro
 
 Ejecuta:
 
-```
+```bash
 dotnet user-secrets init
 ```
 
 Este comando agrega una propiedad similar a esta en tu archivo `.csproj`:
 
-```csharp
+```xml
 <PropertyGroup>
     <UserSecretsId>acsoft-api-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</UserSecretsId>
 </PropertyGroup>
@@ -37,7 +37,7 @@ El identificador será generado automáticamente por .NET.
 
 Ejecuta este comando desde la carpeta del proyecto API:
 
-```
+```bash
 dotnet user-secrets set "ConnectionStrings:AcSoftConnection" "Host=localhost;Port=5432;Database=mydatabase;Username=postgres;Password=TU_PASSWORD"
 ```
 
@@ -45,7 +45,7 @@ Reemplaza `TU_PASSWORD` por tu contraseña real.
 
 La sintaxis:
 
-```
+```csharp
 ConnectionStrings:AcSoftConnection
 ```
 

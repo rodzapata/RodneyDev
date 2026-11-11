@@ -263,7 +263,7 @@ Esta configuración establece la relación entre `ActivityAnswer` y su objeto de
 
 Crea `ActivityAnswerConfiguration.cs`:
 
-```
+```csharp
 
 using AcSoft.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -359,3 +359,6 @@ Las tres mediciones pertenecen a una misma respuesta.
 Importante: esta configuración es el siguiente paso de mapeo, pero debemos validarla con el modelo real de EF Core, especialmente la colección `_measurements` y la relación de propiedad de `AnswerValue`.
 
 Agrega los cambios y comprueba que compile. Luego probaremos la construcción del modelo con `CanConnectAsync` para detectar cualquier problema de configuración antes de avanzar.
+
+
+paso a paso con [webapi parte 6-8 configurar la persistencia de WorkOrderActivity y sus preguntas y respuestas](/blog/webapi-6-8-csharp)

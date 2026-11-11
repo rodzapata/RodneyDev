@@ -1,0 +1,174 @@
+---
+title: "Crear webapi Parte 6-8  configurar la persistencia de WorkOrderActivity y sus preguntas y respuestas."
+date: "2026-11-11"
+description: "Crear webapi Parte 6-8  configurar la persistencia de WorkOrderActivity y sus preguntas y respuestas."
+slug: "webapi-6-8-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+Continuemos. El siguiente paso es validar que EF Core pueda construir el modelo completo, no solamente que el código compile.
+
+para compilar el proyecto debemos ejecutar:
+
+```bash
+dotnet build
+```
+
+Esto es importante porque acabamos de configurar relaciones entre entidades y objetos de valor anidados (`AnswerValue`, `MeasurementReading` y `MeasurementValue`).
+
+### 1. Verificar el modelo de EF Core
+
+En tu `Program.cs`, utiliza temporalmente este bloque después de registrar los servicios y antes de `app.Run()`:
+
+Vamos a hacer una prueba en dos partes: primero comprobar que EF Core construye correctamente el modelo y después verificar la conexión con PostgreSQL.
+
+### 1. Agregar una validación temporal en Program.cs
+
+Como ya habías probado la conexión anteriormente, puedes reemplazar el bloque de prueba anterior por este:
+
+```csharp
+
+using (var scope = app.Services.CreateScope())
+{
+    try
+    {
+        var context = scope.ServiceProvider
+            .GetRequiredService<AcDbContext>();
+
+        // Fuerza la construcción del modelo de EF Core.
+        var model = context.Model;
+
+        Console.WriteLine("Modelo de EF Core construido correctamente.");
+
+        // Comprueba la conexión con PostgreSQL.
+        var canConnect = await context.Database.CanConnectAsync();
+
+        Console.WriteLine(
+            $"Conexión a PostgreSQL: {canConnect}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine("Error al validar EF Core o PostgreSQL:");
+        Console.WriteLine(ex.ToString());
+    }
+}
+
+```
+
+### 2. Ejecutar el proyecto
+
+Ejecuta la API y revisa la consola.
+
+Resultado esperado
+
+Modelo de EF Core construido correctamente.
+
+Conexión a PostgreSQL: True
+
+Si aparece un error, compárteme el mensaje completo. No avanzaremos a migraciones ni a pruebas de persistencia hasta validar este modelo.
+
+Una vez que funcione, el siguiente paso será revisar cómo EF Core guarda y recupera el agregado `WorkOrder` con sus actividades, preguntas y respuestas.
+
+> todo esta funcionando, continuemos
+
+¡Excelente! Ya tenemos el modelo de EF Core construido y la conexión con PostgreSQL funcionando.
+
+Ahora pasaremos de la configuración a una prueba importante: guardar y recuperar una orden de trabajo con sus actividades y preguntas.
+
+Antes de escribir código, hay una decisión de diseño que debemos tener clara:
+
+- `WorkOrder` es el agregado raíz.
+- `WorkOrderActivity` pertenece a ese agregado.
+- `WorkOrderActivityQuestion` y `ActivityAnswer` son elementos internos de cada ejecución.
+
+Por tanto, cuando recuperemos una orden para trabajar con sus actividades, debemos cargar también las colecciones necesarias. No queremos consultar cada elemento de forma independiente sin necesidad.
+
+### Paso 1. Crear una consulta para recuperar la orden completa
+
+Actualmente tu repositorio tiene este método:
+
+```csharp
+Task<WorkOrder?> GetByIdAsync(
+    Guid id,
+    CancellationToken cancellationToken);
+```
+
+Mi recomendación es conservarlo y agregar otro método llamado `GetByIdWithDetailsAsync`. Así puedes recuperar una orden sencilla cuando no necesitas todos sus detalles y cargar el agregado completo cuando vas a consultar o modificar sus actividades.
+
+1\. Actualiza `IWorkOrderRepository.cs`:
+
+```csharp
+
+using AcSoft.Domain.Entities;
+
+namespace AcSoft.Application.Abstractions.Persistence;
+
+public interface IWorkOrderRepository
+{
+    Task AddAsync(
+        WorkOrder workOrder,
+        CancellationToken cancellationToken);
+
+    Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken);
+
+    Task<WorkOrder?> GetByIdWithDetailsAsync(
+        Guid id,
+        CancellationToken cancellationToken);
+}
+
+```
+
+2\. Actualiza `WorkOrderRepository.cs`:
+
+Agrega este método a tu implementación:
+
+```csharp
+
+public async Task<WorkOrder?> GetByIdWithDetailsAsync(
+    Guid id,
+    CancellationToken cancellationToken)
+{
+    return await _context.WorkOrders
+        .Include(x => x.Activities)
+            .ThenInclude(x => x.Questions)
+        .Include(x => x.Activities)
+            .ThenInclude(x => x.Answers)
+        .FirstOrDefaultAsync(
+            x => x.Id == id,
+            cancellationToken);
+}
+
+```
+
+Asegúrate de tener estos espacios de nombres:
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+```
+
+### ¿Qué estamos cargando?
+
+WorkOrder
+
+- Activities
+
+  Ejecuciones de actividades de la orden.
+- Questions
+
+  Preguntas guardadas como snapshot.
+- Answers
+
+  Respuestas de cada ejecución, incluyendo sus objetos de valor y mediciones configurados como entidades propiedad de EF Core.
+
+Una consideración importante: no estamos cargando las actividades originales del catálogo porque esta consulta está orientada a recuperar la información histórica de la orden.
+
+### Tu tarea
+
+Agrega el método en la interfaz y en el repositorio. Comprueba que compile.
+
+Después vamos a crear una prueba real de persistencia: crear una orden, agregar una actividad con preguntas, guardar en PostgreSQL y recuperarla para comprobar que EF Core conserva toda la información.
