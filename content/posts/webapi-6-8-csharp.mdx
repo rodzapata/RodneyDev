@@ -172,3 +172,611 @@ Una consideración importante: no estamos cargando las actividades originales de
 Agrega el método en la interfaz y en el repositorio. Comprueba que compile.
 
 Después vamos a crear una prueba real de persistencia: crear una orden, agregar una actividad con preguntas, guardar en PostgreSQL y recuperarla para comprobar que EF Core conserva toda la información.
+
+> compilo sin error, continuemos
+
+¡Perfecto! Ya tenemos el repositorio implementando correctamente la interfaz.
+
+Antes de hacer la prueba de persistencia, vamos a realizar un pequeño ajuste en `GetByIdWithDetailsAsync`.
+
+### Paso 2. Evitar consultas SQL demasiado grandes
+
+Actualmente estamos cargando dos colecciones:
+
+- `Activities` con sus `Questions`.
+- `Activities` con sus `Answers`.
+
+EF Core puede generar una consulta con múltiples JOIN que multiplique las filas devueltas. Para evitar ese problema, podemos utilizar `AsSplitQuery()`.
+
+Deja el método así:
+
+```csharp
+
+public async Task<WorkOrder?> GetByIdWithDetailsAsync(
+    Guid id,
+    CancellationToken cancellationToken)
+{
+    return await _context.WorkOrders
+        .AsSplitQuery()
+        .Include(x => x.Activities)
+            .ThenInclude(x => x.Questions)
+        .Include(x => x.Activities)
+            .ThenInclude(x => x.Answers)
+        .FirstOrDefaultAsync(
+            x => x.Id == id,
+            cancellationToken);
+}
+
+```
+
+¿Qué hace `AsSplitQuery()`?
+
+En lugar de intentar recuperar todo mediante una única consulta SQL con múltiples JOIN, EF Core ejecuta varias consultas relacionadas para cargar las colecciones.
+
+Esto puede reducir la duplicación de datos cuando un agregado tiene varias colecciones.
+
+No significa que siempre sea más rápido: implica más viajes a la base de datos, pero suele ser conveniente para agregados con varias colecciones.
+
+### Paso 3. Verificar
+
+Ejecuta nuevamente:
+
+```bash
+dotnet build
+```
+
+Cuando esté listo, vamos a probar la creación y recuperación de una orden de trabajo en PostgreSQL.
+
+Para preparar esa prueba sin inventar métodos ni modificar tu dominio, compárteme el código actual de `WorkOrder.cs`. Así revisamos cómo se agregan las actividades y cómo podemos probar el guardado del agregado completo.
+
+Gracias. Revisando tu clase `WorkOrder`, veo que el diseño está bien encaminado para trabajar con DDD:
+
+- `WorkOrder` controla el ciclo de vida de la orden.
+- `AddActivity()` valida las reglas del negocio.
+- `ConfigureQuestions()` crea las preguntas históricas de cada ejecución.
+- Las colecciones se protegen mediante campos privados (`_activities` y `_assignments`).
+
+Hay un detalle importante para nuestra prueba: no debemos agregar una actividad directamente al repositorio. Debemos hacerlo a través de `WorkOrder.AddActivity()`, para que se ejecuten todas las validaciones y se creen las preguntas correspondientes.
+
+### Paso 1. Revisar la configuración de las colecciones del agregado
+
+Antes de probar la persistencia, necesitamos comprobar que EF Core también puede reconstruir las colecciones privadas de `WorkOrder`.
+
+Para evitar duplicar configuraciones, necesito revisar cómo tienes mapeada actualmente esta entidad.
+
+¿Ya tienes creado `WorkOrderConfiguration.cs`?
+
+Si existe, compárteme su código. Si todavía no existe, dímelo y lo construiremos teniendo en cuenta:
+
+- La colección `_activities`.
+- La colección `_assignments`.
+- Las claves foráneas `CustomerId` y `EquipmentId`.
+- El estado `WorkOrderStatus`.
+
+Después de validar esa configuración, pasaremos a guardar y recuperar una orden completa en PostgreSQL.
+
+> WorkOrderConfiguration todavia no existe, ayudame a crearlo
+
+Perfecto. Vamos a crear `WorkOrderConfiguration.cs` respetando tu modelo de dominio y evitando que EF Core modifique directamente las colecciones desde el exterior.
+
+La configuración tendrá cuatro responsabilidades:
+
+1. Configurar las propiedades de `WorkOrder`.
+2. Configurar la colección privada `_activities`.
+3. Configurar la colección privada `_assignments`.
+4. Definir las restricciones e índices de la tabla.
+
+## 1. Crear WorkOrderConfiguration.cs
+
+Ubicación:
+
+```
+AcSoft.Infrastructure
+└── Persistence
+    └── Configurations
+        └── WorkOrderConfiguration.cs
+```
+
+Código:
+
+```csharp
+
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class WorkOrderConfiguration
+    : IEntityTypeConfiguration<WorkOrder>
+{
+    public void Configure(EntityTypeBuilder<WorkOrder> builder)
+    {
+        builder.ToTable("WorkOrders");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.Number)
+            .HasMaxLength(30)
+            .IsRequired();
+
+        builder.HasIndex(x => x.Number)
+            .IsUnique();
+
+        builder.Property(x => x.CustomerId)
+            .IsRequired();
+
+        builder.Property(x => x.EquipmentId)
+            .IsRequired();
+
+        builder.Property(x => x.Status)
+            .IsRequired();
+
+        // Relación con las actividades de la orden.
+        builder.HasMany(x => x.Activities)
+            .WithOne()
+            .HasForeignKey(x => x.WorkOrderId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.Navigation(x => x.Activities)
+            .HasField("_activities")
+            .UsePropertyAccessMode(PropertyAccessMode.Field);
+
+        // Relación con las asignaciones de técnicos.
+        builder.HasMany(x => x.Assignments)
+            .WithOne()
+            .HasForeignKey(x => x.WorkOrderId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.Navigation(x => x.Assignments)
+            .HasField("_assignments")
+            .UsePropertyAccessMode(PropertyAccessMode.Field);
+    }
+}
+
+```
+
+## 2. ¿Por qué configuramos las colecciones de esta manera?
+
+Por ejemplo, en tu entidad tienes:
+
+```csharp
+private readonly List<WorkOrderActivity> _activities = [];
+
+public IReadOnlyCollection<WorkOrderActivity> Activities =>
+    _activities.AsReadOnly();
+```
+
+La propiedad `Activities` devuelve una colección de solo lectura.
+
+Por eso utilizamos:
+
+```csharp
+builder.Navigation(x => x.Activities)
+    .HasField("_activities")
+    .UsePropertyAccessMode(PropertyAccessMode.Field);
+```
+
+Esto le indica a EF Core que debe utilizar el campo privado `_activities` para cargar y reconstruir la colección.
+
+Aplicamos exactamente el mismo principio a `_assignments`.
+
+## 3. Dos decisiones de diseño importantes
+
+Número de orden único
+
+```csharp
+builder.HasIndex(x => x.Number).IsUnique();
+```
+
+Esto evita que existan dos órdenes con el mismo número. Es importante porque actualmente generas el número utilizando la fecha y hora hasta los segundos. Si se crean dos órdenes en el mismo segundo, podría producirse una colisión.
+
+Más adelante mejoraremos esa generación.
+
+Eliminación en cascada
+
+```csharp
+.OnDelete(DeleteBehavior.Cascade);
+```
+
+Cuando se elimina una orden, EF Core también elimina sus actividades y asignaciones dependientes.
+
+Esto es una decisión de persistencia, no una autorización para eliminar órdenes históricas desde el negocio. En un sistema de mantenimiento real, normalmente conviene cancelar o archivar órdenes en lugar de eliminarlas.
+
+## 4. Tu siguiente tarea
+
+1. Crea `WorkOrderConfiguration.cs`.
+2. Ejecuta:
+
+```bash
+dotnet build
+```
+
+3\. Si compila, todavía no crees migraciones.
+
+Quiero revisar después `WorkOrderAssignment.cs` para comprobar que tenga correctamente definida la propiedad `WorkOrderId` y que su relación con `WorkOrder` coincida con esta configuración.
+
+Así evitamos otro error de mapeo cuando probemos la persistencia.
+
+> error CS1061 al compilar en la linea: .HasForeignKey(x => x.WorkOrderId)
+
+Ya encontramos la causa. Tu clase `WorkOrderAssignment` no tiene una propiedad `WorkOrderId`, mientras que nuestra configuración intenta utilizarla como clave foránea.
+
+La solución recomendada es agregar esa propiedad a `WorkOrderAssignment`, porque cada asignación debe conocer a qué orden pertenece.
+
+### 1. Modificar WorkOrderAssignment.cs
+
+Agrega `workOrderId` al constructor y a la propiedad de la entidad:
+
+```csharp
+
+public sealed class WorkOrderAssignment
+{
+    private WorkOrderAssignment()
+    {
+    }
+
+    private WorkOrderAssignment(
+        Guid id,
+        Guid workOrderId,
+        Guid technicianId,
+        DateTimeOffset assignedAt)
+    {
+        Id = id;
+        WorkOrderId = workOrderId;
+        TechnicianId = technicianId;
+        AssignedAt = assignedAt;
+    }
+
+    public Guid Id { get; private set; }
+
+    public Guid WorkOrderId { get; private set; }
+
+    public Guid TechnicianId { get; private set; }
+
+    public DateTimeOffset AssignedAt { get; private set; }
+
+    public DateTimeOffset? UnassignedAt { get; private set; }
+
+    public AssignmentEndReason? EndReason { get; private set; }
+
+    public bool IsActive => UnassignedAt is null;
+
+    internal static WorkOrderAssignment Create(
+        Guid workOrderId,
+        Guid technicianId,
+        DateTimeOffset assignedAt)
+    {
+        if (workOrderId == Guid.Empty)
+            throw new ArgumentException(
+                "La orden de trabajo es obligatoria.",
+                nameof(workOrderId));
+
+        if (technicianId == Guid.Empty)
+            throw new ArgumentException(
+                "El técnico es obligatorio.",
+                nameof(technicianId));
+
+        return new WorkOrderAssignment(
+            Guid.NewGuid(),
+            workOrderId,
+            technicianId,
+            assignedAt);
+    }
+
+    internal void End(
+        DateTimeOffset unassignedAt,
+        AssignmentEndReason reason)
+    {
+        if (!IsActive)
+            throw new InvalidOperationException(
+                "La asignación ya fue finalizada.");
+
+        if (unassignedAt < AssignedAt)
+            throw new InvalidOperationException(
+                "La fecha de desasignación no puede ser anterior a la asignación.");
+
+        UnassignedAt = unassignedAt;
+        EndReason = reason;
+    }
+}
+
+```
+
+### 2. Actualizar WorkOrder.cs
+
+Ahora debes modificar las dos llamadas a `WorkOrderAssignment.Create()`.
+
+En `AssignTechnician()`:
+
+```csharp
+var assignment = WorkOrderAssignment.Create(
+    Id,
+    technicianId,
+    assignedAt);
+```
+
+En `ReassignTechnician()`:
+
+```csharp
+var newAssignment = WorkOrderAssignment.Create(
+    Id,
+    newTechnicianId,
+    changedAt);
+```
+
+### 3. ¿Por qué recomiendo esta solución?
+
+Porque `WorkOrderAssignment` es una entidad dependiente de `WorkOrder`.
+
+Al guardar una asignación, debe quedar identificada la orden a la que pertenece mediante `WorkOrderId`.
+
+Además, permite que EF Core configure explícitamente la relación:
+
+```csharp
+builder.HasMany(x => x.Assignments)
+    .WithOne()
+    .HasForeignKey(x => x.WorkOrderId)
+    .OnDelete(DeleteBehavior.Cascade);
+```
+
+### 4. Ejecuta la compilación
+
+```bash
+dotnet build
+```
+
+
+
+Objetivo
+
+&#x20;Eliminar el error CS1061 y mantener una relación explícita entre las asignaciones y las órdenes.
+
+
+
+Cuando compile, continuaremos con la configuración de `WorkOrderAssignmentConfiguration.cs`.
+
+> revisa mi codigo
+
+
+Revisé tu clase `WorkOrder` completa. La modificación de `WorkOrderAssignment.Create()` está correctamente aplicada en los dos lugares. También veo que mantienes las reglas del negocio dentro del agregado, que es lo adecuado para nuestro enfoque DDD.
+
+Mi revisión identifica 3 mejoras importantes y algunos detalles que podemos dejar para después.
+
+## 1. Asignación de técnicos: correcto
+
+Ahora tienes:
+
+```csharp
+var assignment = WorkOrderAssignment.Create(
+    Id,
+    technicianId,
+    assignedAt);
+```
+
+Y en `ReassignTechnician()`:
+
+```csharp
+var newAssignment = WorkOrderAssignment.Create(
+    Id,
+    newTechnicianId,
+    changedAt);
+```
+
+
+
+Correcto
+
+&#x20;Ambas llamadas envían el identificador de la orden y permiten establecer la clave foránea `WorkOrderId`.
+
+
+
+## 2. Mejorar UnassignTechnician()
+
+Actualmente puedes desasignar un técnico incluso cuando la orden está en ejecución.
+
+Por ejemplo:
+
+1. La orden está en `InProgress`.
+2. Desasignas al técnico.
+3. La orden permanece en `InProgress`.
+4. Ahora tienes una orden ejecutándose sin técnico asignado.
+
+Esto puede generar inconsistencias en tu negocio HVAC.
+
+Mi recomendación es impedir la desasignación mientras la orden está en ejecución o en espera, salvo que posteriormente implementemos una operación específica para ese escenario.
+
+Agrega esta validación al comienzo de `UnassignTechnician()`:
+
+```csharp
+if (Status is WorkOrderStatus.InProgress or WorkOrderStatus.Waiting)
+{
+    throw new InvalidOperationException(
+        "No se puede desasignar el técnico mientras la orden está en ejecución o espera.");
+}
+```
+
+## 3. Validar el técnico en ReassignTechnician()
+
+Actualmente validas que el nuevo técnico sea diferente al actual, pero no que el identificador sea válido antes de finalizar la asignación anterior.
+
+Agrega al comienzo del método:
+
+```csharp
+if (newTechnicianId == Guid.Empty)
+{
+    throw new ArgumentException(
+        "El nuevo técnico es obligatorio.",
+        nameof(newTechnicianId));
+}
+```
+
+Esto evita modificar la asignación actual y después intentar crear una asignación inválida.
+
+## 4. Validar ExecutionMoment
+
+En `AddActivity()` validas que `sequence` sea mayor que cero, pero falta validar que `moment` sea un valor válido del enum.
+
+Agrega:
+
+```csharp
+if (!Enum.IsDefined(moment))
+{
+    throw new ArgumentOutOfRangeException(
+        nameof(moment),
+        "El momento de ejecución no es válido.");
+}
+```
+
+Esto evita aceptar valores inválidos enviados desde otras capas.
+
+## 5. Mi valoración de tu agregado
+
+## WorkOrder
+
+Encapsulamiento
+
+Correcto
+
+Reglas de negocio
+
+Bien encaminadas
+
+Colecciones privadas
+
+Correcto
+
+Relación con asignaciones
+
+Actualizada
+
+Validaciones de estados
+
+Mejorables
+
+Una observación adicional: tu propiedad `CurrentTechnicianId` utiliza `SingleOrDefault()`. Esto es apropiado porque el dominio establece que solo puede existir una asignación activa. Más adelante podemos reforzar esa regla también en PostgreSQL mediante un índice único parcial.
+
+## 6. ¿Qué hacemos ahora?
+
+Mi recomendación es que apliques estas tres mejoras y vuelvas a compilar:
+
+```bash
+dotnet build
+```
+
+Después continuaremos con `WorkOrderAssignmentConfiguration.cs`, para completar el mapeo de las asignaciones y dejar preparado el agregado `WorkOrder` para las pruebas de persistencia.
+
+dentro del proyecto principal
+
+C:\Users\Ryzen\Documents\workspace\AcSoft-BackEnd
+
+ejecute 
+
+```bash
+Get-ChildItem .\AcSoft.Domain\Entities\WorkOrder.cs
+```
+
+si aparece el archivo ejecute
+
+```bash
+Get-ChildItem .\AcSoft.Domain -Filter *.cs -Recurse |
+    Select-String "WorkOrderAssignment.Create"
+```
+
+me mostrol lo siguiente:
+
+```bash
+AcSoft.Domain\Entities\WorkOrder.cs:93:        var assignment = WorkOrderAssignment.Create(
+AcSoft.Domain\Entities\WorkOrder.cs:144:        var newAssignment = WorkOrderAssignment.Create(
+AcSoft.Domain\Entities\WorkOrderAssignment.cs:40:    internal static WorkOrderAssignment Create(
+
+```
+
+Perfecto. El resultado confirma que solo tienes dos llamadas a `WorkOrderAssignment.Create()` en `WorkOrder.cs`, exactamente en las líneas 93 y 144. Coinciden con las líneas del error de compilación.
+
+Ahora necesitamos comprobar si esas llamadas están pasando los tres argumentos requeridos.
+
+### 1. Ejecuta este comando
+
+Desde la carpeta raíz `AcSoft-BackEnd`:
+
+```bash
+$i=0; Get-Content .\AcSoft.Domain\Entities\WorkOrder.cs | ForEach-Object { $i++; "{0,4}: {1}" -f $i, $_ } | Select-Object -Skip 85 -First 70
+```
+
+### 2. Comprueba también la firma del método
+
+```bash
+$i=0; Get-Content .\AcSoft.Domain\Entities\WorkOrderAssignment.cs | ForEach-Object { $i++; "{0,4}: {1}" -f $i, $_ } | Select-Object -Skip 30 -First 25
+```
+
+Compárteme ambos resultados.
+
+Quiero verificar el código que realmente está guardado en tu disco, porque el archivo que me compartiste anteriormente tenía las dos llamadas con tres argumentos, pero el compilador está señalando esas mismas líneas como si faltara `assignedAt`. No vamos a modificar nada hasta identificar la diferencia.
+
+¡Encontramos el error! Ahora sí tenemos la causa exacta.
+
+Tu método `WorkOrderAssignment.Create()` requiere tres argumentos:
+
+```csharp
+internal static WorkOrderAssignment Create(
+    Guid workOrderId,
+    Guid technicianId,
+    DateTimeOffset assignedAt)
+```
+
+Pero en `WorkOrder.cs` todavía estás enviando solamente dos argumentos.
+
+### 1. Corrige `AssignTechnician()`
+
+Actualmente tienes:
+
+```csharp
+var assignment = WorkOrderAssignment.Create(
+    technicianId,
+    assignedAt);
+```
+
+Debes agregar `Id` como primer argumento:
+
+```csharp
+var assignment = WorkOrderAssignment.Create(
+    Id,
+    technicianId,
+    assignedAt);
+```
+
+### 2. Corrige `ReassignTechnician()`
+
+Actualmente tienes:
+
+```csharp
+var newAssignment = WorkOrderAssignment.Create(
+    newTechnicianId,
+    changedAt);
+```
+
+Corrígelo así:
+
+```csharp
+var newAssignment = WorkOrderAssignment.Create(
+    Id,
+    newTechnicianId,
+    changedAt);
+```
+
+### 3. Compila nuevamente
+
+Desde la raíz de `AcSoft-BackEnd`, ejecuta:
+
+```bash
+dotnet build
+```
+
+¿Por qué necesitábamos agregar `Id`?
+
+Porque ahora `WorkOrderAssignment` tiene la propiedad `WorkOrderId`, que representa la relación entre la asignación del técnico y su orden de trabajo.
+
+Al crear una asignación, debemos indicarle a qué orden pertenece. Por eso `Id` (el identificador de la orden actual) es el primer argumento.
+
+Con esto deberían desaparecer los dos errores CS7036. Después continuamos con la configuración de `WorkOrderAssignmentConfiguration` en EF Core.

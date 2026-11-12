@@ -260,7 +260,9 @@ public sealed record Voltage
     public Voltage(decimal value)
     {
         if (value <= 0)
-            throw new ArgumentException(
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                value,
                 "El voltaje debe ser mayor que cero.");
 
         Value = value;

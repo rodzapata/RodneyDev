@@ -1,0 +1,414 @@
+---
+title: "LINQ parte 7 LINQ -- Manejo global de excepciones en .NET 10 con IExceptionHandler y ProblemDetails"
+date: "2026-11-11"
+description: "LINQ parte 7 -- Manejo global de excepciones en .NET 10 con IExceptionHandler y ProblemDetails"
+slug: "LINQ-07-csharp"
+category: "Netcore"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+# Lección: Manejo global de excepciones en .NET 10 con IExceptionHandler y ProblemDetails
+
+En la lección anterior integramos FluentValidation en nuestro proyecto AcSoft. Aprendimos a validar los Commands antes de ejecutar los casos de uso.
+
+Ahora vamos a resolver un problema importante: ¿cómo devolvemos errores HTTP de manera consistente sin repetir bloques `try/catch` en todos nuestros endpoints?
+
+Para ello utilizaremos dos características de ASP.NET Core:
+
+- `IExceptionHandler`: permite centralizar el tratamiento de excepciones.
+- `ProblemDetails`: proporciona un formato estándar para representar errores HTTP.
+
+## 1. ¿Cuál es el problema de manejar excepciones en cada endpoint?
+
+Imagina que tenemos varios endpoints:
+
+```csharp
+app.MapPost("/work-orders", async (
+    CreateWorkOrderCommand command,
+    CreateWorkOrderHandler handler) =>
+{
+    try
+    {
+        var id = await handler.Handle(command, CancellationToken.None);
+
+        return Results.Ok(id);
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+});
+```
+
+Este enfoque tiene varios inconvenientes:
+
+1. Repetimos el mismo código en diferentes endpoints.
+2. Todas las excepciones terminan convertidas en HTTP 400, incluso cuando son errores internos.
+3. No tenemos un formato uniforme de respuestas.
+4. Podemos terminar exponiendo información interna de nuestra aplicación.
+
+La solución es centralizar el manejo de excepciones.
+
+## 2. ¿Qué es ProblemDetails?
+
+`ProblemDetails` es un estándar definido en RFC 9457 para representar errores en APIs HTTP.
+
+En lugar de devolver simplemente un texto:
+
+```json
+{
+  "error": "El cliente es obligatorio."
+}
+```
+
+Podemos devolver una estructura más completa:
+
+```json
+{
+  "type": "https://tools.ietf.org/html/rfc9110#section-15.5.1",
+  "title": "One or more validation errors occurred.",
+  "status": 400,
+  "detail": "Revise los campos enviados.",
+  "instance": "/work-orders"
+}
+```
+
+También podemos agregar propiedades adicionales, como los errores asociados a cada campo.
+
+ASP.NET Core incluye soporte para `ProblemDetails`, por lo que no necesitamos implementar este formato desde cero.
+
+## 3. Crear nuestro manejador global
+
+Vamos a crear una carpeta en `AcSoft.Api`:
+
+```
+AcSoft.Api
+│
+├── Exceptions
+│   └── GlobalExceptionHandler.cs
+│
+├── Program.cs
+└── ...
+```
+
+Implementaremos `IExceptionHandler`.
+
+Archivo: `Exceptions/GlobalExceptionHandler.cs`
+
+```csharp
+using FluentValidation;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
+
+namespace AcSoft.Api.Exceptions;
+
+public sealed class GlobalExceptionHandler(
+    ILogger<GlobalExceptionHandler> logger)
+    : IExceptionHandler
+{
+    public async ValueTask<bool> TryHandleAsync(
+        HttpContext httpContext,
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        var problemDetails = new ProblemDetails
+        {
+            Instance = httpContext.Request.Path
+        };
+
+        switch (exception)
+        {
+            case ValidationException validationException:
+
+                problemDetails.Status = StatusCodes.Status400BadRequest;
+                problemDetails.Title = "Error de validación";
+                problemDetails.Detail = "Revise los datos enviados.";
+
+                var errors = validationException.Errors
+                    .GroupBy(x => x.PropertyName)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group
+                            .Select(x => x.ErrorMessage)
+                            .ToArray());
+
+                var validationProblem = new ValidationProblemDetails(errors)
+                {
+                    Status = StatusCodes.Status400BadRequest,
+                    Title = "Uno o más errores de validación ocurrieron.",
+                    Instance = httpContext.Request.Path
+                };
+
+                logger.LogWarning(
+                    "Error de validación en {Path}",
+                    httpContext.Request.Path);
+
+                httpContext.Response.StatusCode =
+                    StatusCodes.Status400BadRequest;
+
+                await httpContext.Response.WriteAsJsonAsync(
+                    validationProblem,
+                    cancellationToken);
+
+                return true;
+
+            default:
+
+                logger.LogError(
+                    exception,
+                    "Error no controlado en {Path}",
+                    httpContext.Request.Path);
+
+                problemDetails.Status =
+                    StatusCodes.Status500InternalServerError;
+
+                problemDetails.Title = "Error interno del servidor";
+                problemDetails.Detail =
+                    "Ocurrió un error inesperado.";
+
+                break;
+        }
+
+        httpContext.Response.StatusCode = problemDetails.Status!.Value;
+
+        await httpContext.Response.WriteAsJsonAsync(
+            problemDetails,
+            cancellationToken);
+
+        return true;
+    }
+}
+```
+
+### Analicemos algunos detalles
+
+`IExceptionHandler`
+
+Es una abstracción de ASP.NET Core que permite implementar manejadores de excepciones.
+
+`TryHandleAsync()`
+
+Recibe la excepción que ocurrió y permite decidir cómo responder.
+
+Su resultado:
+
+- `true`: la excepción fue manejada.
+- `false`: este manejador no la pudo manejar y ASP.NET Core puede continuar con los siguientes manejadores o el tratamiento predeterminado.
+
+`ValidationException`
+
+Es la excepción que utilizamos en la lección anterior cuando FluentValidation encuentra errores.
+
+`LogWarning()` y `LogError()`
+
+Permiten registrar los errores sin exponer detalles internos al consumidor de nuestra API.
+
+## 4. Registrar el manejador en Program.cs
+
+Ahora debemos registrar nuestro manejador y activar el middleware de excepciones.
+
+En `Program.cs`:
+
+```csharp
+using AcSoft.Api.Exceptions;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Servicios
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+
+builder.Services.AddProblemDetails();
+
+// Aquí mantenemos nuestros demás registros:
+// AddInfrastructure()
+// AddValidatorsFromAssemblyContaining<...>()
+// Registro de handlers, etc.
+
+var app = builder.Build();
+
+// Middleware de excepciones
+app.UseExceptionHandler();
+
+app.MapControllers();
+
+app.Run();
+```
+
+Si utilizas Minimal APIs, puedes mantener tus endpoints `MapPost`, `MapGet`, etc. en lugar de `MapControllers()`.
+
+Importante: el middleware debe estar configurado antes de ejecutar los endpoints para poder capturar las excepciones que se produzcan durante su procesamiento.
+
+## 5. ¿Qué sucede con las excepciones del Domain?
+
+Hasta ahora tenemos dos tipos de errores:
+
+1. Errores de validación de entrada.
+2. Errores no controlados.
+
+Pero en DDD también tenemos excepciones de dominio.
+
+Por ejemplo, nuestra entidad `WorkOrder` podría impedir completar una orden con actividades pendientes:
+
+```
+public void Complete()
+{
+    if (_activities.Any(x => x.IsRequired && !x.IsCompleted))
+    {
+        throw new DomainException(
+            "No se puede completar la orden porque existen actividades pendientes.");
+    }
+
+    Status = WorkOrderStatus.Completed;
+}
+```
+
+No queremos que este error termine convertido en HTTP 500, porque no es un error inesperado del servidor: es una regla del negocio que no se pudo cumplir.
+
+Podemos agregar un caso específico al `switch` de nuestro manejador:
+
+```
+case DomainException domainException:
+
+    problemDetails.Status =
+        StatusCodes.Status409Conflict;
+
+    problemDetails.Title = "Regla de negocio no cumplida";
+
+    problemDetails.Detail = domainException.Message;
+
+    break;
+```
+
+En este ejemplo utilizamos HTTP 409 Conflict porque la operación entra en conflicto con el estado actual de la orden.
+
+La elección del código depende de la naturaleza del error. Por ejemplo, una solicitud inválida puede merecer 400, mientras que un recurso inexistente normalmente merece 404.
+
+## 6. Clasificación de errores en nuestra API AcSoft
+
+Esta sería una estrategia inicial:
+
+| Excepción o situación         | HTTP | Significado                 |
+| ----------------------------- | ---- | --------------------------- |
+| `ValidationException`         | 400  | Datos de entrada inválidos  |
+| `DomainException`             | 409  | Regla de negocio incumplida |
+| `NotFoundException`           | 404  | Recurso no encontrado       |
+| `UnauthorizedAccessException` | 403  | Acceso no permitido         |
+| Excepción inesperada          | 500  | Error interno               |
+
+Una consideración: `UnauthorizedAccessException` no siempre debe representar HTTP 403. Si el usuario no está autenticado, normalmente corresponde HTTP 401. En una API real es mejor distinguir autenticación y autorización mediante el sistema de seguridad de ASP.NET Core.
+
+También conviene crear excepciones propias para los recursos no encontrados y las reglas de negocio, en vez de utilizar excepciones genéricas para todo.
+
+## 7. ¿Cómo se verá la respuesta de nuestra API?
+
+Supongamos que enviamos una petición para crear una orden sin identificar el cliente.
+
+HTTP 400
+
+```
+{
+  "title": "Uno o más errores de validación ocurrieron.",
+  "status": 400,
+  "errors": {
+    "CustomerId": [
+      "El cliente es obligatorio."
+    ],
+    "EquipmentId": [
+      "El equipo es obligatorio."
+    ]
+  }
+}
+```
+
+Ahora imaginemos que intentamos completar una orden que todavía tiene actividades obligatorias pendientes.
+
+HTTP 409
+
+```
+{
+  "title": "Regla de negocio no cumplida",
+  "status": 409,
+  "detail": "No se puede completar la orden porque existen actividades pendientes.",
+  "instance": "/work-orders/123/complete"
+}
+```
+
+Y si ocurre un error inesperado en PostgreSQL:
+
+HTTP 500
+
+```
+{
+  "title": "Error interno del servidor",
+  "status": 500,
+  "detail": "Ocurrió un error inesperado."
+}
+```
+
+El cliente no recibe la consulta SQL, la cadena de conexión ni los detalles internos de la excepción.
+
+## 8. Una recomendación para nuestra arquitectura
+
+Mantendría las responsabilidades de esta manera:
+
+AcSoft.Domain
+
+Contiene las reglas de negocio y excepciones propias del dominio.
+
+- `DomainException`
+- `WorkOrder`
+- `WorkOrderAssignment`
+
+AcSoft.Application
+
+Contiene los casos de uso y validaciones de entrada.
+
+- Commands y Queries
+- FluentValidation
+- Handlers
+- `NotFoundException` (si se define como excepción de aplicación)
+
+AcSoft.Api
+
+Traduce las excepciones a respuestas HTTP.
+
+- `GlobalExceptionHandler`
+- `ProblemDetails`
+- Middleware
+
+AcSoft.Infrastructure
+
+Implementa persistencia y acceso a servicios externos.
+
+- EF Core
+- PostgreSQL
+- Repositorios
+- UnitOfWork
+
+La idea es que Domain no conozca HTTP, Application no dependa de ASP.NET Core y que sea Api quien traduzca los errores a códigos HTTP.
+
+## 9. Ejercicio para comprobar lo aprendido
+
+Situación
+
+Un técnico intenta consultar una orden de trabajo utilizando un identificador que no existe en PostgreSQL.
+
+¿Qué código HTTP debería devolver nuestra API?
+
+A. 404 — Not Found
+
+B. 400 — Bad Request
+
+C. 500 — Internal Server Error
+
+D. 409 — Conflict
+
+Comprobar respuesta
+
+
+
+## Próxima lección
+
+Continuaremos con Repository Pattern y Unit of Work en profundidad con EF Core 10. Revisaremos cómo implementar correctamente los repositorios de AcSoft, cómo trabajar con transacciones y cuándo utilizar `SaveChangesAsync`, evitando abstraer innecesariamente las funcionalidades que EF Core ya proporciona.

@@ -35,7 +35,7 @@ Imagina que en AcSoft creamos una orden de servicio y su número debe tener un v
 
 C#
 
-```
+```csharp
 public sealed class WorkOrder
 {
     public string Number { get; private set; }
@@ -63,7 +63,7 @@ Si alguien intenta ejecutar:
 
 C#
 
-```
+```csharp
 var workOrder = WorkOrder.Create("");
 ```
 
@@ -81,7 +81,7 @@ También existe `ArgumentNullException`, que es más específica cuando el argum
 
 C#
 
-```
+```csharp
 ArgumentNullException.ThrowIfNull(request);
 ```
 
@@ -96,7 +96,7 @@ En AcSoft, supongamos que una orden de mantenimiento tiene estos estados:
 
 C#
 
-```
+```csharp
 public enum WorkOrderStatus
 {
     Pending,
@@ -111,7 +111,7 @@ Queremos permitir que una orden se cierre únicamente cuando esté en ejecución
 
 C#
 
-```
+```csharp
 public sealed class WorkOrder
 {
     public WorkOrderStatus Status { get; private set; }
@@ -133,7 +133,7 @@ Por ejemplo:
 
 C#
 
-```
+```csharp
 var workOrder = new WorkOrder();
 
 // Si la orden está Pending:
@@ -168,7 +168,7 @@ Archivo: `AcSoft.Domain/Exceptions/DomainException.cs`
 
 C#
 
-```
+```csharp
 namespace AcSoft.Domain.Exceptions;
 
 public sealed class DomainException : Exception
@@ -184,7 +184,7 @@ Después, la utilizamos en `WorkOrder`.
 
 C#
 
-```
+```csharp
 using AcSoft.Domain.Exceptions;
 
 public sealed class WorkOrder
@@ -228,7 +228,7 @@ Content-Type: application/problem+json
 
 JSON
 
-```
+```json
 {
   "title": "Regla de negocio incumplida",
   "status": 400,

@@ -1,0 +1,160 @@
+---
+title: "Patron Result Panner"
+date: "2026-11-12"
+description: "Patron Result Panner"
+slug: "patron-result-pattern-csharp"
+category: "Netcore"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+# Result Pattern en .NET 10 y C# 14: guía práctica y buenas prácticas (2026)
+
+El Result Pattern (patrón de resultado) es una técnica de diseño que permite representar explícitamente si una operación terminó correctamente o si ocurrió un error, sin tener que utilizar excepciones para controlar el flujo normal de la aplicación.
+
+Es especialmente útil cuando trabajas con:
+
+- Clean Architecture.
+- Domain-Driven Design (DDD).
+- ASP.NET Core Web API.
+- CQRS (Commands y Queries).
+- Value Objects y entidades de dominio.
+- Repositorios y casos de uso.
+
+En una arquitectura como la que estás construyendo para AcSoft, permite que los casos de uso comuniquen errores de negocio de manera clara y consistente.
+
+Vamos a estudiarlo desde lo básico hasta una implementación que puedas utilizar en producción.
+
+## 1. ¿Qué problema resuelve el Result Pattern?
+
+Imagina que tienes un caso de uso para crear una orden de trabajo:
+
+```csharp
+public async Task<WorkOrder> CreateWorkOrderAsync(
+    CreateWorkOrderRequest request)
+{
+    var customer = await _customerRepository
+        .GetByIdAsync(request.CustomerId);
+
+    if (customer is null)
+        throw new Exception("El cliente no existe.");
+
+    var equipment = await _equipmentRepository
+        .GetByIdAsync(request.EquipmentId);
+
+    if (equipment is null)
+        throw new Exception("El equipo no existe.");
+
+    var workOrder = WorkOrder.Create(
+        request.CustomerId,
+        request.EquipmentId);
+
+    await _workOrderRepository.AddAsync(workOrder);
+
+    return workOrder;
+}
+```
+
+¿Qué inconvenientes tiene?
+
+1. Se utilizan excepciones para representar situaciones esperadas del negocio.
+2. El consumidor del método no sabe qué errores puede recibir.
+3. Es necesario utilizar `try-catch` para identificar errores.
+4. No existe un contrato explícito que indique los posibles resultados.
+
+Por ejemplo, que un cliente no exista no necesariamente es una excepción técnica. Es un resultado esperado de una operación de negocio.
+
+La idea del Result Pattern es devolver un objeto que indique el resultado de la operación.
+
+En lugar de devolver únicamente `WorkOrder`, devolveremos algo que represente:
+
+- Éxito: contiene la orden de trabajo.
+- Error: contiene información del problema.
+
+## 2. Primer ejemplo: implementar Result
+
+Empecemos con una implementación sencilla.
+
+Creamos una carpeta:
+
+```
+AcSoft.Domain
+│
+└── Common
+    └── Results
+        └── Result.cs
+```
+
+Implementamos:
+
+```csharp
+namespace AcSoft.Domain.Common.Results;
+
+public sealed class Result
+{
+    public bool IsSuccess { get; }
+
+    public bool IsFailure => !IsSuccess;
+
+    public string? Error { get; }
+
+    private Result(bool isSuccess, string? error)
+    {
+        IsSuccess = isSuccess;
+        Error = error;
+    }
+
+    public static Result Success()
+        => new(true, null);
+
+    public static Result Failure(string error)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(error);
+
+        return new(false, error);
+    }
+}
+```
+
+Ahora podemos utilizarlo:
+
+```csharp
+public Result ValidateEquipment()
+{
+    if (IsInactive)
+        return Result.Failure(
+            "El equipo está inactivo.");
+
+    return Result.Success();
+}
+```
+
+Uso:
+
+```csharp
+var result = equipment.ValidateEquipment();
+
+if (result.IsFailure)
+{
+    Console.WriteLine(result.Error);
+    return;
+}
+
+Console.WriteLine("El equipo está disponible.");
+```
+
+Observa que no necesitamos lanzar una excepción para comunicar que el equipo está inactivo.
+
+### ¿Qué conseguimos?
+
+| Antes                              | Con Result Pattern       |
+| ---------------------------------- | ------------------------ |
+| `throw new Exception()`            | `Result.Failure()`       |
+| `try-catch` para errores esperados | `IsFailure`              |
+| Contrato poco explícito            | Resultado explícito      |
+| Errores mediante excepciones       | Errores mediante valores |
+
+Una consideración importante: no significa que debamos eliminar todas las excepciones. Las excepciones siguen siendo apropiadas para situaciones inesperadas, fallos técnicos y violaciones de invariantes que no deben ocurrir.
+
+## 3. Result Pattern con tipos genéricos: Result

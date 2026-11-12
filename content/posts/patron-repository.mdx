@@ -219,7 +219,305 @@ public class ClienteRepository : IClienteRepository
 }
 ```
 
-Aquí sí aparece EF Core.
+
+refactoriza este código aplicando las mejores practicas y convenciones hoy el 2026
+
+Mi recomendación principal es hacer cinco cambios:
+
+1. Utilizar Primary Constructors para reducir código repetitivo.
+2. Incorporar `CancellationToken` en las operaciones asíncronas.
+3. Utilizar `AsNoTracking()` para consultas de solo lectura.
+4. Evitar llamar a `SaveChangesAsync()` dentro de cada método del repositorio.
+5. Evitar utilizar `Update()` indiscriminadamente.
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+
+public sealed class ClienteRepository(
+    FacturacionDbContext context)
+    : IClienteRepository
+{
+    public async Task<IReadOnlyList<Cliente>> ObtenerTodosAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return await context.Clientes
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<Cliente?> ObtenerPorIdAsync(
+        int id,
+        CancellationToken cancellationToken = default)
+    {
+        return await context.Clientes
+            .FindAsync([id], cancellationToken);
+    }
+
+    public void Agregar(Cliente cliente)
+    {
+        context.Clientes.Add(cliente);
+    }
+
+    public void Eliminar(Cliente cliente)
+    {
+        context.Clientes.Remove(cliente);
+    }
+}
+```
+
+Veamos las decisiones importantes.
+
+## 2. ¿Por qué utilizamos Primary Constructor?
+
+```csharp
+public sealed class ClienteRepository(
+    FacturacionDbContext context)
+    : IClienteRepository
+```
+
+En lugar de declarar:
+
+```csharp
+private readonly FacturacionDbContext _context;
+
+public ClienteRepository(FacturacionDbContext context)
+{
+    _context = context;
+}
+```
+
+Utilizamos Primary Constructor.
+
+Ventajas:
+
+- Menos código repetitivo.
+- Inyección de dependencias más sencilla.
+- No necesitamos declarar manualmente el campo privado.
+- Es una característica moderna de C#.
+
+Además, utilizamos `sealed` porque normalmente no necesitamos heredar de una implementación concreta de un repositorio.
+
+## 3. ¿Por qué utilizamos AsNoTracking()?
+
+```csharp
+return await context.Clientes
+    .AsNoTracking()
+    .ToListAsync(cancellationToken);
+```
+
+EF Core, por defecto, realiza seguimiento (Change Tracking) de las entidades que consulta.
+
+Cuando solamente necesitamos consultar información, ese seguimiento es innecesario.
+
+`AsNoTracking()`:
+
+- Reduce el trabajo del Change Tracker.
+- Evita el seguimiento de las entidades.
+- Puede mejorar el rendimiento en consultas de lectura.
+
+Importante: no lo utilizamos en `ObtenerPorIdAsync()` porque probablemente necesitaremos modificar el cliente posteriormente.
+
+## 4. ¿Por qué utilizamos FindAsync()?
+
+```csharp
+return await context.Clientes
+    .FindAsync([id], cancellationToken);
+```
+
+`FindAsync()` tiene una característica interesante:
+
+1. Primero busca la entidad en el contexto de EF Core.
+2. Si ya está cargada, devuelve la instancia existente.
+3. Si no está cargada, consulta la base de datos.
+4. La entidad encontrada queda bajo seguimiento de EF Core.
+
+Esto resulta útil cuando queremos modificar una entidad.
+
+La expresión `[id]` utiliza Collection Expressions de C# 12 en adelante.
+
+## 5. ¿Por qué eliminamos SaveChangesAsync()?
+
+Esta es una de las decisiones arquitectónicas más importantes.
+
+En tu código original tenías:
+
+```csharp
+public async Task AgregarAsync(Cliente cliente)
+{
+    _context.Clientes.Add(cliente);
+
+    await _context.SaveChangesAsync();
+}
+```
+
+Esto provoca que cada operación del repositorio confirme inmediatamente sus cambios.
+
+Imagina que necesitas realizar tres operaciones:
+
+1. Crear un cliente.
+2. Crear una factura.
+3. Registrar los detalles de la factura.
+
+Si cada repositorio ejecuta `SaveChangesAsync()`, pierdes el control centralizado de la unidad de trabajo.
+
+Con Repository + Unit of Work puedes hacer:
+
+```csharp
+var cliente = Cliente.Create(...);
+
+_clienteRepository.Agregar(cliente);
+
+_facturaRepository.Agregar(factura);
+
+await _unitOfWork.SaveChangesAsync(cancellationToken);
+```
+
+Así las tres operaciones se confirman en una sola unidad de trabajo.
+
+Además, EF Core ejecuta las operaciones de `SaveChangesAsync()` dentro de una transacción cuando el proveedor de base de datos lo soporta.
+
+## 6. ¿Por qué eliminamos Update()?
+
+En tu código original:
+
+```csharp
+public async Task ActualizarAsync(Cliente cliente)
+{
+    _context.Clientes.Update(cliente);
+
+    await _context.SaveChangesAsync();
+}
+```
+
+Esto puede ocasionar problemas.
+
+`Update()` marca la entidad y, dependiendo del grafo de objetos, sus entidades relacionadas como modificadas.
+
+Por ejemplo, si recibes un cliente desde una petición HTTP y algunos campos no vienen informados, puedes terminar sobrescribiendo información existente.
+
+La práctica recomendada es recuperar la entidad mediante el repositorio, modificarla y confirmar los cambios:
+
+```csharp
+var cliente = await _clienteRepository
+    .ObtenerPorIdAsync(id, cancellationToken);
+
+if (cliente is null)
+    throw new InvalidOperationException(
+        "El cliente no existe.");
+
+cliente.ActualizarDatos(
+    request.Nombre,
+    request.Ciudad);
+
+await _unitOfWork.SaveChangesAsync(cancellationToken);
+```
+
+Aquí `ActualizarDatos()` sería un método de tu entidad que valida y modifica sus propiedades.
+
+¿Por qué funciona sin llamar a Update()?
+
+Porque `FindAsync()` recupera una entidad que queda bajo seguimiento de EF Core. Cuando ejecutas `SaveChangesAsync()`, EF Core detecta los cambios y genera el SQL correspondiente.
+
+## 7. ¿Cómo quedaría la interfaz?
+
+También debemos actualizar `IClienteRepository` para reflejar los cambios:
+
+```csharp
+public interface IClienteRepository
+{
+    Task<IReadOnlyList<Cliente>> ObtenerTodosAsync(
+        CancellationToken cancellationToken = default);
+
+    Task<Cliente?> ObtenerPorIdAsync(
+        int id,
+        CancellationToken cancellationToken = default);
+
+    void Agregar(Cliente cliente);
+
+    void Eliminar(Cliente cliente);
+}
+```
+
+Y la unidad de trabajo:
+
+```csharp
+public interface IUnitOfWork
+{
+    Task<int> SaveChangesAsync(
+        CancellationToken cancellationToken = default);
+}
+```
+
+Implementación:
+
+```csharp
+public sealed class UnitOfWork(
+    FacturacionDbContext context) : IUnitOfWork
+{
+    public Task<int> SaveChangesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return context.SaveChangesAsync(cancellationToken);
+    }
+}
+```
+
+## 8. ¿Cómo implementar Eliminar?
+
+La eliminación también debe realizarse dentro de la unidad de trabajo.
+
+Por ejemplo, desde un Handler:
+
+```csharp
+public async Task EliminarAsync(
+    int id,
+    CancellationToken cancellationToken)
+{
+    var cliente = await _clienteRepository
+        .ObtenerPorIdAsync(id, cancellationToken);
+
+    if (cliente is null)
+        return;
+
+    _clienteRepository.Eliminar(cliente);
+
+    await _unitOfWork.SaveChangesAsync(
+        cancellationToken);
+}
+```
+
+Esto permite que el Handler coordine la operación y el repositorio se encargue del acceso a los datos.
+
+## 9. Consideraciones importantes para 2026
+
+| Decisión                    | Recomendación                         |
+| --------------------------- | ------------------------------------- |
+| Constructor                 | Primary Constructor                   |
+| Clase repositorio           | `sealed`                              |
+| Consultas de lectura        | `AsNoTracking()`                      |
+| Consultas para modificación | Seguimiento de EF Core                |
+| Operaciones asíncronas      | `CancellationToken`                   |
+| Insertar                    | `Add()`                               |
+| Actualizar                  | Modificar entidad seguida por EF Core |
+| Eliminar                    | `Remove()`                            |
+| Confirmar cambios           | Unit of Work                          |
+| Retorno de colecciones      | `IReadOnlyList<T>`                    |
+
+Hay tres detalles adicionales:
+
+- `Add()` es síncrono porque solamente registra la entidad en el contexto; no necesita realizar una operación de base de datos.
+- `FindAsync()` es apropiado para búsquedas por clave primaria. Si necesitas filtros adicionales, utiliza `FirstOrDefaultAsync()`.
+- Asegúrate de registrar el repositorio, el `DbContext` y el Unit of Work con ciclo de vida `Scoped`, compartiendo la misma instancia del contexto.
+
+### Conclusión
+
+Para tu arquitectura, recomiendo separar responsabilidades:
+
+- Repository: consultas y operaciones sobre entidades.
+- Unit of Work: confirmar los cambios.
+- Handler: coordinar los casos de uso.
+- Domain: proteger las reglas de negocio.
+
 
 ---
 
@@ -259,7 +557,7 @@ El controlador ya no conoce Entity Framework.
 
 ---
 
-# Flujo completo
+**Flujo completo**
 
 ```
 Usuario
@@ -488,7 +786,7 @@ Lo hace el **Servicio**.
 
 ---
 
-# Arquitectura
+**Arquitectura**
 
 Ahora el flujo cambia.
 
@@ -683,7 +981,58 @@ public class ClienteService : IClienteService
     }
 }
 ```
+Refactorizamos este servicio segun las mejores practicas del 2026
 
+```csharp
+public sealed class ClienteService(
+    IClienteRepository repository,
+    IUnitOfWork unitOfWork)
+    : IClienteService
+{
+    public async Task CrearClienteAsync(
+        ClienteDto dto,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(dto);
+
+        if (string.IsNullOrWhiteSpace(dto.Nombre))
+        {
+            throw new ArgumentException(
+                "El nombre es obligatorio.",
+                nameof(dto.Nombre));
+        }
+
+        if (string.IsNullOrWhiteSpace(dto.Nit))
+        {
+            throw new ArgumentException(
+                "El NIT es obligatorio.",
+                nameof(dto.Nit));
+        }
+
+        var clienteExistente = await repository.ObtenerPorNitAsync(
+            dto.Nit,
+            cancellationToken);
+
+        if (clienteExistente is not null)
+        {
+            throw new InvalidOperationException(
+                "Ya existe un cliente con ese NIT.");
+        }
+
+        var nuevoCliente = new Cliente
+        {
+            Nit = dto.Nit,
+            Nombre = dto.Nombre.Trim(),
+            Correo = dto.Correo
+        };
+
+        repository.Agregar(nuevoCliente);
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+}
+
+```
 Aquí está la diferencia importante.
 
 Toda la lógica está en el servicio.
@@ -728,7 +1077,7 @@ builder.Services.AddScoped<IClienteService, ClienteService>();
 
 ---
 
-# Flujo completo
+**Flujo completo**
 
 Cuando un usuario crea un cliente:
 
@@ -943,7 +1292,7 @@ La base de datos quedó inconsistente.
 
 ---
 
-# Lo correcto
+**Lo correcto**
 
 Debe existir **una sola llamada** a SaveChanges.
 
@@ -987,7 +1336,7 @@ Unit of Work.
 
 ---
 
-# Arquitectura
+**Arquitectura**
 
 Ahora el flujo cambia.
 
@@ -1145,7 +1494,7 @@ public class UnitOfWork : IUnitOfWork
 
 ---
 
-# Registrar
+**Registrar**
 
 ```csharp
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
@@ -1548,7 +1897,7 @@ Eso no es recomendable.
 
 ---
 
-# Lo correcto
+**Lo correcto**
 
 Cada operación debe tener su propio DTO.
 
@@ -1769,7 +2118,7 @@ public class ClienteProfile : Profile
 
 ---
 
-# Registrar
+**Registrar**
 
 ```csharp
 builder.Services.AddAutoMapper(typeof(ClienteProfile));
