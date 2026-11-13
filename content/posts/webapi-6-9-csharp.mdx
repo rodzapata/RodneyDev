@@ -1,0 +1,113 @@
+---
+title: "Crear webapi Parte 6-9  WorkOrderAssignmentConfiguration."
+date: "2026-11-13"
+description: "Crear webapi Parte 6-9  WorkOrderAssignmentConfiguration."
+slug: "webapi-6-9-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+¡Excelente! Continuemos con el siguiente paso de la persistencia de ACSoft con EF Core 10.
+
+Ya tenemos configuradas las relaciones de `WorkOrder` con sus actividades y asignaciones. Ahora vamos a crear la configuración específica de `WorkOrderAssignment`.
+
+## Paso siguiente: WorkOrderAssignmentConfiguration
+
+El objetivo es indicarle a EF Core cómo almacenar las asignaciones de técnicos en PostgreSQL.
+
+Crea este archivo dentro de:
+
+```
+AcSoft.Infrastructure
+└── Persistence
+    └── Configurations
+        └── WorkOrderAssignmentConfiguration.cs
+```
+
+Crea la clase con el siguiente código:
+
+```csharp
+
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class WorkOrderAssignmentConfiguration
+    : IEntityTypeConfiguration<WorkOrderAssignment>
+{
+    public void Configure(
+        EntityTypeBuilder<WorkOrderAssignment> builder)
+    {
+        builder.ToTable("WorkOrderAssignments");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.WorkOrderId)
+            .IsRequired();
+
+        builder.Property(x => x.TechnicianId)
+            .IsRequired();
+
+        builder.Property(x => x.AssignedAt)
+            .IsRequired();
+
+        builder.Property(x => x.UnassignedAt);
+
+        builder.Property(x => x.EndReason);
+
+        // Una orden no puede tener dos asignaciones activas.
+        builder.HasIndex(x => x.WorkOrderId)
+            .IsUnique()
+            .HasFilter("\"UnassignedAt\" IS NULL");
+    }
+}
+
+```
+
+### ¿Por qué agregamos ese índice filtrado?
+
+En tu dominio, una asignación está activa cuando:
+
+```csharp
+public bool IsActive => UnassignedAt is null;
+```
+
+Y `WorkOrder` utiliza `SingleOrDefault()` para encontrar la asignación activa.
+
+El índice único filtrado refuerza esa regla directamente en PostgreSQL: una orden de trabajo no puede tener dos asignaciones cuyo `UnassignedAt` sea `NULL`.
+
+Nota: el filtro supone que estás utilizando los nombres de columna predeterminados de EF Core, sin una convención de nombres snake_case.
+
+### 2. Verifica el registro de la configuración
+
+En tu `DbContext`, dentro de `OnModelCreating`, debes tener una de estas opciones:
+
+Si utilizas el registro individual:
+
+```csharp
+modelBuilder.ApplyConfiguration(
+    new WorkOrderAssignmentConfiguration());
+```
+
+O si ya tienes el registro automático:
+
+```csharp
+modelBuilder.ApplyConfigurationsFromAssembly(
+    typeof(AcSoftDbContext).Assembly);
+```
+
+No necesitas agregar ambos.
+
+### 3. Compila
+
+Desde la raíz de la solución:
+
+```bash
+dotnet build
+```
+
+Cuando lo tengas, compárteme el resultado. Revisaremos que compile correctamente antes de avanzar a la prueba de persistencia de `WorkOrder` y sus entidades relacionadas.

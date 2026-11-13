@@ -1,0 +1,608 @@
+---
+title: "LINQ parte 8 LINQ -- Repositoy Pattern y Unit Work "
+date: "2026-11-12"
+description: "LINQ parte 8 -- Repositoy Pattern y Unit Work "
+slug: "LINQ-08-csharp"
+category: "Netcore"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+# Lección: Repository Pattern y Unit of Work con EF Core 10
+
+En esta lección profundizaremos en dos patrones que estamos utilizando en AcSoft:
+
+1. Repository Pattern: encapsula el acceso y las operaciones de persistencia de nuestros agregados.
+2. Unit of Work: coordina los cambios que deben guardarse como una sola unidad de trabajo.
+
+Vamos a estudiar cómo implementarlos sin sobrecargar nuestra arquitectura Clean Architecture ni duplicar innecesariamente las funcionalidades que EF Core ya proporciona.
+
+## 1. ¿Qué problema resuelven estos patrones?
+
+Imagina que nuestro `CreateWorkOrderHandler` utiliza directamente `DbContext`:
+
+```csharp
+public sealed class CreateWorkOrderHandler(
+    AcSoftDbContext context)
+{
+    public async Task<Guid> Handle(
+        CreateWorkOrderCommand command,
+        CancellationToken cancellationToken)
+    {
+        var workOrder = WorkOrder.Create(
+            command.Number,
+            command.CustomerId,
+            command.EquipmentId);
+
+        context.WorkOrders.Add(workOrder);
+
+        await context.SaveChangesAsync(cancellationToken);
+
+        return workOrder.Id;
+    }
+}
+```
+
+Este código funciona, pero presenta una dependencia:
+
+- Application conoce directamente EF Core.
+- Los casos de uso quedan acoplados a `DbContext`.
+- Cambiar la implementación de persistencia resulta más difícil.
+- Las pruebas unitarias de los casos de uso pueden complicarse.
+
+Con Clean Architecture queremos que Application dependa de abstracciones, no de detalles de infraestructura.
+
+Por eso definimos interfaces en Application y las implementamos en Infrastructure.
+
+## 2. Repository Pattern: ¿qué es?
+
+Un repositorio proporciona una interfaz orientada al dominio para recuperar y persistir agregados.
+
+En nuestro proyecto, podemos tener esta estructura:
+
+```
+AcSoft.Domain
+└── Entities
+    └── WorkOrder.cs
+
+AcSoft.Application
+└── Abstractions
+    └── Persistence
+        ├── IWorkOrderRepository.cs
+        └── IUnitOfWork.cs
+
+AcSoft.Infrastructure
+└── Persistence
+    ├── AcSoftDbContext.cs
+    └── Repositories
+        └── WorkOrderRepository.cs
+```
+
+La interfaz pertenece a Application porque los casos de uso necesitan conocerla. La implementación pertenece a Infrastructure porque allí utilizamos EF Core y PostgreSQL.
+
+## 3. Crear la interfaz IWorkOrderRepository
+
+En `AcSoft.Application/Abstractions/Persistence/IWorkOrderRepository.cs`:
+
+```csharp
+using AcSoft.Domain.Entities;
+
+namespace AcSoft.Application.Abstractions.Persistence;
+
+public interface IWorkOrderRepository
+{
+    Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken = default);
+
+    Task AddAsync(
+        WorkOrder workOrder,
+        CancellationToken cancellationToken = default);
+
+    void Update(WorkOrder workOrder);
+
+    void Remove(WorkOrder workOrder);
+}
+```
+
+Analicemos sus métodos:
+
+| Método         | Responsabilidad                             |
+| -------------- | ------------------------------------------- |
+| `GetByIdAsync` | Recuperar una orden de trabajo.             |
+| `AddAsync`     | Preparar una nueva orden para persistencia. |
+| `Update`       | Marcar una orden existente como modificada. |
+| `Remove`       | Marcar una orden para eliminación.          |
+
+Una consideración importante: EF Core realiza el seguimiento de las entidades (Change Tracking). Por eso, cuando recuperamos una entidad mediante el mismo `DbContext`, normalmente no necesitamos llamar a `Update()` después de modificarla.
+
+En este ejemplo dejamos `Update()` como operación disponible, pero no significa que debamos utilizarla en todos los casos.
+
+### Una mejora: ¿AddAsync o Add?
+
+En EF Core, `DbSet.Add()` no realiza una operación de entrada/salida contra PostgreSQL. Solamente registra la entidad en el `ChangeTracker`.
+
+Por eso, para nuestro repositorio prefiero esta firma:
+
+```csharp
+void Add(WorkOrder workOrder);
+```
+
+En cambio, `SaveChangesAsync()` sí ejecuta la operación de persistencia y debe ser asíncrona.
+
+Nuestra interfaz quedaría así:
+
+```csharp
+public interface IWorkOrderRepository
+{
+    Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken = default);
+
+    void Add(WorkOrder workOrder);
+
+    void Remove(WorkOrder workOrder);
+}
+```
+
+También eliminé `Update()` por ahora: cuando recuperamos una entidad con seguimiento y modificamos sus propiedades mediante sus métodos de dominio, EF Core detecta los cambios.
+
+## 4. Implementar WorkOrderRepository
+
+En `AcSoft.Infrastructure/Persistence/Repositories/WorkOrderRepository.cs`:
+
+```csharp
+using AcSoft.Application.Abstractions.Persistence;
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace AcSoft.Infrastructure.Persistence.Repositories;
+
+public sealed class WorkOrderRepository(
+    AcSoftDbContext context) : IWorkOrderRepository
+{
+    public async Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken = default)
+    {
+        return await context.WorkOrders
+            .Include(x => x.Assignments)
+            .Include(x => x.Activities)
+            .SingleOrDefaultAsync(
+                x => x.Id == id,
+                cancellationToken);
+    }
+
+    public void Add(WorkOrder workOrder)
+    {
+        context.WorkOrders.Add(workOrder);
+    }
+
+    public void Remove(WorkOrder workOrder)
+    {
+        context.WorkOrders.Remove(workOrder);
+    }
+}
+```
+
+Hay un detalle importante en este ejemplo:
+
+```csharp
+.Include(x => x.Assignments)
+.Include(x => x.Activities)
+```
+
+Estamos recuperando las relaciones que podrían ser necesarias para ejecutar las reglas del agregado `WorkOrder`.
+
+Por ejemplo, si vamos a completar una orden, posiblemente necesitemos comprobar que sus actividades obligatorias estén terminadas.
+
+No debemos cargar todas las relaciones indiscriminadamente. Debemos recuperar lo necesario para el caso de uso y para garantizar las invariantes del agregado.
+
+Además, este repositorio devuelve entidades con seguimiento porque estamos trabajando con operaciones de escritura. No debemos agregar `AsNoTracking()` en esta consulta si pretendemos modificar la entidad y guardar sus cambios posteriormente.
+
+Nota: el código presupone que `Assignments` y `Activities` están expuestas como navegaciones públicas en el modelo de EF Core. Si tus propiedades tienen otros nombres o son colecciones privadas, adaptaremos la consulta a tu configuración.
+
+## 5. ¿Qué es Unit of Work?
+
+El patrón Unit of Work coordina los cambios realizados durante una operación y permite persistirlos juntos.
+
+Imagina que una operación de AcSoft necesita:
+
+1. Crear una orden de trabajo.
+2. Crear una asignación inicial.
+3. Registrar una actividad inicial.
+
+Queremos guardar esos cambios como una sola operación de persistencia.
+
+Para eso utilizamos `IUnitOfWork`.
+
+En `AcSoft.Application/Abstractions/Persistence/IUnitOfWork.cs`:
+
+```csharp
+namespace AcSoft.Application.Abstractions.Persistence;
+
+public interface IUnitOfWork
+{
+    Task<int> SaveChangesAsync(
+        CancellationToken cancellationToken = default);
+}
+```
+
+El valor `int` representa la cantidad de entradas que EF Core escribió en la base de datos.
+
+## 6. Implementar Unit of Work
+
+Aquí tenemos dos alternativas.
+
+Alternativa A: utilizar directamente DbContext como Unit of Work
+
+`DbContext` ya implementa el seguimiento de cambios y ofrece `SaveChangesAsync()`. Por tanto, puede implementar nuestra interfaz directamente:
+
+```csharp
+using AcSoft.Application.Abstractions.Persistence;
+using Microsoft.EntityFrameworkCore;
+
+namespace AcSoft.Infrastructure.Persistence;
+
+public sealed class AcSoftDbContext(
+    DbContextOptions<AcSoftDbContext> options)
+    : DbContext(options), IUnitOfWork
+{
+    public DbSet<WorkOrder> WorkOrders => Set<WorkOrder>();
+
+    public async Task<int> SaveChangesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return await base.SaveChangesAsync(cancellationToken);
+    }
+}
+```
+
+Alternativa B: crear una clase UnitOfWork independiente
+
+```csharp
+public sealed class UnitOfWork(
+    AcSoftDbContext context) : IUnitOfWork
+{
+    public Task<int> SaveChangesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return context.SaveChangesAsync(cancellationToken);
+    }
+}
+```
+
+¿Cuál recomiendo?
+
+Para AcSoft empezaría con la alternativa A. No necesitamos una clase adicional que simplemente delegue una llamada a `DbContext`.
+
+La interfaz `IUnitOfWork` nos permite mantener la dependencia de Application hacia una abstracción, mientras que Infrastructure proporciona la implementación.
+
+## 7. Registrar las dependencias
+
+En `AcSoft.Infrastructure/DependencyInjection.cs`:
+
+```csharp
+using AcSoft.Application.Abstractions.Persistence;
+using AcSoft.Infrastructure.Persistence;
+using AcSoft.Infrastructure.Persistence.Repositories;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace AcSoft.Infrastructure;
+
+public static class DependencyInjection
+{
+    public static IServiceCollection AddInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddDbContext<AcSoftDbContext>(options =>
+            options.UseNpgsql(
+                configuration.GetConnectionString("AcSoftConnection")));
+
+        services.AddScoped<IWorkOrderRepository, WorkOrderRepository>();
+
+        services.AddScoped<IUnitOfWork>(provider =>
+            provider.GetRequiredService<AcSoftDbContext>());
+
+        return services;
+    }
+}
+```
+
+Y en `Program.cs`:
+
+```csharp
+builder.Services.AddInfrastructure(builder.Configuration);
+```
+
+
+
+Importante
+
+&#x20;Tanto `IWorkOrderRepository` como `IUnitOfWork` utilizan la misma instancia de `AcSoftDbContext` durante el alcance de una petición HTTP.
+
+
+
+Esto es fundamental: si cada uno utilizara un contexto diferente, los cambios registrados por el repositorio no necesariamente serían los mismos que guardaría el Unit of Work.
+
+## 8. Utilizar Repository y Unit of Work en nuestro Handler
+
+Ahora podemos implementar el caso de uso sin conocer EF Core:
+
+```csharp
+public sealed class CreateWorkOrderHandler(
+    IWorkOrderRepository repository,
+    IUnitOfWork unitOfWork,
+    IValidator<CreateWorkOrderCommand> validator)
+{
+    public async Task<Guid> Handle(
+        CreateWorkOrderCommand command,
+        CancellationToken cancellationToken)
+    {
+        var validationResult = await validator.ValidateAsync(
+            command,
+            cancellationToken);
+
+        if (!validationResult.IsValid)
+        {
+            throw new ValidationException(validationResult.Errors);
+        }
+
+        var workOrder = WorkOrder.Create(
+            number: command.Number,
+            customerId: command.CustomerId,
+            equipmentId: command.EquipmentId);
+
+        repository.Add(workOrder);
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return workOrder.Id;
+    }
+}
+```
+
+Observa las responsabilidades:
+
+- El Handler coordina el caso de uso.
+- FluentValidation valida la solicitud.
+- `WorkOrder` aplica las reglas del dominio.
+- `IWorkOrderRepository` prepara la persistencia.
+- `IUnitOfWork` guarda los cambios.
+
+Application no necesita conocer `DbContext`, `DbSet` ni `Npgsql`.
+
+## 9. ¿Cuándo necesitamos una transacción explícita?
+
+Esta es una de las preguntas más importantes al trabajar con EF Core.
+
+Supongamos que hacemos lo siguiente:
+
+```csharp
+repository.Add(workOrder);
+
+await unitOfWork.SaveChangesAsync(cancellationToken);
+```
+
+Para una base de datos relacional como PostgreSQL, EF Core ejecuta los cambios de un único `SaveChangesAsync()` dentro de una transacción, cuando el proveedor admite transacciones.
+
+Es decir, si falla uno de los cambios de esa operación, EF Core revierte la transacción.
+
+Por tanto, no necesitamos crear manualmente una transacción para cada operación de escritura.
+
+### ¿Cuándo sí necesitamos una transacción explícita?
+
+Imagina que tenemos una operación que necesita guardar cambios en dos momentos:
+
+```csharp
+await unitOfWork.SaveChangesAsync(cancellationToken);
+
+// Otras operaciones que también deben formar parte
+// de la misma transacción.
+
+await unitOfWork.SaveChangesAsync(cancellationToken);
+```
+
+Si ambos `SaveChangesAsync()` deben confirmarse o revertirse juntos, podemos utilizar una transacción explícita.
+
+Con EF Core:
+
+```csharp
+await using var transaction =
+    await context.Database.BeginTransactionAsync(cancellationToken);
+
+try
+{
+    repository.Add(workOrder);
+
+    await context.SaveChangesAsync(cancellationToken);
+
+    // Segunda operación de persistencia.
+    // ...
+
+    await context.SaveChangesAsync(cancellationToken);
+
+    await transaction.CommitAsync(cancellationToken);
+}
+catch
+{
+    await transaction.RollbackAsync(cancellationToken);
+    throw;
+}
+```
+
+Este ejemplo pertenece a Infrastructure porque utiliza directamente `DbContext`.
+
+En una arquitectura Clean Architecture, si un caso de uso necesita controlar explícitamente una transacción, podemos definir una abstracción en Application e implementarla en Infrastructure. No debemos introducir `AcSoftDbContext` directamente en nuestros Handlers.
+
+## 10. ¿Debemos crear un repositorio para cada entidad?
+
+No necesariamente. En DDD debemos prestar atención a los Aggregate Roots.
+
+Por ejemplo, en AcSoft tenemos:
+
+WorkOrder
+
+Aggregate Root
+
+WorkOrderAssignment
+
+Asignaciones
+
+WorkOrderActivity
+
+Actividades
+
+Las entidades internas se gestionan mediante el agregado WorkOrder.
+
+Si `WorkOrderAssignment` y `WorkOrderActivity` son entidades internas del agregado, normalmente no necesitamos:
+
+- `IWorkOrderAssignmentRepository`.
+- `IWorkOrderActivityRepository`.
+
+En su lugar, recuperamos `WorkOrder` y modificamos sus entidades internas mediante los métodos que expone el agregado.
+
+Por ejemplo:
+
+```csharp
+var workOrder = await repository.GetByIdAsync(
+    command.WorkOrderId,
+    cancellationToken);
+
+if (workOrder is null)
+    throw new NotFoundException("Orden de trabajo no encontrada.");
+
+workOrder.CompleteActivity(command.ActivityId);
+
+await unitOfWork.SaveChangesAsync(cancellationToken);
+```
+
+La entidad `WorkOrder` controla la operación y sus invariantes.
+
+Esto ayuda a evitar que cualquier Handler pueda modificar libremente las entidades internas ignorando las reglas del agregado.
+
+## 11. ¿Y qué sucede con las consultas?
+
+Aquí hay una distinción importante.
+
+Para operaciones de escritura, podemos recuperar agregados completos y utilizar seguimiento de EF Core.
+
+Para operaciones de lectura, muchas veces no necesitamos cargar toda la entidad.
+
+Por ejemplo, para listar órdenes pendientes:
+
+```csharp
+var orders = await context.WorkOrders
+    .AsNoTracking()
+    .Where(x => x.Status == WorkOrderStatus.Pending)
+    .OrderByDescending(x => x.CreatedAt)
+    .Select(x => new WorkOrderSummaryDto(
+        x.Id,
+        x.Number,
+        x.Customer.Name,
+        x.Equipment.Name,
+        x.Status))
+    .ToListAsync(cancellationToken);
+```
+
+Esta consulta:
+
+- No necesita seguimiento de entidades.
+- Recupera únicamente los campos necesarios.
+- Proyecta directamente a un DTO.
+- Evita cargar innecesariamente todo el agregado.
+
+Por eso, en nuestra arquitectura podemos tener repositorios para escritura y servicios de consulta para lectura. No es obligatorio utilizar el mismo repositorio para ambas operaciones.
+
+## 12. Dos recomendaciones importantes para AcSoft
+
+Primera: utiliza un DbContext por unidad de trabajo.
+
+En ASP.NET Core, `AddDbContext` registra el contexto como `Scoped` por defecto. Es una buena opción para que una petición HTTP comparta la misma instancia entre sus repositorios y su Unit of Work.
+
+No compartas una instancia de `DbContext` entre varios hilos o tareas concurrentes.
+
+Segunda: no confundas Update con guardar cambios.
+
+Este código:
+
+```csharp
+var workOrder = await repository.GetByIdAsync(id, cancellationToken);
+
+workOrder!.AssignTechnician(technicianId);
+
+await unitOfWork.SaveChangesAsync(cancellationToken);
+```
+
+Es suficiente cuando `workOrder` está siendo seguido por EF Core.
+
+No necesitamos:
+
+```csharp
+repository.Update(workOrder);
+```
+
+En cambio, si recibimos una entidad desconectada, el tratamiento puede ser diferente y debemos considerar cuidadosamente qué propiedades se actualizan.
+
+### Una pequeña corrección de implementación
+
+En el ejemplo anterior de `AcSoftDbContext`, es preferible implementar `IUnitOfWork` explícitamente para no ocultar el método heredado de `DbContext`:
+
+```csharp
+using AcSoft.Application.Abstractions.Persistence;
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+
+public sealed class AcSoftDbContext(
+    DbContextOptions<AcSoftDbContext> options)
+    : DbContext(options), IUnitOfWork
+{
+    public DbSet<WorkOrder> WorkOrders => Set<WorkOrder>();
+
+    Task<int> IUnitOfWork.SaveChangesAsync(
+        CancellationToken cancellationToken)
+    {
+        return base.SaveChangesAsync(cancellationToken);
+    }
+}
+```
+
+La configuración de DI que vimos anteriormente sigue funcionando.
+
+## 13. Ejercicio práctico
+
+Vamos a comprobar si quedó clara la diferencia entre Repository y Unit of Work.
+
+Situación
+
+Recuperamos una orden de trabajo utilizando EF Core, modificamos su estado mediante `workOrder.Complete()` y queremos guardar los cambios.
+
+¿Cuál es la opción correcta?
+
+A. Llamar a `repository.Update()` y después `SaveChangesAsync()` obligatoriamente.
+
+B. Llamar directamente a `SaveChangesAsync()`, porque la entidad ya está siendo seguida por EF Core.
+
+C. Crear un nuevo DbContext para guardar los cambios.
+
+D. Ejecutar `repository.Add()` nuevamente.
+
+Respueata B.
+
+¡Correcto!
+EF Core detecta los cambios de la entidad seguida por el DbContext. Solo necesitamos llamar a SaveChangesAsync().
+
+Comprobar respuesta
+
+
+## Próxima lección
+
+Seguiremos con un tema fundamental para AcSoft: transacciones, concurrencia y control de cambios en EF Core 10.
+
+Estudiaremos qué ocurre cuando dos técnicos intentan modificar simultáneamente una orden de trabajo, cómo funciona el control de concurrencia optimista y cómo evitar que una asignación o actualización sobrescriba los cambios de otro usuario.
+
+LINQ parte 9 [LINQ con CQRS, -- Transacciones y concurrencia optimista con EF Core 10 y PostgreSQL](/blog/LINQ-09-csharp)

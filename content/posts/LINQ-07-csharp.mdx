@@ -251,7 +251,7 @@ Pero en DDD también tenemos excepciones de dominio.
 
 Por ejemplo, nuestra entidad `WorkOrder` podría impedir completar una orden con actividades pendientes:
 
-```
+```csharp
 public void Complete()
 {
     if (_activities.Any(x => x.IsRequired && !x.IsCompleted))
@@ -268,7 +268,7 @@ No queremos que este error termine convertido en HTTP 500, porque no es un error
 
 Podemos agregar un caso específico al `switch` de nuestro manejador:
 
-```
+```csharp
 case DomainException domainException:
 
     problemDetails.Status =
@@ -307,7 +307,7 @@ Supongamos que enviamos una petición para crear una orden sin identificar el cl
 
 HTTP 400
 
-```
+```json
 {
   "title": "Uno o más errores de validación ocurrieron.",
   "status": 400,
@@ -326,7 +326,7 @@ Ahora imaginemos que intentamos completar una orden que todavía tiene actividad
 
 HTTP 409
 
-```
+```json
 {
   "title": "Regla de negocio no cumplida",
   "status": 409,
@@ -339,7 +339,7 @@ Y si ocurre un error inesperado en PostgreSQL:
 
 HTTP 500
 
-```
+```json
 {
   "title": "Error interno del servidor",
   "status": 500,
@@ -407,8 +407,13 @@ D. 409 — Conflict
 
 Comprobar respuesta
 
+Respuesta A.
 
+**Correcto** El recurso solicitado no existe. Podemos lanzar una NotFoundException desde Application y convertirla en HTTP 404 en nuestro manejador global.
 
 ## Próxima lección
 
 Continuaremos con Repository Pattern y Unit of Work en profundidad con EF Core 10. Revisaremos cómo implementar correctamente los repositorios de AcSoft, cómo trabajar con transacciones y cuándo utilizar `SaveChangesAsync`, evitando abstraer innecesariamente las funcionalidades que EF Core ya proporciona.
+
+LINQ parte 8 [LINQ con CQRS, -- Repositoy Pattern y Unit Work ](/blog/LINQ-08-csharp)
+

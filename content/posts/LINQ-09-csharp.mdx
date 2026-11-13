@@ -1,0 +1,443 @@
+---
+title: "LINQ parte 9 LINQ -- Transacciones y concurrencia optimista con EF Core 10 y PostgreSQL "
+date: "2026-11-13"
+description: "LINQ parte 9 -- Transacciones y concurrencia optimista con EF Core 10 y PostgreSQL "
+slug: "LINQ-09-csharp"
+category: "Netcore"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+# Lección: Transacciones y concurrencia optimista con EF Core 10 y PostgreSQL
+
+En esta lección vamos a estudiar un problema muy importante para AcSoft: ¿qué sucede cuando dos técnicos intentan modificar la misma orden de trabajo prácticamente al mismo tiempo?
+
+Imagina este escenario:
+
+- El técnico A abre la orden OT-001.
+- El técnico B también abre la orden OT-001.
+- El técnico A asigna una actividad y guarda los cambios.
+- El técnico B modifica el estado de la orden utilizando la información que había cargado anteriormente.
+
+Si no protegemos nuestros datos, el técnico B podría sobrescribir cambios realizados por el técnico A.
+
+Para evitarlo estudiaremos:
+
+1. Transacciones en PostgreSQL.
+2. Concurrencia optimista.
+3. `ConcurrencyToken` en EF Core.
+4. `xmin` en PostgreSQL.
+5. Cómo manejar conflictos en nuestra API.
+
+## 1. ¿Qué es una transacción?
+
+Una transacción permite ejecutar varias operaciones de base de datos como una unidad.
+
+Se basa en las propiedades ACID:
+
+| Propiedad    | Significado                                                          |
+| ------------ | -------------------------------------------------------------------- |
+| Atomicidad   | Todas las operaciones se completan o ninguna.                        |
+| Consistencia | Los datos mantienen las reglas de integridad.                        |
+| Aislamiento  | Las transacciones concurrentes se aíslan según el nivel configurado. |
+| Durabilidad  | Los cambios confirmados permanecen guardados.                        |
+
+### Ejemplo práctico en AcSoft
+
+Supongamos que al asignar un técnico debemos:
+
+1. Crear una asignación.
+2. Actualizar el estado de la orden.
+3. Registrar el inicio de una sesión de trabajo.
+
+Estas operaciones deben mantenerse consistentes.
+
+Si falla la creación de la sesión, no queremos dejar una asignación confirmada sin su correspondiente sesión, si ambas forman parte de la misma operación de negocio.
+
+Con EF Core podemos utilizar una transacción explícita:
+
+```
+await using var transaction =
+    await context.Database.BeginTransactionAsync(cancellationToken);
+
+try
+{
+    // Crear asignación.
+    // Actualizar orden.
+    // Crear sesión de trabajo.
+
+    await context.SaveChangesAsync(cancellationToken);
+
+    await transaction.CommitAsync(cancellationToken);
+}
+catch
+{
+    await transaction.RollbackAsync(cancellationToken);
+    throw;
+}
+```
+
+Importante: si todos los cambios se guardan mediante un único `SaveChangesAsync()`, EF Core normalmente ya utiliza una transacción para ellos en proveedores relacionales. La transacción explícita es útil cuando necesitamos controlar varios guardados u operaciones adicionales como parte de una misma unidad atómica.
+
+## 2. ¿Qué es la concurrencia?
+
+La concurrencia ocurre cuando varios usuarios o procesos intentan acceder o modificar los mismos datos al mismo tiempo.
+
+En AcSoft esto puede suceder cuando:
+
+- Dos técnicos intentan modificar una misma orden.
+- Un supervisor reasigna un técnico mientras el técnico actual está trabajando.
+- Un técnico actualiza una actividad desde su móvil y otro usuario modifica la misma orden desde la aplicación web.
+- Un dispositivo trabaja offline y sincroniza cambios antiguos posteriormente.
+
+El problema se conoce como Lost Update o actualización perdida.
+
+### Ejemplo del problema
+
+Estado inicial de OT-001
+
+# Pendiente
+
+Técnico A
+
+Lee el estado: Pendiente
+
+Técnico B
+
+Lee el estado: Pendiente
+
+A modifica
+
+En progreso
+
+B modifica
+
+Cancelada
+
+Resultado sin control de concurrencia
+
+# Cancelada
+
+El cambio de A podría perderse.
+
+Esto es lo que debemos evitar.
+
+## 3. ¿Qué es la concurrencia optimista?
+
+La concurrencia optimista parte de una idea:
+
+> Suponemos que los conflictos no son frecuentes, pero comprobamos que los datos no hayan cambiado antes de guardar.
+
+En lugar de bloquear una orden mientras alguien la está consultando, guardamos una versión del registro.
+
+Cuando intentamos actualizarlo, comprobamos que la versión siga siendo la misma que habíamos leído.
+
+Si cambió, EF Core detecta el conflicto y lanza una excepción.
+
+Este mecanismo es especialmente apropiado para aplicaciones empresariales como AcSoft.
+
+## 4. Configurar concurrencia optimista en PostgreSQL
+
+SQL Server tiene el tipo `rowversion`. PostgreSQL ofrece un mecanismo diferente: la columna de sistema `xmin`.
+
+`xmin` identifica la transacción que creó la versión actual de una fila. Cuando la fila se actualiza, su valor cambia.
+
+El proveedor de EF Core para PostgreSQL, Npgsql, permite utilizar `xmin` como token de concurrencia.
+
+### Opción recomendada: propiedad shadow de EF Core
+
+Como `xmin` es un detalle de persistencia y no una regla de negocio, podemos mantenerlo fuera de nuestra entidad `WorkOrder`.
+
+En `WorkOrderConfiguration.cs`:
+
+```
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+public sealed class WorkOrderConfiguration
+    : IEntityTypeConfiguration<WorkOrder>
+{
+    public void Configure(
+        EntityTypeBuilder<WorkOrder> builder)
+    {
+        builder.HasKey(x => x.Id);
+
+        // Configuración de las demás propiedades...
+
+        builder.Property<uint>("xmin")
+            .HasColumnName("xmin")
+            .IsRowVersion();
+    }
+}
+```
+
+¿Qué estamos haciendo?
+
+- `Property<uint>("xmin")`: configura una propiedad shadow, que EF Core administra sin agregarla a la clase `WorkOrder`.
+- `HasColumnName("xmin")`: indica el nombre de la columna de sistema PostgreSQL.
+- `IsRowVersion()`: configura la propiedad como token de concurrencia y valor generado por la base de datos.
+
+No debes crear una columna normal `xmin` mediante SQL ni intentar agregarla como una columna física con una migración: PostgreSQL ya proporciona esa columna de sistema.
+
+Nota: esta configuración corresponde al proveedor Npgsql de EF Core. Conviene comprobar la migración generada y probar la actualización contra PostgreSQL real antes de desplegarla.
+
+## 5. ¿Cómo funciona cuando guardamos los cambios?
+
+Supongamos que EF Core recupera una orden cuyo `xmin` tiene el valor `100`.
+
+Cuando intenta actualizarla, conceptualmente genera una operación similar a esta:
+
+```
+UPDATE work_orders
+SET status = 'InProgress'
+WHERE id = '...'
+  AND xmin = 100;
+```
+
+Si nadie modificó la fila, la actualización se realiza.
+
+Pero si otro usuario ya modificó la orden, `xmin` cambió. La condición ya no coincide y PostgreSQL actualiza cero filas.
+
+EF Core interpreta que hubo un conflicto y lanza:
+
+```
+DbUpdateConcurrencyException
+```
+
+No tienes que escribir manualmente la condición `WHERE xmin = ...`; EF Core la incorpora al comando de actualización.
+
+## 6. Manejar el conflicto de concurrencia
+
+Ahora necesitamos adaptar nuestro `GlobalExceptionHandler`.
+
+Agregamos este caso al `switch`:
+
+```
+case DbUpdateConcurrencyException:
+
+    problemDetails.Status =
+        StatusCodes.Status409Conflict;
+
+    problemDetails.Title = "Conflicto de concurrencia";
+
+    problemDetails.Detail =
+        "El registro fue modificado por otro usuario. " +
+        "Actualice la información e inténtelo nuevamente.";
+
+    logger.LogWarning(
+        "Conflicto de concurrencia en {Path}",
+        httpContext.Request.Path);
+
+    break;
+```
+
+Y agregamos el `using`:
+
+```
+using Microsoft.EntityFrameworkCore;
+```
+
+Así, si dos usuarios intentan modificar la misma fila, el segundo recibe:
+
+HTTP 409 Conflict
+
+```
+{
+  "title": "Conflicto de concurrencia",
+  "status": 409,
+  "detail": "El registro fue modificado por otro usuario. Actualice la información e inténtelo nuevamente.",
+  "instance": "/work-orders/..."
+}
+```
+
+No debemos convertir automáticamente este error en un reintento. Primero debemos determinar si la operación todavía tiene sentido con el estado actualizado.
+
+## 7. Un detalle muy importante en AcSoft: los agregados
+
+Hay una particularidad que debemos considerar en nuestro diseño.
+
+Imagina que `WorkOrder` contiene:
+
+- `WorkOrderAssignment`
+- `WorkOrderActivity`
+
+Si el técnico agrega una actividad, EF Core podría insertar una fila en `work_order_activities` sin actualizar la fila principal de `work_orders`.
+
+En ese caso, el `xmin` de `WorkOrder` podría permanecer igual.
+
+Por tanto, el token de concurrencia de la raíz no detectaría necesariamente dos modificaciones simultáneas de sus entidades internas.
+
+Para proteger el agregado completo tenemos que asegurarnos de que cada operación que modifique el agregado también actualice la fila raíz.
+
+Una alternativa es tener una propiedad de versión de negocio:
+
+```
+public sealed class WorkOrder
+{
+    public Guid Id { get; private set; }
+
+    public int Revision { get; private set; }
+
+    private void IncrementRevision()
+    {
+        Revision++;
+    }
+
+    public void AddActivity(/* parámetros */)
+    {
+        // Validaciones e incorporación de la actividad.
+
+        IncrementRevision();
+    }
+
+    public void AssignTechnician(/* parámetros */)
+    {
+        // Reglas de asignación.
+
+        IncrementRevision();
+    }
+}
+```
+
+Aquí `Revision` debe mapearse como una propiedad normal y cada operación que modifique el agregado debe incrementarla.
+
+Podemos configurarla como token de concurrencia:
+
+```
+builder.Property(x => x.Revision)
+    .IsConcurrencyToken();
+```
+
+Así EF Core utiliza el valor original de `Revision` en el `WHERE` del `UPDATE`.
+
+Si dos operaciones parten de la misma revisión, solamente una podrá actualizar la raíz con esa versión. La otra detectará el conflicto.
+
+Mi recomendación para AcSoft: si quieres proteger todas las modificaciones del agregado `WorkOrder`, considera una revisión explícita de agregado, incrementada por cada cambio. El `xmin` por sí solo protege la fila a la que está asociado, no automáticamente todas sus tablas relacionadas.
+
+No necesitas implementar simultáneamente `xmin` y `Revision` sin una razón concreta. Son alternativas que resuelven necesidades relacionadas, pero con semánticas diferentes.
+
+## 8. ¿Qué pasa cuando Kotlin trabaja offline?
+
+Este punto es especialmente importante porque AcSoft tendrá una aplicación móvil que puede trabajar sin conexión y sincronizar posteriormente.
+
+Imagina este escenario:
+
+1. El técnico descarga la orden OT-001 cuando tiene Wi-Fi.
+2. La orden tiene `Revision = 5`.
+3. El técnico trabaja offline durante varias horas.
+4. Mientras tanto, un supervisor modifica la orden y su revisión pasa a `Revision = 6`.
+5. El técnico recupera la conexión e intenta sincronizar los cambios con la revisión 5.
+
+Si el servidor simplemente carga la orden actual y aplica los cambios del móvil, podría sobrescribir información más reciente.
+
+Por eso necesitamos enviar la revisión que tenía el dispositivo cuando descargó la información.
+
+### Ejemplo del contrato de sincronización
+
+Podemos definir un Command así:
+
+```
+public sealed record SyncWorkOrderActivityCommand(
+    Guid WorkOrderId,
+    int ExpectedRevision,
+    Guid ActivityId,
+    string Answer
+);
+```
+
+En el Handler:
+
+```
+var workOrder = await repository.GetByIdAsync(
+    command.WorkOrderId,
+    cancellationToken);
+
+if (workOrder is null)
+{
+    throw new NotFoundException(
+        "La orden de trabajo no existe.");
+}
+
+if (workOrder.Revision != command.ExpectedRevision)
+{
+    throw new DomainException(
+        "La orden fue modificada desde otro dispositivo. " +
+        "Es necesario sincronizar nuevamente.");
+}
+
+// Aplicar el cambio usando métodos del agregado.
+workOrder.RegisterActivityAnswer(
+    command.ActivityId,
+    command.Answer);
+
+await unitOfWork.SaveChangesAsync(cancellationToken);
+```
+
+En producción, para este conflicto de sincronización podríamos utilizar una excepción específica de aplicación y traducirla a HTTP 409.
+
+Hay dos controles diferentes:
+
+- `ExpectedRevision`: detecta que el dispositivo está enviando información basada en una versión antigua.
+- `IsConcurrencyToken()`: detecta que otro proceso modificó la fila después de que el servidor la leyó y antes de que guardara.
+
+Necesitamos ambos controles para cubrir esos dos momentos.
+
+Además, una sincronización offline bien diseñada debe contemplar operaciones idempotentes: si el móvil reenvía una operación porque no recibió la respuesta anterior, el servidor no debería registrar dos veces la misma actividad o respuesta.
+
+No debemos asumir que Wi-Fi significa que los datos están actualizados; solamente significa que existe conectividad.
+
+## 9. Resumen: qué mecanismo utilizar
+
+| Necesidad                                        | Solución                       |
+| ------------------------------------------------ | ------------------------------ |
+| Guardar varias entidades juntas                  | `SaveChangesAsync()`           |
+| Agrupar varios guardados en una unidad atómica   | Transacción explícita          |
+| Detectar actualizaciones simultáneas de una fila | `xmin` o token de concurrencia |
+| Proteger todas las modificaciones de un agregado | Revisión del agregado          |
+| Detectar datos antiguos de un móvil offline      | `ExpectedRevision`             |
+| Informar conflictos al cliente                   | HTTP 409                       |
+
+Mi propuesta para AcSoft sería implementar primero una propiedad `Revision` en `WorkOrder`, incrementada por los métodos del agregado que modifican su estado. Después incorporaremos `ExpectedRevision` al protocolo de sincronización de Kotlin.
+
+Así evitamos depender exclusivamente de detalles internos de PostgreSQL y podemos utilizar la misma estrategia de versiones desde cualquier cliente.
+
+## 10. Ejercicio práctico
+
+Situación
+
+Un técnico descarga una orden con `Revision = 4`.
+
+Mientras trabaja offline, el supervisor modifica la orden y la revisión pasa a `Revision = 5`.
+
+Cuando el técnico sincroniza, envía `ExpectedRevision = 4`.
+
+¿Qué debería hacer el servidor?
+
+A. Aplicar los cambios del técnico y sobrescribir la información actual.
+
+B. Detectar el conflicto, responder HTTP 409 y permitir resolver la sincronización.
+
+C. Rechazar definitivamente la orden y eliminarla del dispositivo.
+
+D. Incrementar automáticamente la revisión a 6 y guardar todo.
+
+Comprobar respuesta
+
+
+
+## Próxima lección
+
+Continuaremos con diseño de sincronización offline-first entre Kotlin y AcSoft.
+
+Estudiaremos cómo diseñar:
+
+- Una cola local de operaciones pendientes.
+- Identificadores únicos para cada operación.
+- Sincronización incremental.
+- Reintentos e idempotencia.
+- Resolución de conflictos.
+- Estados de sincronización por orden y actividad.
+
+Este será un paso importante para conectar correctamente nuestro backend .NET 10 con la aplicación móvil Kotlin.

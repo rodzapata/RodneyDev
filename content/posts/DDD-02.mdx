@@ -1,0 +1,716 @@
+---
+title: "DDD 2 Diseñando el Aggregate Root WorkOrder con DDD"
+date: "2026-11-13"
+description: "DDD Diseñando el Aggregate Root WorkOrder con DDD"
+slug: "DDD-02"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+# **Lección 2 — Diseñando el Aggregate Root&#x20;**`WorkOrder`**&#x20;con DDD**
+
+En esta lección vamos a comenzar a escribir código real para nuestro sistema de mantenimiento de aires acondicionados.
+
+El objetivo es que entiendas cómo diseñar una entidad siguiendo DDD, aplicando encapsulamiento, invariantes y buenas prácticas de C# 14 y .NET 10.
+
+No vamos a introducir todavía CQRS ni EF Core en el código. Primero construiremos un dominio sólido; después veremos cómo persistirlo.
+
+## **1. ¿Qué vamos a construir?**
+
+Nuestra entidad principal será `WorkOrder` (Orden de Trabajo).
+
+Tendrá inicialmente esta estructura:
+
+**WorkOrder**
+
+Aggregate Root
+
+Controla las reglas de la orden
+
+**WorkOrderActivity**
+
+Actividades realizadas
+
+**WorkOrderAssignment**
+
+Asignaciones de técnicos
+
+Ambas entidades serán controladas por WorkOrder dentro del agregado.
+
+Por ejemplo, una orden podría contener:
+
+| Propiedad   | Valor                 |
+| ----------- | --------------------- |
+| Número      | OT-000125             |
+| Cliente     | Hotel ABC             |
+| Equipo      | Aire acondicionado LG |
+| Estado      | Pending               |
+| Técnico     | Sin asignar           |
+| Actividades | 3                     |
+
+## **2. Primero entendamos qué es una entidad DDD**
+
+Una entidad es un objeto que tiene identidad propia y que conserva esa identidad durante su ciclo de vida.
+
+Por ejemplo:
+
+```
+public sealed class WorkOrder
+{
+    public Guid Id { get; private set; }
+}
+```
+
+Imagina dos órdenes:
+
+```
+Orden A
+Id: 100
+Number: OT-000125
+
+Orden B
+Id: 200
+Number: OT-000126
+```
+
+Aunque ambas tengan el mismo cliente, equipo y estado, siguen siendo dos órdenes diferentes.
+
+La identidad es lo que las distingue.
+
+### **¿Por qué utilizar Guid?**
+
+Para nuestro proyecto recomiendo `Guid` como identificador interno:
+
+- Permite generar identificadores en la aplicación sin consultar primero la base de datos.
+- Facilita la sincronización cuando posteriormente construyamos el cliente Kotlin offline-first.
+- Reduce conflictos de identificadores entre dispositivos.
+- Es independiente de PostgreSQL.
+
+El número comercial `OT-000125` será otra propiedad, diferente del identificador técnico.
+
+## **3. Entendiendo el encapsulamiento**
+
+Comencemos comparando dos implementaciones.
+
+**Opción A — Modelo con propiedades públicas**
+
+```
+public class WorkOrder
+{
+    public Guid Id { get; set; }
+
+    public string Number { get; set; }
+
+    public WorkOrderStatus Status { get; set; }
+}
+```
+
+¿Cuál es el problema?
+
+Cualquier clase podría hacer esto:
+
+```
+workOrder.Status = WorkOrderStatus.Completed;
+```
+
+Incluso si la orden no tiene actividades.
+
+Esto significa que no estamos protegiendo las reglas del negocio.
+
+**Opción B — Modelo con encapsulamiento**
+
+```
+public sealed class WorkOrder
+{
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; }
+
+    public WorkOrderStatus Status { get; private set; }
+}
+```
+
+Ahora las propiedades pueden consultarse desde afuera, pero solamente la propia clase puede modificarlas directamente.
+
+Para modificar el estado debemos utilizar métodos de negocio:
+
+```
+workOrder.Complete();
+```
+
+**Regla DDD:** las modificaciones importantes deben pasar por operaciones que protejan las invariantes del agregado.
+
+## **4. Creando nuestro proyecto de dominio**
+
+Si todavía no tienes la solución creada, podemos utilizar esta estructura:
+
+```
+AcSoft
+│
+├── AcSoft.Domain
+│   ├── Entities
+│   ├── Enums
+│   ├── Exceptions
+│   └── ValueObjects
+│
+├── AcSoft.Application
+├── AcSoft.Infrastructure
+└── AcSoft.Api
+```
+
+Vamos a trabajar con el proyecto `AcSoft.Domain`.
+
+Primero creamos el enum:
+
+**Enums/WorkOrderStatus.cs**
+
+```
+namespace AcSoft.Domain.Enums;
+
+public enum WorkOrderStatus
+{
+    Pending = 1,
+    Assigned = 2,
+    InProgress = 3,
+    Completed = 4,
+    Cancelled = 5
+}
+```
+
+¿Por qué utilizamos un `enum`?
+
+Porque el estado pertenece a un conjunto limitado de valores conocidos.
+
+Es preferible a utilizar:
+
+```
+public string Status { get; private set; }
+```
+
+Con un `enum`, evitamos valores arbitrarios como:
+
+```
+"Terminada"
+"Finalizado"
+"complete"
+"Completa"
+```
+
+## **5. Creando la entidad&#x20;**`WorkOrder`
+
+Ahora vamos a implementar la entidad principal.
+
+Antes, una decisión de diseño: utilizaremos un constructor privado y un método estático `Create()`.
+
+¿Por qué?
+
+Porque queremos evitar que otras capas creen órdenes sin pasar por las validaciones del dominio.
+
+**Entities/WorkOrder.cs**
+
+```
+using AcSoft.Domain.Enums;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class WorkOrder
+{
+    public Guid Id { get; private set; }
+
+    public string Number { get; private set; } = null!;
+
+    public Guid CustomerId { get; private set; }
+
+    public Guid EquipmentId { get; private set; }
+
+    public WorkOrderStatus Status { get; private set; }
+
+    public DateTime CreatedAt { get; private set; }
+
+    private WorkOrder()
+    {
+        // Constructor para EF Core.
+    }
+
+    private WorkOrder(
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        Id = Guid.NewGuid();
+
+        Number = number;
+        CustomerId = customerId;
+        EquipmentId = equipmentId;
+
+        Status = WorkOrderStatus.Pending;
+        CreatedAt = DateTime.UtcNow;
+    }
+
+    public static WorkOrder Create(
+        string number,
+        Guid customerId,
+        Guid equipmentId)
+    {
+        if (string.IsNullOrWhiteSpace(number))
+            throw new ArgumentException(
+                "El número de la orden es obligatorio.",
+                nameof(number));
+
+        if (customerId == Guid.Empty)
+            throw new ArgumentException(
+                "El cliente es obligatorio.",
+                nameof(customerId));
+
+        if (equipmentId == Guid.Empty)
+            throw new ArgumentException(
+                "El equipo es obligatorio.",
+                nameof(equipmentId));
+
+        return new WorkOrder(
+            number.Trim(),
+            customerId,
+            equipmentId);
+    }
+}
+```
+
+### **Analicemos las decisiones**
+
+**A.&#x20;**`public sealed class WorkOrder`
+
+- `public`: permite que otras capas conozcan la entidad.
+- `sealed`: impide que otras clases hereden de ella.
+
+No necesitamos herencia para este modelo.
+
+**B.&#x20;**`private set`
+
+```
+public WorkOrderStatus Status { get; private set; }
+```
+
+El estado puede consultarse, pero no modificarse directamente desde Application o API.
+
+**C. Constructor privado**
+
+```
+private WorkOrder()
+{
+}
+```
+
+Este constructor permite que EF Core materialice la entidad al consultar la base de datos.
+
+También tenemos otro constructor privado que inicializa una orden nueva.
+
+**D. Método estático&#x20;**`Create()`
+
+```
+public static WorkOrder Create(...)
+```
+
+Este método es nuestra puerta de entrada para crear órdenes.
+
+Observa que las validaciones están dentro del dominio.
+
+Por tanto, cualquier consumidor debe pasar por ellas:
+
+```
+var workOrder = WorkOrder.Create(
+    "OT-000125",
+    customerId,
+    equipmentId);
+```
+
+Esto es una fábrica de creación sencilla. No necesitamos implementar una clase `WorkOrderFactory` adicional por ahora.
+
+## **6. ¿Qué son las invariantes?**
+
+Este concepto es fundamental en DDD.
+
+Una invariante es una condición que siempre debe cumplirse para que el objeto permanezca en un estado válido.
+
+En nuestro sistema tenemos ejemplos:
+
+| Invariante   | Regla                                                         |
+| ------------ | ------------------------------------------------------------- |
+| Cliente      | Toda orden debe tener cliente                                 |
+| Equipo       | Toda orden debe tener equipo                                  |
+| Número       | No puede estar vacío                                          |
+| Estado       | Debe ser un estado válido                                     |
+| Finalización | No se puede finalizar sin cumplir las condiciones del negocio |
+
+Por ejemplo, esta operación no debería ser posible:
+
+```
+var workOrder = WorkOrder.Create(
+    "OT-000125",
+    Guid.Empty,
+    equipmentId);
+```
+
+El dominio debe rechazarla.
+
+Una aclaración importante: que `CustomerId` no esté vacío no garantiza que el cliente exista en la base de datos. Esa comprobación corresponde al caso de uso, consultando el repositorio. Las invariantes del agregado y las validaciones que requieren consultar otros agregados son responsabilidades diferentes.
+
+## **7. ¿Cómo convertimos&#x20;**`WorkOrder`**&#x20;en Aggregate Root?**
+
+Hasta ahora tenemos una entidad, pero todavía no hemos desarrollado el comportamiento del agregado.
+
+Un Aggregate Root es la entidad que controla el acceso y protege las reglas de consistencia de su agregado.
+
+En nuestro sistema, `WorkOrder` controlará sus actividades y asignaciones.
+
+La estructura interna será:
+
+```
+WorkOrder (Aggregate Root)
+│
+├── Id
+├── Number
+├── CustomerId
+├── EquipmentId
+├── Status
+│
+├── _activities
+│   ├── WorkOrderActivity
+│   ├── WorkOrderActivity
+│   └── WorkOrderActivity
+│
+└── _assignments
+    ├── WorkOrderAssignment
+    └── WorkOrderAssignment
+```
+
+Fíjate en los guiones bajos de `_activities` y `_assignments`.
+
+Son campos privados que contienen las colecciones internas.
+
+La aplicación no debería modificar directamente esas colecciones.
+
+### **¿Por qué no utilizar una List pública?**
+
+Imagina que escribimos:
+
+```
+public List<WorkOrderActivity> Activities
+{
+    get;
+    set;
+}
+```
+
+Cualquier consumidor podría hacer:
+
+```
+workOrder.Activities.Clear();
+```
+
+Esto podría eliminar todas las actividades sin respetar las reglas del negocio.
+
+En su lugar utilizaremos:
+
+```
+private readonly List<WorkOrderActivity> _activities = [];
+
+public IReadOnlyCollection<WorkOrderActivity> Activities =>
+    _activities.AsReadOnly();
+```
+
+Así exponemos una colección de solo lectura y reservamos su modificación para la entidad raíz.
+
+## **8. Agregando comportamiento al Aggregate Root**
+
+Vamos a agregar tres operaciones de negocio:
+
+1. Agregar una actividad.
+2. Iniciar una orden.
+3. Finalizar una orden.
+
+Primero, supongamos que tenemos una entidad `WorkOrderActivity` que representa una actividad ejecutada en la orden.
+
+**Entities/WorkOrder.cs**
+
+Agregaremos estos campos y métodos a nuestra entidad:
+
+```
+private readonly List<WorkOrderActivity> _activities = [];
+
+public IReadOnlyCollection<WorkOrderActivity> Activities =>
+    _activities.AsReadOnly();
+
+public void AddActivity(WorkOrderActivity activity)
+{
+    ArgumentNullException.ThrowIfNull(activity);
+
+    if (Status is WorkOrderStatus.Completed
+        or WorkOrderStatus.Cancelled)
+    {
+        throw new DomainException(
+            "No se pueden agregar actividades a una orden cerrada.");
+    }
+
+    _activities.Add(activity);
+}
+
+public void Start()
+{
+    if (Status != WorkOrderStatus.Assigned)
+    {
+        throw new DomainException(
+            "La orden debe estar asignada antes de iniciarse.");
+    }
+
+    Status = WorkOrderStatus.InProgress;
+}
+
+public void Complete()
+{
+    if (Status != WorkOrderStatus.InProgress)
+    {
+        throw new DomainException(
+            "Solamente se puede finalizar una orden en ejecución.");
+    }
+
+    if (_activities.Count == 0)
+    {
+        throw new DomainException(
+            "La orden debe tener actividades registradas.");
+    }
+
+    Status = WorkOrderStatus.Completed;
+}
+```
+
+Aquí estamos aplicando algo muy importante:
+
+**La entidad controla sus propias transiciones de estado.**
+
+Por ejemplo, no podemos hacer esto:
+
+```
+Pending → Completed
+```
+
+Porque nuestra regla exige:
+
+```
+Pending → Assigned → InProgress → Completed
+```
+
+Esto es preferible a permitir que cualquier Handler modifique directamente `Status`.
+
+Una observación: en nuestro proyecto real, antes de finalizar una orden también tendremos que comprobar las reglas de las actividades, sus preguntas obligatorias y sus respuestas. No basta con contar actividades. Incorporaremos esas reglas cuando integremos el modelo completo.
+
+## **9. ¿Por qué no colocar todas las validaciones en el Handler?**
+
+Comparemos dos alternativas.
+
+**Alternativa A: validación en Application**
+
+```
+public async Task Handle(...)
+{
+    var workOrder = await repository.GetByIdAsync(id);
+
+    if (workOrder.Status == WorkOrderStatus.Completed)
+        throw new Exception("La orden está finalizada.");
+
+    // Más lógica...
+}
+```
+
+**Alternativa B: validación en Domain**
+
+```
+public async Task Handle(...)
+{
+    var workOrder = await repository.GetByIdAsync(id);
+
+    workOrder.AddActivity(activity);
+
+    await unitOfWork.SaveChangesAsync();
+}
+```
+
+En la segunda alternativa, el Handler coordina el caso de uso y el dominio protege sus reglas.
+
+Esta separación es fundamental:
+
+| Capa           | Responsabilidad                   |
+| -------------- | --------------------------------- |
+| Domain         | Reglas e invariantes del negocio  |
+| Application    | Coordinar casos de uso            |
+| Infrastructure | Persistencia y servicios externos |
+| API            | Recibir solicitudes HTTP          |
+
+No significa que Application no valide nada. Por ejemplo, puede verificar que exista el técnico antes de asignarlo, mientras que Domain comprueba que la orden permita esa asignación.
+
+## **10. Una decisión importante: ¿DomainException o ArgumentException?**
+
+En nuestro proyecto podemos tener:
+
+```
+AcSoft.Domain
+└── Exceptions
+    └── DomainException.cs
+```
+
+Por ejemplo:
+
+```
+namespace AcSoft.Domain.Exceptions;
+
+public sealed class DomainException : Exception
+{
+    public DomainException(string message)
+        : base(message)
+    {
+    }
+}
+```
+
+Mi recomendación es:
+
+- `ArgumentException`: cuando un argumento recibido por un método es inválido.
+- `ArgumentNullException`: cuando un argumento es `null`.
+- `DomainException`: cuando se intenta realizar una operación que viola una regla del negocio.
+
+Ejemplos:
+
+```
+// Argumento inválido.
+WorkOrder.Create("", customerId, equipmentId);
+
+// Violación de una regla de negocio.
+workOrder.Complete();
+```
+
+En el segundo caso, si la orden no está en ejecución, lanzamos `DomainException`.
+
+No necesitamos crear una excepción personalizada para cada regla. Una `DomainException` es suficiente para comenzar.
+
+## **11. ¿Cómo quedaría la relación con EF Core?**
+
+Todavía no vamos a configurar EF Core, pero quiero que comprendas una decisión que tomaremos más adelante.
+
+Nuestra entidad tiene:
+
+```
+public Guid Id { get; private set; }
+```
+
+Y:
+
+```
+private readonly List<WorkOrderActivity> _activities = [];
+```
+
+EF Core puede trabajar con propiedades privadas, constructores privados y campos de respaldo (*backing fields*).
+
+Por ejemplo, posteriormente configuraremos:
+
+```
+builder
+    .HasMany<WorkOrderActivity>("_activities")
+    .WithOne()
+    .HasForeignKey("WorkOrderId");
+```
+
+Esto permite persistir la colección sin tener que hacer pública una lista modificable.
+
+**DDD no debe obligarnos a debilitar nuestro encapsulamiento para satisfacer a EF Core.** Adaptaremos EF Core al dominio.
+
+## **12. Resumen de lo aprendido**
+
+**Conceptos de esta lección**
+
+Lección 2
+
+**Entity**
+
+Objeto con identidad propia.
+
+**Aggregate Root**
+
+Controla el acceso y la consistencia del agregado.
+
+**Encapsulamiento**
+
+Protege las propiedades y colecciones internas.
+
+**Factory Method**
+
+Create() controla la creación de la entidad.
+
+**Invariantes**
+
+Reglas que deben mantenerse siempre.
+
+**DomainException**
+
+Representa una violación de una regla del dominio.
+
+## **13. Ejercicio práctico**
+
+Quiero que practiques antes de continuar.
+
+En tu proyecto `AcSoft.Domain`, realiza estas modificaciones:
+
+1. Crea `WorkOrderStatus`.
+2. Implementa `WorkOrder` con constructor privado.
+3. Implementa `WorkOrder.Create()`.
+4. Protege las propiedades utilizando `private set`.
+5. Implementa `Start()` y `Complete()`.
+6. Implementa la colección privada `_activities`.
+
+Después responde estas tres preguntas:
+
+**Comprueba lo aprendido**
+
+**1. ¿Por qué utilizamos private set en Status?**
+
+Para que EF Core no pueda modificarlo
+
+Para impedir modificaciones externas sin pasar por el dominio
+
+Para convertirlo en una constante
+
+**2. ¿Quién debería controlar las reglas para finalizar una orden?**
+
+El Controller
+
+El DbContext
+
+La entidad WorkOrder
+
+**3. ¿Por qué utilizamos IReadOnlyCollection para Activities?**
+
+Para impedir modificaciones directas de la colección desde consumidores externos
+
+Para que la colección no se guarde en PostgreSQL
+
+Para evitar utilizar List
+
+Comprobar respuestas
+
+
+
+## **14. Próxima lección**
+
+En la lección 3 vamos a profundizar en:
+
+- `WorkOrder` como Aggregate Root.
+- `WorkOrderActivity` como entidad interna.
+- `WorkOrderAssignment` y la reasignación de técnicos.
+- Cómo evitar modificar entidades hijas directamente.
+- Cómo aplicar estas reglas a tu implementación actual de AcSoft.
+
+Vamos a respetar la estructura que ya vienes construyendo, incluyendo tus actividades y asignaciones de técnicos, en lugar de crear una arquitectura paralela.&#x20;
+
+**Una recomendación:** envíame tu implementación actual de `WorkOrder.cs` cuando termines el ejercicio. La revisaremos línea por línea antes de pasar a EF Core.
+
+También puedo continuar mañana con la siguiente lección de DDD aplicada a AcSoft. ¿Quieres que te envíe esa lección mañana?    

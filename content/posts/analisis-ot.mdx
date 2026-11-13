@@ -4,12 +4,12 @@ date: "2026-08-17"
 description: "Analisis en los requerimientos de como planter el problema"
 slug: "analisis-ot"
 category: "DDD"
-tags: ["DDD", "csharp", "backend"]
+tags: ["DDD", "csharp", "backend", "acsoft"]
 published: true
 featured: true
 ---
 
-cual es la norma de calidad que standariza el mantenimiento de aire acondicionado en Colombia
+Cual es la norma de calidad que standariza el mantenimiento de aire acondicionado en Colombia ?
 
 En Colombia **no existe una única norma técnica que, por sí sola, estandarice todo el mantenimiento de los aires acondicionados**. El mantenimiento está regulado desde varios frentes: técnico, eléctrico, ambiental y de seguridad.
 
@@ -832,3 +832,339 @@ Por ejemplo, para un **Minisplit en mantenimiento preventivo**, el sistema podr�
 
 Y hay algo que conviene hacer en el siguiente paso: **separar las actividades "estándar" de las actividades que dependen obligatoriamente de la especificación del fabricante**, especialmente las presiones, temperaturas, amperajes y rangos de aceptación. No sería correcto poner un único rango universal para todos los equipos.
 
+# Reglas de negocio en Kotlin y .Net
+
+
+> Debo duplicar las reglas de negocio de .net en kotlin ?
+
+Para ACSoft, mi recomendación es **no duplicar las reglas del dominio en Kotlin**. Debes mantener las reglas de negocio como responsabilidad principal del backend en .NET 10, mientras que Kotlin debe implementar las validaciones necesarias para ofrecer una buena experiencia de usuario cuando el dispositivo esté desconectado.
+
+Sin embargo, hay un detalle importante: como ACSoft debe trabajar offline, algunas reglas sí tendrán que ejecutarse localmente para que el técnico pueda continuar trabajando sin conexión.
+
+La clave está en distinguir entre **reglas de negocio, validaciones de interfaz y reglas necesarias para operar offline**.
+
+## **1. Arquitectura recomendada para ACSoft**
+
+Tendrías dos aplicaciones con responsabilidades diferentes:
+
+**Aplicación móvil Kotlin**
+
+Android · Offline First
+
+- Interfaz de usuario.
+- Base de datos local (Room).
+- Validaciones para trabajar offline.
+- Cola de operaciones pendientes.
+- Sincronización con el servidor.
+
+**API REST / HTTPS**
+
+Sincronización de solicitudes y respuestas
+
+**Backend ACSoft (.NET 10 / C# 14)**
+
+Clean Architecture · Domain-Driven Design
+
+- Domain: reglas de negocio.
+- Application: casos de uso.
+- Infrastructure: persistencia.
+- API: comunicación con Kotlin.
+
+**PostgreSQL**
+
+Fuente de verdad de los datos centralizados
+
+La base de datos local de Kotlin permite trabajar sin internet. Cuando se recupera la conexión, la aplicación sincroniza los cambios con el backend.
+
+**Importante:** no debes considerar que tener conexión Wi-Fi significa necesariamente tener acceso a internet o al servidor. La sincronización debe comprobar que la API realmente está disponible.
+
+## **2. ¿Qué reglas debes implementar en cada aplicación?**
+
+Veamos un ejemplo de tu dominio ACSoft: una orden de trabajo de mantenimiento de aire acondicionado.
+
+| Regla                                                     | Kotlin                    | .NET                         |
+| --------------------------------------------------------- | ------------------------- | ---------------------------- |
+| Nombre obligatorio en formulario                          | Sí                        | Sí                           |
+| Campos requeridos para completar actividad                | Sí                        | Sí                           |
+| Respuestas obligatorias                                   | Sí                        | Sí                           |
+| No permitir completar actividad sin respuestas requeridas | Sí                        | Sí                           |
+| No permitir dos asignaciones activas                      | Puede anticiparlo         | Sí, obligatorio              |
+| Validar que el técnico está autorizado                    | Validación local limitada | Sí, definitivo               |
+| Validar estado actual de la orden                         | Según datos locales       | Sí, definitivo               |
+| Guardar fotografías offline                               | Sí                        | Procesamiento al sincronizar |
+| Registrar firma del cliente offline                       | Sí                        | Validación al sincronizar    |
+
+¿Por qué algunas reglas aparecen en ambas aplicaciones?
+
+Porque necesitas que Kotlin pueda ofrecer una experiencia coherente cuando no existe conexión.
+
+Pero eso no significa que Kotlin sea la autoridad sobre esas reglas.
+
+Por ejemplo:
+
+- Kotlin puede impedir que el técnico complete una actividad sin responder las preguntas obligatorias.
+- .NET debe volver a verificar esa condición cuando reciba la operación.
+- Si los datos locales están desactualizados, el backend puede rechazar la operación.
+
+**La validación del backend siempre prevalece.**
+
+## **3. ¿Cómo funcionaría una orden de trabajo offline?**
+
+Imaginemos este escenario:
+
+Un técnico llega a las instalaciones de un cliente donde no hay internet.
+
+1. Kotlin descarga previamente las órdenes asignadas al técnico.
+2. Descarga los equipos, planes de mantenimiento, actividades y preguntas.
+3. El técnico inicia una orden de trabajo.
+4. Registra mediciones eléctricas del equipo.
+5. Responde las preguntas de mantenimiento.
+6. Toma fotografías y registra la firma del cliente.
+7. Finaliza la actividad.
+8. Kotlin guarda todos los cambios en Room (SQLite).
+9. La orden queda marcada como pendiente de sincronización.
+
+Cuando recupera la conexión, Kotlin envía las operaciones pendientes a la API de ACSoft.
+
+El backend valida las reglas del dominio, persiste los cambios en PostgreSQL y devuelve el resultado.
+
+### **Flujo de sincronización**
+
+1. **Trabajo offline**
+
+   Kotlin guarda los cambios en Room.
+
+   Pendiente de sincronización
+2. **Se recupera la conexión**
+
+   WorkManager detecta que puede ejecutar el trabajo.
+3. **Envío de operaciones**
+
+   La aplicación envía las operaciones pendientes a .NET.
+4. **Validación del dominio**
+
+   Los handlers y entidades de ACSoft verifican las reglas.
+5. **Persistencia**
+
+   Se guardan los cambios en PostgreSQL.
+6. **Respuesta al dispositivo**
+
+   Kotlin actualiza el estado local de cada operación.
+
+   Sincronizado
+
+Android recomienda precisamente una arquitectura Offline First con una fuente de datos local, una fuente de datos remota y WorkManager para gestionar las tareas de sincronización y sus reintentos.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://developer.android.com\&sz=32)
+
+Android Developers+2
+
+
+
+## **4. Una parte muy importante: no sincronices solamente entidades**
+
+Aquí hay una decisión arquitectónica que considero especialmente importante para ACSoft.
+
+Te recomiendo implementar un patrón llamado **Outbox Pattern en el cliente móvil** (cola persistente de operaciones pendientes).
+
+En lugar de guardar solamente la orden de trabajo modificada, Kotlin registra las operaciones que realizó el técnico.
+
+Por ejemplo:
+
+| Id       | Operación           | Estado    |
+| -------- | ------------------- | --------- |
+| UUID-001 | StartWorkOrder      | Pendiente |
+| UUID-002 | StartWorkSession    | Pendiente |
+| UUID-003 | RegisterMeasurement | Pendiente |
+| UUID-004 | AnswerQuestion      | Pendiente |
+| UUID-005 | CompleteActivity    | Pendiente |
+
+Cada operación tendrá un identificador único, fecha de creación, datos necesarios y estado de sincronización.
+
+Esto tiene varias ventajas:
+
+- Puedes reintentar una sincronización sin duplicar operaciones.
+- Puedes conservar el orden en que se realizaron las actividades.
+- Puedes identificar qué operación produjo un error.
+- Puedes mostrar al técnico qué información está pendiente.
+- Puedes recuperar la sincronización después de cerrar la aplicación.
+
+**Una recomendación fundamental:** el backend debe ser idempotente. Si Kotlin envía dos veces `CompleteActivity` debido a una interrupción de conexión, el servidor debe reconocer que ya procesó esa operación y evitar ejecutarla nuevamente.
+
+También debes contemplar conflictos: por ejemplo, que una orden haya sido reasignada mientras el técnico trabajaba sin conexión.
+
+No recomiendo resolver todos esos conflictos con *Last Write Wins*. En ACSoft, las operaciones de negocio deben tener reglas explícitas de resolución.
+
+## **5. ¿Cómo organizaría las responsabilidades en ACSoft?**
+
+### **Backend .NET 10**
+
+Mantendría tu Clean Architecture actual:
+
+```
+AcSoft.Domain
+ ├── Entities
+ │    ├── WorkOrder
+ │    ├── WorkOrderActivity
+ │    ├── WorkSession
+ │    └── MaintenancePlan
+ │
+ ├── ValueObjects
+ ├── Enums
+ └── Exceptions
+
+AcSoft.Application
+ ├── Features
+ │    ├── WorkOrders
+ │    ├── WorkSessions
+ │    ├── Activities
+ │    └── Synchronization
+ │
+ └── Abstractions
+
+AcSoft.Infrastructure
+ └── Persistence
+
+AcSoft.API
+ └── Endpoints
+```
+
+Agregaría una funcionalidad de sincronización que reciba las operaciones provenientes de Kotlin.
+
+Por ejemplo:
+
+```
+POST /api/synchronization
+```
+
+Un DTO ilustrativo podría ser:
+
+```csharp
+public sealed record SyncOperationRequest(
+    Guid OperationId,
+    Guid AggregateId,
+    string OperationType,
+    DateTimeOffset OccurredAt,
+    int ExpectedVersion,
+    JsonElement Payload
+);
+```
+
+Consideraciones:
+
+- `OperationId`: identifica la operación y permite evitar duplicados.
+- `AggregateId`: identifica la orden de trabajo.
+- `OperationType`: identifica qué acción se ejecutó.
+- `OccurredAt`: registra cuándo ocurrió en el dispositivo.
+- `ExpectedVersion`: permite detectar cambios concurrentes.
+- `Payload`: contiene los datos de la operación.
+
+El backend no debe confiar ciegamente en estos datos. Debe validar identidad, autorización, integridad y reglas de negocio.
+
+### **Aplicación Kotlin**
+
+Organizaría el proyecto aproximadamente así:
+
+```
+data/
+ ├── local/
+ │    ├── database/
+ │    ├── dao/
+ │    └── entities/
+ │
+ ├── remote/
+ │    ├── api/
+ │    └── dto/
+ │
+ ├── repository/
+ │
+ └── synchronization/
+      ├── SyncWorker
+      ├── SyncManager
+      └── PendingOperationDao
+
+domain/
+ ├── model/
+ ├── usecase/
+ └── validation/
+
+presentation/
+ ├── screens/
+ └── viewmodels/
+```
+
+Utilizaría:
+
+- **Room:** almacenamiento local.
+- **WorkManager:** sincronización en segundo plano.
+- **Retrofit:** comunicación con tu API.
+- **Kotlin Coroutines:** operaciones asíncronas.
+
+Si quieres sincronizar exclusivamente mediante redes Wi-Fi o redes consideradas no medidas, puedes configurar las restricciones de red de WorkManager. La conexión disponible no garantiza por sí sola que el servidor responda.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://developer.android.com\&sz=32)
+
+Android Developers+1
+
+
+
+## **6. Tres decisiones que debes tomar desde el principio**
+
+Para evitar problemas futuros, hay tres aspectos que considero indispensables:
+
+**1. Identificadores UUID**
+
+Utiliza identificadores generados desde el dispositivo para las operaciones y, cuando corresponda, para las entidades creadas offline.
+
+Así no dependes de que PostgreSQL genere un ID antes de poder trabajar.
+
+**2. Control de versiones**
+
+Cada orden de trabajo debe tener una versión o mecanismo equivalente de concurrencia.
+
+Esto permite detectar si el servidor modificó la orden mientras el técnico estaba desconectado.
+
+**3. Sincronización de fotografías**
+
+No enviaría las fotografías dentro del JSON de cada operación.
+
+Las guardaría localmente y las subiría como archivos independientes, vinculándolas después con su actividad u orden de trabajo. También debes conservar su estado de carga y reintentar las transferencias interrumpidas.
+
+## **7. Mi recomendación final para ACSoft**
+
+Hay algo que quiero que tengas muy presente:
+
+**No estás construyendo simplemente una API .NET consumida por una aplicación Kotlin. Estás construyendo un sistema distribuido con capacidad de operación offline.**
+
+Eso cambia algunas decisiones arquitectónicas.
+
+| Responsabilidad                | Aplicación responsable |
+| ------------------------------ | ---------------------- |
+| Reglas definitivas del negocio | .NET Domain            |
+| Casos de uso centralizados     | .NET Application       |
+| Experiencia de usuario offline | Kotlin                 |
+| Persistencia local             | Kotlin / Room          |
+| Persistencia centralizada      | PostgreSQL             |
+| Resolución de conflictos       | .NET                   |
+| Sincronización                 | Kotlin + .NET          |
+
+Mi recomendación es mantener una única autoridad para las reglas del negocio: tu backend.
+
+Kotlin puede implementar validaciones equivalentes para mejorar la experiencia offline, pero no debe convertirse en una segunda implementación independiente del dominio.
+
+**Una última consideración:** no necesitas compartir las clases de dominio entre C# y Kotlin. Puedes compartir contratos mediante OpenAPI, DTOs y documentación de las operaciones. Incluso puedes automatizar la generación de clientes Kotlin desde tu API.
+
+## **¿Cómo continuaría el desarrollo?**
+
+Yo implementaría esta funcionalidad en ACSoft en este orden:
+
+1. Diseñar el modelo de sincronización y la cola de operaciones.
+2. Adaptar `WorkOrder`, `WorkSession` y `WorkOrderActivity` para soportar operaciones offline.
+3. Implementar el endpoint de sincronización en .NET 10.
+4. Implementar la persistencia local con Room en Kotlin.
+5. Implementar WorkManager y los mecanismos de reintentos.
+6. Implementar resolución de conflictos y sincronización de fotografías.
+
+Te recomiendo comenzar por el **diseño de la arquitectura de sincronización de ACSoft**, antes de continuar agregando funcionalidades a las entidades. Así evitamos tener que modificar posteriormente buena parte del dominio.
+
+Puedes consultar también la guía oficial: [Android: arquitectura Offline First](https://developer.android.com/topic/architecture/data-layer/offline-first?authuser=6\&hl=es-419\&utm_source=chatgpt.com).
