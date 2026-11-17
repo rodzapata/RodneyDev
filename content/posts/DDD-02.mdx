@@ -56,7 +56,7 @@ Una entidad es un objeto que tiene identidad propia y que conserva esa identidad
 
 Por ejemplo:
 
-```
+```csharp
 public sealed class WorkOrder
 {
     public Guid Id { get; private set; }
@@ -96,7 +96,7 @@ Comencemos comparando dos implementaciones.
 
 **Opción A — Modelo con propiedades públicas**
 
-```
+```csharp
 public class WorkOrder
 {
     public Guid Id { get; set; }
@@ -111,7 +111,7 @@ public class WorkOrder
 
 Cualquier clase podría hacer esto:
 
-```
+```csharp
 workOrder.Status = WorkOrderStatus.Completed;
 ```
 
@@ -121,7 +121,7 @@ Esto significa que no estamos protegiendo las reglas del negocio.
 
 **Opción B — Modelo con encapsulamiento**
 
-```
+```csharp
 public sealed class WorkOrder
 {
     public Guid Id { get; private set; }
@@ -136,7 +136,7 @@ Ahora las propiedades pueden consultarse desde afuera, pero solamente la propia 
 
 Para modificar el estado debemos utilizar métodos de negocio:
 
-```
+```csharp
 workOrder.Complete();
 ```
 
@@ -166,7 +166,7 @@ Primero creamos el enum:
 
 **Enums/WorkOrderStatus.cs**
 
-```
+```csharp
 namespace AcSoft.Domain.Enums;
 
 public enum WorkOrderStatus
@@ -185,7 +185,7 @@ Porque el estado pertenece a un conjunto limitado de valores conocidos.
 
 Es preferible a utilizar:
 
-```
+```csharp
 public string Status { get; private set; }
 ```
 
@@ -210,7 +210,7 @@ Porque queremos evitar que otras capas creen órdenes sin pasar por las validaci
 
 **Entities/WorkOrder.cs**
 
-```
+```csharp
 using AcSoft.Domain.Enums;
 
 namespace AcSoft.Domain.Entities;
@@ -288,7 +288,7 @@ No necesitamos herencia para este modelo.
 
 **B.&#x20;**`private set`
 
-```
+```csharp
 public WorkOrderStatus Status { get; private set; }
 ```
 
@@ -296,7 +296,7 @@ El estado puede consultarse, pero no modificarse directamente desde Application 
 
 **C. Constructor privado**
 
-```
+```csharp
 private WorkOrder()
 {
 }
@@ -308,7 +308,7 @@ También tenemos otro constructor privado que inicializa una orden nueva.
 
 **D. Método estático&#x20;**`Create()`
 
-```
+```csharp
 public static WorkOrder Create(...)
 ```
 
@@ -318,7 +318,7 @@ Observa que las validaciones están dentro del dominio.
 
 Por tanto, cualquier consumidor debe pasar por ellas:
 
-```
+```csharp
 var workOrder = WorkOrder.Create(
     "OT-000125",
     customerId,
@@ -345,7 +345,7 @@ En nuestro sistema tenemos ejemplos:
 
 Por ejemplo, esta operación no debería ser posible:
 
-```
+```csharp
 var workOrder = WorkOrder.Create(
     "OT-000125",
     Guid.Empty,
@@ -395,7 +395,7 @@ La aplicación no debería modificar directamente esas colecciones.
 
 Imagina que escribimos:
 
-```
+```csharp
 public List<WorkOrderActivity> Activities
 {
     get;
@@ -405,7 +405,7 @@ public List<WorkOrderActivity> Activities
 
 Cualquier consumidor podría hacer:
 
-```
+```csharp
 workOrder.Activities.Clear();
 ```
 
@@ -413,7 +413,7 @@ Esto podría eliminar todas las actividades sin respetar las reglas del negocio.
 
 En su lugar utilizaremos:
 
-```
+```csharp
 private readonly List<WorkOrderActivity> _activities = [];
 
 public IReadOnlyCollection<WorkOrderActivity> Activities =>
@@ -436,7 +436,7 @@ Primero, supongamos que tenemos una entidad `WorkOrderActivity` que representa u
 
 Agregaremos estos campos y métodos a nuestra entidad:
 
-```
+```csharp
 private readonly List<WorkOrderActivity> _activities = [];
 
 public IReadOnlyCollection<WorkOrderActivity> Activities =>
@@ -511,7 +511,7 @@ Comparemos dos alternativas.
 
 **Alternativa A: validación en Application**
 
-```
+```csharp
 public async Task Handle(...)
 {
     var workOrder = await repository.GetByIdAsync(id);
@@ -525,7 +525,7 @@ public async Task Handle(...)
 
 **Alternativa B: validación en Domain**
 
-```
+```csharp
 public async Task Handle(...)
 {
     var workOrder = await repository.GetByIdAsync(id);
@@ -561,7 +561,7 @@ AcSoft.Domain
 
 Por ejemplo:
 
-```
+```csharp
 namespace AcSoft.Domain.Exceptions;
 
 public sealed class DomainException : Exception
@@ -581,7 +581,7 @@ Mi recomendación es:
 
 Ejemplos:
 
-```
+```csharp
 // Argumento inválido.
 WorkOrder.Create("", customerId, equipmentId);
 
@@ -599,13 +599,13 @@ Todavía no vamos a configurar EF Core, pero quiero que comprendas una decisión
 
 Nuestra entidad tiene:
 
-```
+```csharp
 public Guid Id { get; private set; }
 ```
 
 Y:
 
-```
+```csharp
 private readonly List<WorkOrderActivity> _activities = [];
 ```
 
@@ -613,7 +613,7 @@ EF Core puede trabajar con propiedades privadas, constructores privados y campos
 
 Por ejemplo, posteriormente configuraremos:
 
-```
+```csharp
 builder
     .HasMany<WorkOrderActivity>("_activities")
     .WithOne()
@@ -679,6 +679,10 @@ Para impedir modificaciones externas sin pasar por el dominio
 
 Para convertirlo en una constante
 
+Respuesta B
+
+private set permite que WorkOrder controle las modificaciones de su estado.
+
 **2. ¿Quién debería controlar las reglas para finalizar una orden?**
 
 El Controller
@@ -687,6 +691,10 @@ El DbContext
 
 La entidad WorkOrder
 
+Respuesta C
+
+El Aggregate Root protege las invariantes del agregado.
+
 **3. ¿Por qué utilizamos IReadOnlyCollection para Activities?**
 
 Para impedir modificaciones directas de la colección desde consumidores externos
@@ -694,6 +702,10 @@ Para impedir modificaciones directas de la colección desde consumidores externo
 Para que la colección no se guarde en PostgreSQL
 
 Para evitar utilizar List
+
+Respuesta A
+
+La colección se modifica mediante métodos de WorkOrder, no desde cualquier capa.
 
 Comprobar respuestas
 
