@@ -1,0 +1,1624 @@
+---
+title: "Explicacion de los parametros diseñar entidades de mantenimiento"
+date: "2026-11-20"
+description: "Analisis de los paarametros que de"
+slug: "parametros-aires-03"
+category: "DDD"
+tags: ["DDD", "csharp", "backend"]
+published: true
+featured: true
+---
+
+¡Perfecto! Vamos a continuar con el diseño de **ACSoft**, utilizando C# 14, .NET 10, EF Core 10 y PostgreSQL, siguiendo los principios de DDD (Domain-Driven Design) y Clean Architecture.
+
+Este paso es especialmente importante porque vamos a diseñar el núcleo que permitirá registrar las actividades de mantenimiento preventivo y correctivo, capturar mediciones eléctricas y mecánicas, validar parámetros y conservar el historial de cada intervención.
+
+Mi recomendación es separar claramente dos conceptos:
+
+- **Definición:** qué actividad debe realizar el técnico y qué información debe capturar.
+- **Ejecución:** qué hizo realmente el técnico y cuáles fueron los resultados obtenidos.
+
+# **1. Diseño del dominio**
+
+Primero veamos cómo se relacionan las cuatro entidades.
+
+**Actividad**
+
+Definición de una actividad de mantenimiento
+
+Ejemplo: Medir corriente del compresor
+
+Contiene varios
+
+**CampoActividad**
+
+Define qué datos debe capturar el técnico
+
+Ejemplo: RLA, corriente medida, unidad, límites
+
+Se utiliza al ejecutar una actividad
+
+**EjecucionActividad**
+
+Representa una actividad realizada en una orden de trabajo
+
+Ejemplo: Medición realizada el 20/11/2026
+
+Contiene las respuestas obtenidas
+
+**RespuestaActividad**
+
+Almacena los valores reales capturados
+
+Ejemplo: RLA = 12.5 A, corriente medida = 10.8 A
+
+## **2. Ejemplo práctico de ACSoft**
+
+Imaginemos que tenemos un plan de mantenimiento preventivo para un aire acondicionado.
+
+La actividad se llama:
+
+**Medir corriente eléctrica del compresor.**
+
+Sus campos podrían ser:
+
+| Campo            | Valor de referencia | Unidad |
+| ---------------- | ------------------- | ------ |
+| RLA              | 12.5                | A      |
+| Corriente medida | Variable            | A      |
+| Temperatura      | 8                   | °C     |
+
+El técnico realiza la actividad y registra:
+
+| Campo            | Resultado |
+| ---------------- | --------- |
+| RLA              | 12.5 A    |
+| Corriente medida | 10.8 A    |
+| Temperatura      | 7.5 °C    |
+
+La diferencia fundamental es:
+
+- `CampoActividad` define qué se debe medir y sus referencias.
+- `RespuestaActividad` almacena lo que realmente se midió.
+
+**Una regla importante de DDD:** nunca debemos modificar la definición de una actividad para registrar los resultados de una ejecución. La definición es reutilizable; cada ejecución conserva sus propios resultados.
+
+# **3. Organización de proyectos**
+
+Vamos a mantener la separación de responsabilidades que venimos utilizando en ACSoft.
+
+```
+AcSoft.Domain
+│
+├── Entities
+│   ├── Activity.cs
+│   ├── ActivityField.cs
+│   ├── ActivityExecution.cs
+│   └── ActivityAnswer.cs
+│
+├── Enums
+│   ├── FieldType.cs
+│   ├── ActivityExecutionStatus.cs
+│   ├── MeasurementMoment.cs
+│   └── AnswerStatus.cs
+│
+└── Exceptions
+
+AcSoft.Application
+│
+└── Features
+    └── ActivityExecutions
+        ├── Commands
+        ├── Queries
+        ├── DTOs
+        └── Validators
+
+AcSoft.Infrastructure
+│
+└── Persistence
+    └── Configurations
+        ├── ActivityConfiguration.cs
+        ├── ActivityFieldConfiguration.cs
+        ├── ActivityExecutionConfiguration.cs
+        └── ActivityAnswerConfiguration.cs
+```
+
+Utilizaré nombres en inglés para las clases y propiedades, manteniendo la terminología del dominio en español durante las explicaciones. Es una buena práctica para un proyecto que puede crecer y tener integraciones internacionales.
+
+# **4. Definición de enumeraciones**
+
+Antes de implementar las entidades, definimos los tipos de datos que utilizaremos.
+
+### **FieldType.cs**
+
+Determina qué tipo de información debe capturar el técnico.
+
+```csharp
+namespace AcSoft.Domain.Enums;
+
+public enum FieldType
+{
+    Numeric = 1,
+    Text = 2,
+    Boolean = 3,
+    Inspection = 4
+}
+```
+
+Ejemplos:
+
+| Tipo       | Ejemplo                                    |
+| ---------- | ------------------------------------------ |
+| Numeric    | Corriente: 10.8 A                          |
+| Text       | Observación: equipo presenta ruido         |
+| Boolean    | ¿Se limpió el filtro? Sí                   |
+| Inspection | Estado: Correcto / No correcto / No aplica |
+
+### **MeasurementMoment.cs**
+
+Necesitamos diferenciar mediciones antes y después del mantenimiento.
+
+```
+namespace AcSoft.Domain.Enums;
+
+public enum MeasurementMoment
+{
+    Single = 1,
+    Before = 2,
+    After = 3
+}
+```
+
+Por ejemplo, la presión de succión puede registrarse antes y después de realizar el mantenimiento.
+
+### **ActivityExecutionStatus.cs**
+
+```
+namespace AcSoft.Domain.Enums;
+
+public enum ActivityExecutionStatus
+{
+    Pending = 1,
+    InProgress = 2,
+    Completed = 3
+}
+```
+
+### **AnswerStatus.cs**
+
+```
+namespace AcSoft.Domain.Enums;
+
+public enum AnswerStatus
+{
+    Correct = 1,
+    Incorrect = 2,
+    NotApplicable = 3
+}
+```
+
+# **5. Entidad Activity (Actividad)**
+
+Esta entidad representa la definición de una actividad que podrá utilizarse en los planes de mantenimiento.
+
+Ejemplos:
+
+- Revisar conexiones eléctricas.
+- Medir corriente del compresor.
+- Verificar presión de refrigerante.
+- Limpiar filtros.
+- Inspeccionar serpentines.
+
+Su responsabilidad es administrar los campos que componen la actividad.
+
+**Activity.cs**
+
+```
+namespace AcSoft.Domain.Entities;
+
+public sealed class Activity
+{
+    private readonly List<ActivityField> _fields = [];
+
+    public Guid Id { get; private set; }
+
+    public string Code { get; private set; } = null!;
+
+    public string Name { get; private set; } = null!;
+
+    public string? Description { get; private set; }
+
+    public bool IsActive { get; private set; }
+
+    public IReadOnlyCollection<ActivityField> Fields =>
+        _fields.AsReadOnly();
+
+    private Activity()
+    {
+    }
+
+    private Activity(
+        string code,
+        string name,
+        string? description)
+    {
+        Id = Guid.NewGuid();
+
+        Code = code;
+        Name = name;
+        Description = description;
+
+        IsActive = true;
+    }
+
+    public static Activity Create(
+        string code,
+        string name,
+        string? description = null)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+            throw new ArgumentException(
+                "El código es obligatorio.",
+                nameof(code));
+
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException(
+                "El nombre es obligatorio.",
+                nameof(name));
+
+        return new Activity(
+            code.Trim(),
+            name.Trim(),
+            description?.Trim());
+    }
+
+    public ActivityField AddField(
+        string code,
+        string name,
+        FieldType type,
+        int sequence,
+        string? unit = null,
+        decimal? nominalValue = null,
+        decimal? minimumValue = null,
+        decimal? maximumValue = null,
+        bool isRequired = true,
+        bool captureBeforeAndAfter = false)
+    {
+        if (!IsActive)
+            throw new InvalidOperationException(
+                "No se pueden agregar campos a una actividad inactiva.");
+
+        if (_fields.Any(x => x.Code == code))
+            throw new InvalidOperationException(
+                "El campo ya existe en esta actividad.");
+
+        var field = ActivityField.Create(
+            Id,
+            code,
+            name,
+            type,
+            sequence,
+            unit,
+            nominalValue,
+            minimumValue,
+            maximumValue,
+            isRequired,
+            captureBeforeAndAfter);
+
+        _fields.Add(field);
+
+        return field;
+    }
+
+    public void Deactivate()
+    {
+        IsActive = false;
+    }
+}
+```
+
+Observa algunos detalles importantes:
+
+1. La colección `_fields` es privada.
+2. Desde fuera no podemos agregar campos directamente.
+3. Los campos se agregan mediante `AddField()`.
+4. La entidad controla sus propias reglas de negocio.
+5. Utilizamos `IReadOnlyCollection` para proteger la colección.
+
+Esto es encapsulamiento y es uno de los principios fundamentales de DDD.
+
+# **6. Entidad ActivityField (CampoActividad)**
+
+Esta es una de las entidades más importantes de nuestro diseño.
+
+Aquí definimos los parámetros que se deben capturar durante una actividad.
+
+Por ejemplo, para medir la corriente del compresor podemos definir:
+
+| Propiedad    | Valor                   |
+| ------------ | ----------------------- |
+| Code         | COMPRESSOR_CURRENT      |
+| Name         | Corriente del compresor |
+| Type         | Numeric                 |
+| Unit         | A                       |
+| NominalValue | 12.5                    |
+| MinimumValue | 0                       |
+| MaximumValue | 12.5                    |
+| IsRequired   | Sí                      |
+
+Recuerda:
+
+- `NominalValue`: valor de referencia.
+- `MinimumValue`: límite inferior.
+- `MaximumValue`: límite superior.
+
+Estos valores pertenecen a la definición del campo, no al resultado de la medición.
+
+**ActivityField.cs**
+
+```
+namespace AcSoft.Domain.Entities;
+
+public sealed class ActivityField
+{
+    public Guid Id { get; private set; }
+
+    public Guid ActivityId { get; private set; }
+
+    public string Code { get; private set; } = null!;
+
+    public string Name { get; private set; } = null!;
+
+    public FieldType Type { get; private set; }
+
+    public string? Unit { get; private set; }
+
+    public decimal? NominalValue { get; private set; }
+
+    public decimal? MinimumValue { get; private set; }
+
+    public decimal? MaximumValue { get; private set; }
+
+    public bool IsRequired { get; private set; }
+
+    public bool CaptureBeforeAndAfter { get; private set; }
+
+    public int Sequence { get; private set; }
+
+    private ActivityField()
+    {
+    }
+
+    private ActivityField(
+        Guid activityId,
+        string code,
+        string name,
+        FieldType type,
+        int sequence,
+        string? unit,
+        decimal? nominalValue,
+        decimal? minimumValue,
+        decimal? maximumValue,
+        bool isRequired,
+        bool captureBeforeAndAfter)
+    {
+        Id = Guid.NewGuid();
+
+        ActivityId = activityId;
+        Code = code;
+        Name = name;
+        Type = type;
+        Sequence = sequence;
+        Unit = unit;
+
+        NominalValue = nominalValue;
+        MinimumValue = minimumValue;
+        MaximumValue = maximumValue;
+
+        IsRequired = isRequired;
+        CaptureBeforeAndAfter = captureBeforeAndAfter;
+    }
+
+    public static ActivityField Create(
+        Guid activityId,
+        string code,
+        string name,
+        FieldType type,
+        int sequence,
+        string? unit,
+        decimal? nominalValue,
+        decimal? minimumValue,
+        decimal? maximumValue,
+        bool isRequired,
+        bool captureBeforeAndAfter)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+            throw new ArgumentException("El código es obligatorio.");
+
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("El nombre es obligatorio.");
+
+        if (sequence < 1)
+            throw new ArgumentOutOfRangeException(nameof(sequence));
+
+        if (type != FieldType.Numeric &&
+            (nominalValue.HasValue ||
+             minimumValue.HasValue ||
+             maximumValue.HasValue ||
+             !string.IsNullOrWhiteSpace(unit)))
+        {
+            throw new ArgumentException(
+                "Los valores de referencia y la unidad " +
+                "solo aplican a campos numéricos.");
+        }
+
+        if (minimumValue.HasValue &&
+            maximumValue.HasValue &&
+            minimumValue > maximumValue)
+        {
+            throw new ArgumentException(
+                "El valor mínimo no puede superar el máximo.");
+        }
+
+        if (type != FieldType.Numeric && captureBeforeAndAfter)
+        {
+            throw new ArgumentException(
+                "La captura antes y después requiere un campo numérico.");
+        }
+
+        return new ActivityField(
+            activityId,
+            code.Trim(),
+            name.Trim(),
+            type,
+            sequence,
+            unit?.Trim(),
+            nominalValue,
+            minimumValue,
+            maximumValue,
+            isRequired,
+            captureBeforeAndAfter);
+    }
+}
+```
+
+**Una decisión de diseño:** no estamos almacenando los límites mínimo y máximo como valores obligatorios. Esto permite que existan campos numéricos donde solamente necesitamos registrar una medición, sin establecer límites de referencia.
+
+También es importante que los valores de referencia no se utilicen automáticamente para determinar si un equipo está funcionando correctamente. Esa evaluación dependerá de las reglas técnicas de cada parámetro y del fabricante.
+
+# **7. Entidad ActivityExecution (EjecucionActividad)**
+
+Ahora llegamos a la ejecución real.
+
+Esta entidad representa una actividad que un técnico realiza dentro de una orden de trabajo.
+
+Por ejemplo:
+
+- Orden de trabajo: OT-20261120001.
+- Actividad: Medir corriente del compresor.
+- Técnico: Técnico asignado.
+- Estado: En ejecución.
+- Fecha de inicio: 20/11/2026.
+
+La entidad debe controlar:
+
+- Inicio de la ejecución.
+- Registro de respuestas.
+- Finalización de la actividad.
+- Validación de campos obligatorios.
+
+**ActivityExecution.cs**
+
+```
+namespace AcSoft.Domain.Entities;
+
+public sealed class ActivityExecution
+{
+    private readonly List<ActivityAnswer> _answers = [];
+
+    public Guid Id { get; private set; }
+
+    public Guid WorkOrderId { get; private set; }
+
+    public Guid ActivityId { get; private set; }
+
+    public Guid TechnicianId { get; private set; }
+
+    public ActivityExecutionStatus Status { get; private set; }
+
+    public DateTimeOffset? StartedAt { get; private set; }
+
+    public DateTimeOffset? CompletedAt { get; private set; }
+
+    public IReadOnlyCollection<ActivityAnswer> Answers =>
+        _answers.AsReadOnly();
+
+    private ActivityExecution()
+    {
+    }
+
+    private ActivityExecution(
+        Guid workOrderId,
+        Guid activityId,
+        Guid technicianId)
+    {
+        Id = Guid.NewGuid();
+
+        WorkOrderId = workOrderId;
+        ActivityId = activityId;
+        TechnicianId = technicianId;
+
+        Status = ActivityExecutionStatus.Pending;
+    }
+
+    public static ActivityExecution Create(
+        Guid workOrderId,
+        Guid activityId,
+        Guid technicianId)
+    {
+        return new ActivityExecution(
+            workOrderId,
+            activityId,
+            technicianId);
+    }
+
+    public void Start(DateTimeOffset startedAt)
+    {
+        if (Status != ActivityExecutionStatus.Pending)
+            throw new InvalidOperationException(
+                "La actividad no está pendiente.");
+
+        StartedAt = startedAt;
+
+        Status = ActivityExecutionStatus.InProgress;
+    }
+
+    public void AddAnswer(ActivityAnswer answer)
+    {
+        if (Status != ActivityExecutionStatus.InProgress)
+            throw new InvalidOperationException(
+                "La actividad no está en ejecución.");
+
+        if (_answers.Any(x =>
+            x.ActivityFieldId == answer.ActivityFieldId &&
+            x.Moment == answer.Moment))
+        {
+            throw new InvalidOperationException(
+                "Ya existe una respuesta para este campo y momento.");
+        }
+
+        _answers.Add(answer);
+    }
+
+    public void Complete(
+        IReadOnlyCollection<ActivityField> fields,
+        DateTimeOffset completedAt)
+    {
+        if (Status != ActivityExecutionStatus.InProgress)
+            throw new InvalidOperationException(
+                "La actividad no está en ejecución.");
+
+        if (StartedAt.HasValue && completedAt < StartedAt.Value)
+            throw new ArgumentException(
+                "La fecha de finalización no puede ser anterior al inicio.");
+
+        foreach (var field in fields.Where(x => x.IsRequired))
+        {
+            var moments = field.CaptureBeforeAndAfter
+                ? new[]
+                {
+                    MeasurementMoment.Before,
+                    MeasurementMoment.After
+                }
+                : new[] { MeasurementMoment.Single };
+
+            foreach (var moment in moments)
+            {
+                var exists = _answers.Any(x =>
+                    x.ActivityFieldId == field.Id &&
+                    x.Moment == moment);
+
+                if (!exists)
+                {
+                    throw new InvalidOperationException(
+                        $"Falta responder el campo obligatorio: {field.Name}.");
+                }
+            }
+        }
+
+        CompletedAt = completedAt;
+
+        Status = ActivityExecutionStatus.Completed;
+    }
+}
+```
+
+### **¿Por qué Complete recibe los campos?**
+
+Observa este método:
+
+```
+public void Complete(
+    IReadOnlyCollection<ActivityField> fields,
+    DateTimeOffset completedAt)
+```
+
+La ejecución necesita conocer qué campos son obligatorios para comprobar que todos fueron respondidos.
+
+Sin embargo, no debería consultar directamente PostgreSQL ni utilizar un repositorio.
+
+Esa responsabilidad corresponde a Application.
+
+El handler obtiene los campos de la actividad y se los entrega al dominio para que este aplique las reglas de negocio.
+
+Esta separación es importante en Clean Architecture.
+
+# **8. Entidad ActivityAnswer (RespuestaActividad)**
+
+Esta entidad almacena el resultado real que registra el técnico.
+
+Tenemos cuatro tipos de respuesta:
+
+- Numérica.
+- Texto.
+- Boolean.
+- Inspección: Correcto, Incorrecto o No aplica.
+
+Para evitar una tabla diferente por cada tipo de respuesta, utilizaremos columnas tipadas.
+
+**ActivityAnswer.cs**
+
+```
+namespace AcSoft.Domain.Entities;
+
+public sealed class ActivityAnswer
+{
+    public Guid Id { get; private set; }
+
+    public Guid ActivityExecutionId { get; private set; }
+
+    public Guid ActivityFieldId { get; private set; }
+
+    public MeasurementMoment Moment { get; private set; }
+
+    public decimal? NumericValue { get; private set; }
+
+    public string? TextValue { get; private set; }
+
+    public bool? BooleanValue { get; private set; }
+
+    public AnswerStatus? InspectionStatus { get; private set; }
+
+    // Datos históricos del campo al momento de la ejecución.
+
+    public string FieldNameSnapshot { get; private set; } = null!;
+
+    public string? UnitSnapshot { get; private set; }
+
+    public decimal? NominalValueSnapshot { get; private set; }
+
+    public decimal? MinimumValueSnapshot { get; private set; }
+
+    public decimal? MaximumValueSnapshot { get; private set; }
+
+    private ActivityAnswer()
+    {
+    }
+
+    private ActivityAnswer(
+        ActivityExecution execution,
+        ActivityField field,
+        MeasurementMoment moment)
+    {
+        Id = Guid.NewGuid();
+
+        ActivityExecutionId = execution.Id;
+        ActivityFieldId = field.Id;
+
+        Moment = moment;
+
+        FieldNameSnapshot = field.Name;
+        UnitSnapshot = field.Unit;
+
+        NominalValueSnapshot = field.NominalValue;
+        MinimumValueSnapshot = field.MinimumValue;
+        MaximumValueSnapshot = field.MaximumValue;
+    }
+
+    public static ActivityAnswer CreateNumeric(
+        ActivityExecution execution,
+        ActivityField field,
+        decimal value,
+        MeasurementMoment moment = MeasurementMoment.Single)
+    {
+        ValidateField(execution, field, FieldType.Numeric, moment);
+
+        var answer = new ActivityAnswer(execution, field, moment)
+        {
+            NumericValue = value
+        };
+
+        return answer;
+    }
+
+    public static ActivityAnswer CreateText(
+        ActivityExecution execution,
+        ActivityField field,
+        string value)
+    {
+        ValidateField(execution, field, FieldType.Text,
+            MeasurementMoment.Single);
+
+        if (string.IsNullOrWhiteSpace(value))
+            throw new ArgumentException("La respuesta es obligatoria.");
+
+        return new ActivityAnswer(
+            execution,
+            field,
+            MeasurementMoment.Single)
+        {
+            TextValue = value.Trim()
+        };
+    }
+
+    public static ActivityAnswer CreateBoolean(
+        ActivityExecution execution,
+        ActivityField field,
+        bool value)
+    {
+        ValidateField(execution, field, FieldType.Boolean,
+            MeasurementMoment.Single);
+
+        return new ActivityAnswer(
+            execution,
+            field,
+            MeasurementMoment.Single)
+        {
+            BooleanValue = value
+        };
+    }
+
+    public static ActivityAnswer CreateInspection(
+        ActivityExecution execution,
+        ActivityField field,
+        AnswerStatus status)
+    {
+        ValidateField(execution, field, FieldType.Inspection,
+            MeasurementMoment.Single);
+
+        return new ActivityAnswer(
+            execution,
+            field,
+            MeasurementMoment.Single)
+        {
+            InspectionStatus = status
+        };
+    }
+
+    private static void ValidateField(
+        ActivityExecution execution,
+        ActivityField field,
+        FieldType expectedType,
+        MeasurementMoment moment)
+    {
+        if (execution.ActivityId != field.ActivityId)
+            throw new InvalidOperationException(
+                "El campo no pertenece a la actividad ejecutada.");
+
+        if (field.Type != expectedType)
+            throw new InvalidOperationException(
+                "El tipo de respuesta no coincide con el campo.");
+
+        if (field.CaptureBeforeAndAfter)
+        {
+            if (moment is not MeasurementMoment.Before
+                and not MeasurementMoment.After)
+            {
+                throw new ArgumentException(
+                    "Debe especificar si la medición es antes o después.");
+            }
+        }
+        else if (moment != MeasurementMoment.Single)
+        {
+            throw new ArgumentException(
+                "Este campo no permite mediciones antes y después.");
+        }
+    }
+}
+```
+
+### **¿Por qué utilizamos Snapshot?**
+
+Esta es una decisión especialmente importante para ACSoft.
+
+Imagina que hoy tienes:
+
+- Corriente nominal: 12.5 A.
+- Corriente mínima: 0 A.
+- Corriente máxima: 12.5 A.
+
+El técnico registra una medición de 10.8 A.
+
+Un año después modificas la definición del campo porque el equipo o el fabricante tiene una nueva especificación.
+
+Si consultaras únicamente la definición actual, podrías mostrar referencias diferentes a las que existían cuando se realizó el mantenimiento.
+
+Por eso almacenamos:
+
+- `FieldNameSnapshot`
+- `UnitSnapshot`
+- `NominalValueSnapshot`
+- `MinimumValueSnapshot`
+- `MaximumValueSnapshot`
+
+Así conservamos la información histórica de la intervención.
+
+# **9. Relaciones entre las entidades**
+
+Antes de crear las tablas, revisemos las relaciones que tendremos en PostgreSQL.
+
+| Relación                           | Cardinalidad |
+| ---------------------------------- | ------------ |
+| Activity → ActivityField           | 1 a muchos   |
+| Activity → ActivityExecution       | 1 a muchos   |
+| ActivityExecution → ActivityAnswer | 1 a muchos   |
+| ActivityField → ActivityAnswer     | 1 a muchos   |
+| WorkOrder → ActivityExecution      | 1 a muchos   |
+
+Una actividad puede ejecutarse muchas veces, incluso en diferentes órdenes de trabajo.
+
+Un campo puede tener muchas respuestas históricas porque cada ejecución genera sus propios resultados.
+
+## **Diagrama entidad-relación**
+
+**activities**
+
+PK id
+
+code · name · description · is_active
+
+1 : N
+
+**activity_fields**
+
+PK id
+
+FK activity_id
+
+code · type · unit
+
+nominal · min · max
+
+1 : N
+
+**activity_executions**
+
+PK id
+
+FK activity_id
+
+FK work_order_id
+
+technician_id · status
+
+1 : N
+
+**activity_answers**
+
+PK id
+
+FK activity_execution_id
+
+FK activity_field_id
+
+numeric_value · text_value · boolean_value
+
+inspection_status · snapshots
+
+# **10. Diseño de las tablas PostgreSQL**
+
+Ahora vamos a convertir el modelo de dominio en tablas SQL.
+
+Utilizaremos:
+
+- `UUID` para identificadores.
+- `NUMERIC(12,3)` para mediciones.
+- `VARCHAR` para textos.
+- `TIMESTAMPTZ` para fechas.
+- `SMALLINT` para enumeraciones.
+
+### **Tabla activities**
+
+Almacena las definiciones de las actividades.
+
+```
+CREATE TABLE activities
+(
+    id UUID PRIMARY KEY,
+
+    code VARCHAR(50) NOT NULL,
+
+    name VARCHAR(150) NOT NULL,
+
+    description VARCHAR(500),
+
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+
+    CONSTRAINT uq_activities_code
+        UNIQUE (code)
+);
+```
+
+### **Tabla activity_fields**
+
+Almacena los campos que componen cada actividad.
+
+```
+CREATE TABLE activity_fields
+(
+    id UUID PRIMARY KEY,
+
+    activity_id UUID NOT NULL,
+
+    code VARCHAR(60) NOT NULL,
+
+    name VARCHAR(150) NOT NULL,
+
+    type SMALLINT NOT NULL,
+
+    unit VARCHAR(30),
+
+    nominal_value NUMERIC(12,3),
+
+    minimum_value NUMERIC(12,3),
+
+    maximum_value NUMERIC(12,3),
+
+    is_required BOOLEAN NOT NULL DEFAULT TRUE,
+
+    capture_before_and_after BOOLEAN NOT NULL DEFAULT FALSE,
+
+    sequence INTEGER NOT NULL,
+
+    CONSTRAINT fk_activity_fields_activity
+        FOREIGN KEY (activity_id)
+        REFERENCES activities(id),
+
+    CONSTRAINT uq_activity_fields_code
+        UNIQUE (activity_id, code),
+
+    CONSTRAINT uq_activity_fields_sequence
+        UNIQUE (activity_id, sequence),
+
+    CONSTRAINT ck_activity_fields_type
+        CHECK (type BETWEEN 1 AND 4),
+
+    CONSTRAINT ck_activity_fields_sequence
+        CHECK (sequence > 0),
+
+    CONSTRAINT ck_activity_fields_range
+        CHECK (
+            minimum_value IS NULL
+            OR maximum_value IS NULL
+            OR minimum_value <= maximum_value
+        ),
+
+    CONSTRAINT ck_activity_fields_numeric
+        CHECK (
+            type = 1
+            OR (
+                nominal_value IS NULL
+                AND minimum_value IS NULL
+                AND maximum_value IS NULL
+                AND unit IS NULL
+                AND capture_before_and_after = FALSE
+            )
+        )
+);
+```
+
+### **Tabla activity_executions**
+
+Almacena las ejecuciones realizadas en las órdenes de trabajo.
+
+```
+CREATE TABLE activity_executions
+(
+    id UUID PRIMARY KEY,
+
+    work_order_id UUID NOT NULL,
+
+    activity_id UUID NOT NULL,
+
+    technician_id UUID NOT NULL,
+
+    status SMALLINT NOT NULL DEFAULT 1,
+
+    started_at TIMESTAMPTZ,
+
+    completed_at TIMESTAMPTZ,
+
+    CONSTRAINT fk_execution_activity
+        FOREIGN KEY (activity_id)
+        REFERENCES activities(id),
+
+    CONSTRAINT fk_execution_work_order
+        FOREIGN KEY (work_order_id)
+        REFERENCES work_orders(id),
+
+    CONSTRAINT fk_execution_technician
+        FOREIGN KEY (technician_id)
+        REFERENCES technicians(id),
+
+    CONSTRAINT ck_execution_status
+        CHECK (status BETWEEN 1 AND 3),
+
+    CONSTRAINT ck_execution_dates
+        CHECK (
+            completed_at IS NULL
+            OR (
+                started_at IS NOT NULL
+                AND completed_at >= started_at
+            )
+        )
+);
+```
+
+He supuesto que tus tablas existentes se llaman `work_orders` y `technicians`, y que ambas utilizan `UUID` como identificador. Si tus nombres son diferentes, ajustaremos esas claves foráneas.
+
+### **Tabla activity_answers**
+
+Esta tabla almacena los resultados de las ejecuciones.
+
+```
+CREATE TABLE activity_answers
+(
+    id UUID PRIMARY KEY,
+
+    activity_execution_id UUID NOT NULL,
+
+    activity_field_id UUID NOT NULL,
+
+    moment SMALLINT NOT NULL DEFAULT 1,
+
+    numeric_value NUMERIC(12,3),
+
+    text_value VARCHAR(2000),
+
+    boolean_value BOOLEAN,
+
+    inspection_status SMALLINT,
+
+    field_name_snapshot VARCHAR(150) NOT NULL,
+
+    unit_snapshot VARCHAR(30),
+
+    nominal_value_snapshot NUMERIC(12,3),
+
+    minimum_value_snapshot NUMERIC(12,3),
+
+    maximum_value_snapshot NUMERIC(12,3),
+
+    CONSTRAINT fk_answer_execution
+        FOREIGN KEY (activity_execution_id)
+        REFERENCES activity_executions(id),
+
+    CONSTRAINT fk_answer_field
+        FOREIGN KEY (activity_field_id)
+        REFERENCES activity_fields(id),
+
+    CONSTRAINT uq_answer_execution_field_moment
+        UNIQUE (
+            activity_execution_id,
+            activity_field_id,
+            moment
+        ),
+
+    CONSTRAINT ck_answer_moment
+        CHECK (moment BETWEEN 1 AND 3),
+
+    CONSTRAINT ck_answer_inspection_status
+        CHECK (
+            inspection_status IS NULL
+            OR inspection_status BETWEEN 1 AND 3
+        ),
+
+    CONSTRAINT ck_answer_single_value
+        CHECK (
+            (numeric_value IS NOT NULL)::INTEGER
+            + (text_value IS NOT NULL)::INTEGER
+            + (boolean_value IS NOT NULL)::INTEGER
+            + (inspection_status IS NOT NULL)::INTEGER
+            = 1
+        )
+);
+```
+
+**Observa una protección importante:** la restricción `ck_answer_single_value` impide que una respuesta tenga simultáneamente un valor numérico y un valor de texto, por ejemplo.
+
+Además, la restricción `uq_answer_execution_field_moment` evita registrar dos respuestas para el mismo campo y momento dentro de una ejecución.
+
+# **11. Configuraciones de Entity Framework Core 10**
+
+Ahora vamos a configurar EF Core para que respete nuestro diseño de dominio.
+
+No vamos a colocar configuraciones de base de datos dentro de las entidades.
+
+Las configuraciones pertenecen a Infrastructure.
+
+### **ActivityConfiguration.cs**
+
+```
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+public sealed class ActivityConfiguration
+    : IEntityTypeConfiguration<Activity>
+{
+    public void Configure(
+        EntityTypeBuilder<Activity> builder)
+    {
+        builder.ToTable("activities");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.Id)
+            .HasColumnName("id");
+
+        builder.Property(x => x.Code)
+            .HasColumnName("code")
+            .HasMaxLength(50)
+            .IsRequired();
+
+        builder.Property(x => x.Name)
+            .HasColumnName("name")
+            .HasMaxLength(150)
+            .IsRequired();
+
+        builder.Property(x => x.Description)
+            .HasColumnName("description")
+            .HasMaxLength(500);
+
+        builder.Property(x => x.IsActive)
+            .HasColumnName("is_active")
+            .IsRequired();
+
+        builder.HasIndex(x => x.Code)
+            .IsUnique();
+
+        builder.HasMany(x => x.Fields)
+            .WithOne()
+            .HasForeignKey(x => x.ActivityId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.Navigation(x => x.Fields)
+            .HasField("_fields")
+            .UsePropertyAccessMode(PropertyAccessMode.Field);
+    }
+}
+```
+
+### **ActivityFieldConfiguration.cs**
+
+```
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+public sealed class ActivityFieldConfiguration
+    : IEntityTypeConfiguration<ActivityField>
+{
+    public void Configure(
+        EntityTypeBuilder<ActivityField> builder)
+    {
+        builder.ToTable("activity_fields", table =>
+        {
+            table.HasCheckConstraint(
+                "ck_activity_fields_type",
+                "type BETWEEN 1 AND 4");
+
+            table.HasCheckConstraint(
+                "ck_activity_fields_range",
+                "minimum_value IS NULL OR maximum_value IS NULL " +
+                "OR minimum_value <= maximum_value");
+        });
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.Id)
+            .HasColumnName("id");
+
+        builder.Property(x => x.ActivityId)
+            .HasColumnName("activity_id");
+
+        builder.Property(x => x.Code)
+            .HasColumnName("code")
+            .HasMaxLength(60)
+            .IsRequired();
+
+        builder.Property(x => x.Name)
+            .HasColumnName("name")
+            .HasMaxLength(150)
+            .IsRequired();
+
+        builder.Property(x => x.Type)
+            .HasColumnName("type")
+            .HasConversion<short>();
+
+        builder.Property(x => x.Unit)
+            .HasColumnName("unit")
+            .HasMaxLength(30);
+
+        builder.Property(x => x.NominalValue)
+            .HasColumnName("nominal_value")
+            .HasPrecision(12, 3);
+
+        builder.Property(x => x.MinimumValue)
+            .HasColumnName("minimum_value")
+            .HasPrecision(12, 3);
+
+        builder.Property(x => x.MaximumValue)
+            .HasColumnName("maximum_value")
+            .HasPrecision(12, 3);
+
+        builder.Property(x => x.IsRequired)
+            .HasColumnName("is_required");
+
+        builder.Property(x => x.CaptureBeforeAndAfter)
+            .HasColumnName("capture_before_and_after");
+
+        builder.Property(x => x.Sequence)
+            .HasColumnName("sequence");
+
+        builder.HasIndex(x => new { x.ActivityId, x.Code })
+            .IsUnique();
+
+        builder.HasIndex(x => new { x.ActivityId, x.Sequence })
+            .IsUnique();
+    }
+}
+```
+
+### **ActivityExecutionConfiguration.cs**
+
+```
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+public sealed class ActivityExecutionConfiguration
+    : IEntityTypeConfiguration<ActivityExecution>
+{
+    public void Configure(
+        EntityTypeBuilder<ActivityExecution> builder)
+    {
+        builder.ToTable("activity_executions");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.Id)
+            .HasColumnName("id");
+
+        builder.Property(x => x.WorkOrderId)
+            .HasColumnName("work_order_id");
+
+        builder.Property(x => x.ActivityId)
+            .HasColumnName("activity_id");
+
+        builder.Property(x => x.TechnicianId)
+            .HasColumnName("technician_id");
+
+        builder.Property(x => x.Status)
+            .HasColumnName("status")
+            .HasConversion<short>();
+
+        builder.Property(x => x.StartedAt)
+            .HasColumnName("started_at");
+
+        builder.Property(x => x.CompletedAt)
+            .HasColumnName("completed_at");
+
+        builder.HasMany(x => x.Answers)
+            .WithOne()
+            .HasForeignKey(x => x.ActivityExecutionId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.Navigation(x => x.Answers)
+            .HasField("_answers")
+            .UsePropertyAccessMode(PropertyAccessMode.Field);
+    }
+}
+```
+
+### **ActivityAnswerConfiguration.cs**
+
+```
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+public sealed class ActivityAnswerConfiguration
+    : IEntityTypeConfiguration<ActivityAnswer>
+{
+    public void Configure(
+        EntityTypeBuilder<ActivityAnswer> builder)
+    {
+        builder.ToTable("activity_answers", table =>
+        {
+            table.HasCheckConstraint(
+                "ck_answer_single_value",
+                """
+                (numeric_value IS NOT NULL)::INTEGER
+                + (text_value IS NOT NULL)::INTEGER
+                + (boolean_value IS NOT NULL)::INTEGER
+                + (inspection_status IS NOT NULL)::INTEGER = 1
+                """);
+        });
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.Id)
+            .HasColumnName("id");
+
+        builder.Property(x => x.ActivityExecutionId)
+            .HasColumnName("activity_execution_id");
+
+        builder.Property(x => x.ActivityFieldId)
+            .HasColumnName("activity_field_id");
+
+        builder.Property(x => x.Moment)
+            .HasColumnName("moment")
+            .HasConversion<short>();
+
+        builder.Property(x => x.NumericValue)
+            .HasColumnName("numeric_value")
+            .HasPrecision(12, 3);
+
+        builder.Property(x => x.TextValue)
+            .HasColumnName("text_value")
+            .HasMaxLength(2000);
+
+        builder.Property(x => x.BooleanValue)
+            .HasColumnName("boolean_value");
+
+        builder.Property(x => x.InspectionStatus)
+            .HasColumnName("inspection_status")
+            .HasConversion<short?>();
+
+        builder.Property(x => x.FieldNameSnapshot)
+            .HasColumnName("field_name_snapshot")
+            .HasMaxLength(150)
+            .IsRequired();
+
+        builder.Property(x => x.UnitSnapshot)
+            .HasColumnName("unit_snapshot")
+            .HasMaxLength(30);
+
+        builder.Property(x => x.NominalValueSnapshot)
+            .HasColumnName("nominal_value_snapshot")
+            .HasPrecision(12, 3);
+
+        builder.Property(x => x.MinimumValueSnapshot)
+            .HasColumnName("minimum_value_snapshot")
+            .HasPrecision(12, 3);
+
+        builder.Property(x => x.MaximumValueSnapshot)
+            .HasColumnName("maximum_value_snapshot")
+            .HasPrecision(12, 3);
+
+        builder.HasIndex(x => new
+        {
+            x.ActivityExecutionId,
+            x.ActivityFieldId,
+            x.Moment
+        }).IsUnique();
+
+        builder.HasOne<ActivityField>()
+            .WithMany()
+            .HasForeignKey(x => x.ActivityFieldId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+```
+
+**Importante:** en `ActivityAnswerConfiguration` utilizamos `DeleteBehavior.Restrict` para los campos. No queremos que eliminar una definición de campo pueda destruir información histórica. Mi recomendación es que las actividades y sus campos se desactiven, no que se eliminen físicamente cuando ya tengan ejecuciones.
+
+Finalmente, registramos las configuraciones en tu `AcSoftDbContext`:
+
+```
+protected override void OnModelCreating(
+    ModelBuilder modelBuilder)
+{
+    base.OnModelCreating(modelBuilder);
+
+    modelBuilder.ApplyConfigurationsFromAssembly(
+        typeof(AcSoftDbContext).Assembly);
+}
+```
+
+# **12. Integración con el DbContext**
+
+En tu `AcSoftDbContext` también debemos tener los DbSet:
+
+```
+public DbSet<Activity> Activities => Set<Activity>();
+
+public DbSet<ActivityField> ActivityFields =>
+    Set<ActivityField>();
+
+public DbSet<ActivityExecution> ActivityExecutions =>
+    Set<ActivityExecution>();
+
+public DbSet<ActivityAnswer> ActivityAnswers =>
+    Set<ActivityAnswer>();
+```
+
+Para que el modelo quede completo, agrega las relaciones de `ActivityExecution` con las entidades que ya existen en tu dominio:
+
+```
+builder.HasOne<WorkOrder>()
+    .WithMany()
+    .HasForeignKey(x => x.WorkOrderId)
+    .OnDelete(DeleteBehavior.Restrict);
+
+builder.HasOne<Activity>()
+    .WithMany()
+    .HasForeignKey(x => x.ActivityId)
+    .OnDelete(DeleteBehavior.Restrict);
+
+// Si tu entidad se llama Technician:
+builder.HasOne<Technician>()
+    .WithMany()
+    .HasForeignKey(x => x.TechnicianId)
+    .OnDelete(DeleteBehavior.Restrict);
+```
+
+Estas relaciones van dentro de `ActivityExecutionConfiguration`. Así EF Core podrá generar las claves foráneas correspondientes mediante migraciones.
+
+También hay una pequeña protección adicional que debemos incorporar en `ActivityExecution.AddAnswer()`: comprobar que la respuesta realmente pertenece a la ejecución que la está recibiendo.
+
+```
+if (answer.ActivityExecutionId != Id)
+    throw new InvalidOperationException(
+        "La respuesta pertenece a otra ejecución.");
+```
+
+Colócala antes de agregar la respuesta a `_answers`.
+
+En `ActivityAnswerConfiguration`, para el enum nullable `InspectionStatus`, puedes utilizar:
+
+```
+.HasConversion<short>();
+```
+
+EF Core conserva los valores nulos sin ejecutar el conversor.
+
+# **13. Decisiones arquitectónicas importantes para ACSoft**
+
+Hay tres decisiones que quiero destacar antes de continuar.
+
+**1. Actividad reutilizable**
+
+Como elegimos utilizar planes de mantenimiento reutilizables, mi recomendación es que `Activity` sea un catálogo independiente.
+
+Por ejemplo:
+
+**Catálogo de actividades**
+
+- Medir corriente del compresor.
+- Revisar conexiones eléctricas.
+- Limpiar serpentín.
+- Verificar presión de refrigerante.
+
+**Planes de mantenimiento**
+
+- Plan preventivo mensual.
+- Plan preventivo trimestral.
+- Plan preventivo semestral.
+
+Un mismo catálogo de actividades puede utilizarse en diferentes planes mediante una relación MaintenancePlanActivity.
+
+Esto evita duplicar actividades cuando varios planes necesitan realizar la misma tarea.
+
+La relación adicional la implementaremos en el siguiente paso, incluyendo su orden de ejecución y configuración dentro del plan.
+
+**2. No duplicar WorkOrderActivity**
+
+En tu proyecto anterior ya habíamos trabajado con `WorkOrderActivity`.
+
+Mi recomendación es que no mantengas dos entidades que representen lo mismo.
+
+Podemos evolucionar `WorkOrderActivity` hacia `ActivityExecution`, conservando sus reglas de negocio y sus relaciones con las órdenes de trabajo.
+
+**3. Historial de mediciones**
+
+No debemos perder los valores históricos cuando cambien los parámetros técnicos.
+
+Por eso considero importante conservar los snapshots de los campos en `ActivityAnswer`.
+
+También debemos distinguir entre un valor fuera de los límites configurados y un diagnóstico técnico: una medición fuera de rango no necesariamente significa que el equipo esté averiado.
+
+# **14. Ejemplo del resultado esperado**
+
+Imagina que un técnico ejecuta la actividad de medición de corriente.
+
+**OT-20261120001**
+
+Completada
+
+Actividad: Medir corriente del compresor
+
+| Parámetro   | Referencia  | Resultado |
+| ----------- | ----------- | --------- |
+| RLA         | 12.5 A      | 12.5 A    |
+| Corriente   | 12.5 A máx. | 10.8 A    |
+| Temperatura | 8 °C        | 7.5 °C    |
+
+**Información histórica**
+
+- Técnico que realizó la actividad.
+- Fecha y hora de inicio.
+- Fecha y hora de finalización.
+- Valores de referencia utilizados.
+- Resultados obtenidos.
+
+# **15. Ejercicios para comprobar lo aprendido**
+
+Antes de pasar al siguiente paso, quiero que comprendas las decisiones de diseño.
+
+**Evaluación de aprendizaje**
+
+0/4 respondidas
+
+**1. ¿Dónde debemos almacenar la corriente real que midió el técnico?**
+
+ActivityField
+
+ActivityAnswer
+
+Activity
+
+**2. ¿Por qué utilizamos snapshots?**
+
+Para acelerar las consultas
+
+Para conservar las referencias históricas originales
+
+Para evitar utilizar PostgreSQL
+
+**3. ¿Qué entidad representa una actividad realizada en una orden de trabajo?**
+
+Activity
+
+ActivityField
+
+ActivityExecution
+
+**4. ¿Quién debe consultar el repositorio para obtener los campos obligatorios antes de completar una ejecución?**
+
+La entidad ActivityExecution
+
+El handler de Application
+
+La entidad ActivityAnswer
+
+Comprobar respuestas
+
+## **¿Cuál sería nuestro siguiente paso?**
+
+Te recomiendo continuar con algo muy importante para ACSoft:
+
+**Diseñar la relación&#x20;**`MaintenancePlanActivity`**&#x20;e integrar las cuatro entidades con el flujo completo de creación de órdenes de trabajo.**
+
+Así conseguiremos este proceso:
+
+1. Crear un plan de mantenimiento reutilizable.
+2. Agregar actividades al plan.
+3. Crear una orden de trabajo a partir del plan.
+4. Generar las ejecuciones de las actividades.
+5. Asignar un técnico.
+6. Registrar respuestas y mediciones.
+7. Completar las actividades y conservar el historial.
+
+De esta manera construiremos el flujo real de ACSoft sin duplicar reglas de negocio entre el backend .NET y tu aplicación Kotlin.

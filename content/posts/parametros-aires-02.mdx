@@ -1,0 +1,373 @@
+---
+title: "Explicacion de los parametros RLA y FLA"
+date: "2026-11-20"
+description: "Analisis de los paarametros que de"
+slug: "parametros-aires-02"
+category: "DDD"
+tags: ["DDD", "csharp", "backend"]
+published: true
+featured: true
+---
+
+> que significa el termino RLA , FLA en actividades de aires acondicionado
+
+En el mantenimiento de sistemas de aire acondicionado, los términos **RLA** y **FLA** hacen referencia a valores de corriente eléctrica (amperios) que permiten evaluar el funcionamiento del compresor y de los motores del equipo.
+
+Son datos importantes para las actividades de mantenimiento preventivo y correctivo de ACSoft.
+
+## **1. ¿Qué significa RLA?**
+
+RLA
+
+**Rated Load Amps** (amperios de carga nominal).
+
+Es la corriente de referencia que utiliza el fabricante para indicar la corriente nominal de operación de un compresor bajo condiciones de funcionamiento especificadas.
+
+**Ejemplo:**
+
+En la placa de un compresor encuentras:
+
+[imagen RLA](/img/parametro-RLA.jpg)  
+
+<Image
+  src="/img/parametro-RLA.jpg"
+  alt="Imagen de RLA"
+  width="300px"
+/>
+
+[howtolookatahouse.com](https://www.howtolookatahouse.com/Blog/Entries/2018/7/why-do-the-lights-dim-when-the-air-conditioner-starts-up.html?utm_source=chatgpt.com)
+
+| Parámetro | Valor |
+| --------- | ----- |
+| RLA       | 18 A  |
+| LRA       | 95 A  |
+| Voltaje   | 220 V |
+
+Esto significa que el compresor tiene una corriente nominal de referencia de 18 amperios.
+
+Si durante el mantenimiento mides 17 A, puedes comparar ese valor con el RLA, pero debes considerar las condiciones de operación, la carga térmica y las especificaciones del fabricante.
+
+## **2. ¿Qué significa FLA?**
+
+
+
+FLA
+
+**Full Load Amps** (amperios a plena carga).
+
+
+
+Es la corriente que consume un motor cuando trabaja a plena carga bajo las condiciones nominales especificadas.
+
+Se utiliza principalmente para motores eléctricos, por ejemplo:
+
+- Motor del ventilador del evaporador.
+- Motor del ventilador del condensador.
+- Motores de bombas.
+- Otros motores auxiliares.
+
+
+[imagen FLA](/img/parametro-FLA.jpg)  
+
+<Image
+  src="/img/parametro-FLA.jpg"
+  alt="Imagen de FLA"
+  width="500px"
+/>
+
+[thepoultrysite.com](https://www.thepoultrysite.com/articles/motor-nameplate-is-key-to-selecting-replacements?utm_source=chatgpt.com)
+
+**Ejemplo:**
+
+| Parámetro | Valor       |
+| --------- | ----------- |
+| FLA       | 3.5 A       |
+| Voltaje   | 220 V       |
+| Potencia  | Según placa |
+
+Si mides 4.2 A, el motor está consumiendo más corriente que su FLA. Es una condición que merece investigación, aunque no significa automáticamente que exista una avería.
+
+## **3. Diferencia entre RLA y FLA**
+
+| Característica      | RLA                             | FLA                     |
+| ------------------- | ------------------------------- | ----------------------- |
+| Significado         | Rated Load Amps                 | Full Load Amps          |
+| Aplicación habitual | Compresores                     | Motores eléctricos      |
+| Referencia          | Corriente nominal de referencia | Corriente a plena carga |
+| Unidad              | Amperios (A)                    | Amperios (A)            |
+
+**Importante:** RLA y FLA no son valores intercambiables. Tampoco debes asumir que RLA es siempre la corriente máxima permitida del compresor.
+
+## **4. ¿Cómo aplicarlo en ACSoft?**
+
+Te recomiendo registrar estos valores para cada equipo y comparar las mediciones antes y después del mantenimiento.
+
+Por ejemplo:
+
+**Registro de mediciones eléctricas**
+
+EQUIPO: AIRE ACONDICIONADO
+
+| Parámetro                  | Referencia | Medición |
+| -------------------------- | ---------- | -------- |
+| RLA compresor              | 18 A       | 17 A     |
+| FLA ventilador condensador | 3.5 A      | 3.2 A    |
+| FLA ventilador evaporador  | 1.8 A      | 1.7 A    |
+
+**Resultado**
+
+Corriente del compresor
+
+Dentro de referencia
+
+Ventilador condensador
+
+Dentro de referencia
+
+Ventilador evaporador
+
+Dentro de referencia
+
+Ejemplo ilustrativo. La evaluación real debe considerar las condiciones de operación y los datos del fabricante.
+
+### **5. Mi recomendación para el modelo de datos de ACSoft**
+
+No guardaría RLA y FLA como si fueran mediciones realizadas por el técnico.
+
+Los separaría en dos conceptos:
+
+- **Parámetros de referencia:** RLA, FLA, voltaje nominal, frecuencia, etc.
+- **Mediciones de mantenimiento:** amperaje real, voltaje medido, fecha, técnico y momento de medición (antes/después).
+
+Así podrás comparar automáticamente los valores de referencia con los valores reales.
+
+**Una pregunta importante:** ¿Quieres que también te explique qué significa LRA (Locked Rotor Amps), MCA (Minimum Circuit Ampacity) y MOCP (Maximum Overcurrent Protection)? Son otros datos que aparecen frecuentemente en las placas de los equipos de aire acondicionado.
+
+> si
+
+Perfecto. Estos tres términos son muy importantes para comprender las placas técnicas de los equipos de aire acondicionado y diseñar correctamente el módulo de parámetros eléctricos de **ACSoft**.
+
+Vamos a estudiarlos con ejemplos prácticos.
+
+## **1. LRA — Locked Rotor Amps**
+
+
+LRA
+
+**Locked Rotor Amps** = amperios con rotor bloqueado.
+
+
+Es la corriente que puede demandar un compresor o motor cuando recibe alimentación eléctrica, pero su rotor no consigue girar.
+
+Por ejemplo, cuando el compresor intenta arrancar.
+
+[imagen LRA](/img/parametro-LRA.jpg)  
+
+<Image
+  src="/img/parametro-LRA.jpg"
+  alt="Imagen de LRA"
+  width="300px"
+/>
+
+[secop.com](https://www.secop.com/products/hermetic-compressors-basics?utm_source=chatgpt.com)
+
+Supongamos que la placa del compresor indica:
+
+| Parámetro | Valor |
+| --------- | ----- |
+| RLA       | 18 A  |
+| LRA       | 95 A  |
+
+Esto significa:
+
+- RLA: corriente nominal de referencia de 18 A.
+- LRA: corriente de rotor bloqueado de 95 A.
+
+**¿Para qué sirve en mantenimiento?**
+
+Permite evaluar problemas relacionados con el arranque del compresor.
+
+Por ejemplo:
+
+- Capacitor de arranque defectuoso, cuando aplica.
+- Problemas eléctricos de alimentación.
+- Compresor bloqueado mecánicamente.
+- Problemas en el circuito de arranque.
+
+Importante: no debes intentar provocar un bloqueo para medir LRA. Es un dato de placa y la corriente real de arranque depende del sistema y de las condiciones de medición.
+
+## **2. MCA — Minimum Circuit Ampacity**
+
+MCA
+
+**Minimum Circuit Ampacity** = ampacidad mínima del circuito.
+
+
+Indica la capacidad mínima de conducción de corriente que debe tener el circuito eléctrico que alimenta el equipo, teniendo en cuenta los criterios de dimensionamiento aplicables.
+
+[imagen MCA](/img/parametro-MCA.jpg)  
+
+<Image
+  src="/img/parametro-MCA.jpg"
+  alt="Imagen de MCA"
+  width="600px"
+/>
+
+[storage.googleapis.com](https://storage.googleapis.com/dqesxtntbibrle/what-is-power-rating-of-air-conditioner.html?utm_source=chatgpt.com)
+
+Ejemplo:
+
+| Parámetro | Valor |
+| --------- | ----- |
+| MCA       | 28 A  |
+| MOCP      | 40 A  |
+
+Esto significa que el circuito debe dimensionarse con conductores cuya ampacidad admisible cumpla como mínimo los 28 A, considerando las condiciones de instalación y las normas aplicables.
+
+**¿Para qué sirve en mantenimiento?**
+
+Permite verificar si la instalación eléctrica tiene conductores apropiados para alimentar el aire acondicionado.
+
+No significa que el equipo consuma permanentemente 28 amperios.
+
+## **3. MOCP — Maximum Overcurrent Protection**
+
+
+
+MOCP
+
+**Maximum Overcurrent Protection** = protección máxima contra sobrecorriente.
+
+
+
+Indica el valor máximo permitido para el dispositivo de protección contra sobrecorriente del equipo, según las especificaciones del fabricante.
+
+Por ejemplo:
+
+| Parámetro | Valor |
+| --------- | ----- |
+| MCA       | 28 A  |
+| MOCP      | 40 A  |
+
+Esto significa que el dispositivo de protección no debe superar los 40 A, respetando las instrucciones del fabricante y la normativa aplicable.
+
+Puede tratarse de un interruptor automático (breaker) o de un fusible, según la placa.
+
+**Importante:** MOCP no significa que debas instalar obligatoriamente un breaker de 40 A. Es el límite máximo, y la selección final debe considerar el tipo de protección y las condiciones de la instalación.
+
+## **4. Comparación de los cinco parámetros**
+
+Ahora podemos ver cómo se relacionan todos:
+
+| Parámetro | Qué representa                                | ¿Qué permite evaluar?                   |
+| --------- | --------------------------------------------- | --------------------------------------- |
+| RLA       | Corriente nominal de referencia del compresor | Funcionamiento del compresor            |
+| FLA       | Corriente a plena carga del motor             | Funcionamiento del motor                |
+| LRA       | Corriente con rotor bloqueado                 | Condiciones de arranque                 |
+| MCA       | Ampacidad mínima del circuito                 | Dimensionamiento de conductores         |
+| MOCP      | Protección máxima contra sobrecorriente       | Selección del dispositivo de protección |
+
+## **5. Cómo organizar estos parámetros en ACSoft**
+
+Aquí viene la parte importante para nuestro diseño con DDD y .NET 10.
+
+Mi recomendación es clasificar los parámetros en tres grupos:
+
+**A. Parámetros eléctricos del equipo**
+
+Datos de referencia
+
+- RLA
+- FLA
+- LRA
+- MCA
+- MOCP
+- Voltaje nominal
+- Frecuencia (Hz)
+
+**B. Mediciones eléctricas realizadas**
+
+Datos capturados por el técnico
+
+- Corriente medida (A).
+- Voltaje medido (V).
+- Corriente de arranque (A).
+- Corriente por fase (RS, RT, ST, cuando corresponda).
+- Momento de medición: antes o después del mantenimiento.
+
+**C. Evaluaciones técnicas**
+
+Resultados de mantenimiento
+
+- Corriente dentro de referencia.
+- Corriente superior a referencia.
+- Voltaje fuera de rango.
+- Desequilibrio entre fases.
+- Posible anomalía eléctrica.
+
+## **6. Ejemplo de cómo se vería en ACSoft**
+
+[Amperaje de aire acondicionado de 12.000 BTU](/img/medir-amperaje.jpg)  
+
+<Image
+  src="/img/medir-amperaje.jpg"
+  alt="Imagen de Amperaje de 12.000 btu"
+  width="800px"
+/>
+
+
+[refrimaq.org](https://refrimaq.org/quantos-amperes-tem-um-ar-condicionado-de-12000-btus?utm_source=chatgpt.com)
+
+Imaginemos que un técnico realiza mantenimiento preventivo a un aire acondicionado.
+
+La información del equipo es:
+
+**Datos de placa**
+
+| Parámetro       | Valor |
+| --------------- | ----- |
+| RLA             | 18 A  |
+| LRA             | 95 A  |
+| MCA             | 28 A  |
+| MOCP            | 40 A  |
+| Voltaje nominal | 220 V |
+
+**Mediciones realizadas**
+
+| Medición             | Antes | Después |
+| -------------------- | ----- | ------- |
+| Corriente compresor  | 20 A  | 17 A    |
+| Voltaje alimentación | 210 V | 220 V   |
+| Corriente ventilador | 4 A   | 3.2 A   |
+
+El sistema puede comparar los valores medidos con sus referencias y generar alertas cuando corresponda.
+
+No obstante, una corriente superior al RLA no demuestra por sí sola una falla: hay que considerar las condiciones de operación, las tolerancias y las especificaciones del fabricante.
+
+## **7. Una decisión importante para nuestro modelo DDD**
+
+Para ACSoft, yo utilizaría esta separación:
+
+- `ParametroEquipo`: define los parámetros de referencia asociados al equipo.
+- `CampoActividad`: define qué información debe capturar el técnico durante una actividad.
+- `EjecucionActividad`: representa la realización de una actividad de mantenimiento.
+- `RespuestaActividad`: almacena los valores que registra el técnico.
+
+Por ejemplo, una actividad llamada **Verificar consumo eléctrico del compresor** podría solicitar:
+
+1. Corriente nominal (RLA), obtenida de los datos del equipo.
+2. Corriente medida antes del mantenimiento.
+3. Corriente medida después del mantenimiento.
+4. Observaciones del técnico.
+5. Evidencia fotográfica opcional.
+
+Así evitamos duplicar los parámetros de referencia en cada mantenimiento.
+
+**Mi recomendación:** los valores RLA, FLA, LRA, MCA y MOCP deben pertenecer a la configuración técnica del equipo, mientras que las mediciones realizadas deben quedar asociadas a la ejecución de la actividad. Esto también permite conservar el historial de mantenimiento.
+
+En el siguiente paso podemos incorporar esta clasificación al diseño de las entidades `Actividad`, `CampoActividad`, `EjecucionActividad` y `RespuestaActividad` de ACSoft.
+
+
+Si quieres, el siguiente paso sería diseñar **las entidades `Actividad`, `CampoActividad`, `EjecucionActividad` y `RespuestaActividad` completas en C# 14/.NET 10 siguiendo DDD + Clean Architecture + EF Core 10**, incluyendo cómo quedarían las tablas SQL.
+
+parametros parte 3  [diseñar entidades de mantenimiento](/blog/parametros-aires-03)
