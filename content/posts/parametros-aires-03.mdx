@@ -158,7 +158,7 @@ Ejemplos:
 
 Necesitamos diferenciar mediciones antes y después del mantenimiento.
 
-```
+```csharp
 namespace AcSoft.Domain.Enums;
 
 public enum MeasurementMoment
@@ -173,7 +173,7 @@ Por ejemplo, la presión de succión puede registrarse antes y después de reali
 
 ### **ActivityExecutionStatus.cs**
 
-```
+```csharp
 namespace AcSoft.Domain.Enums;
 
 public enum ActivityExecutionStatus
@@ -186,7 +186,7 @@ public enum ActivityExecutionStatus
 
 ### **AnswerStatus.cs**
 
-```
+```csharp
 namespace AcSoft.Domain.Enums;
 
 public enum AnswerStatus
@@ -213,7 +213,7 @@ Su responsabilidad es administrar los campos que componen la actividad.
 
 **Activity.cs**
 
-```
+```csharp
 namespace AcSoft.Domain.Entities;
 
 public sealed class Activity
@@ -356,7 +356,7 @@ Estos valores pertenecen a la definición del campo, no al resultado de la medic
 
 **ActivityField.cs**
 
-```
+```csharp
 namespace AcSoft.Domain.Entities;
 
 public sealed class ActivityField
@@ -509,7 +509,7 @@ La entidad debe controlar:
 
 **ActivityExecution.cs**
 
-```
+```csharp
 namespace AcSoft.Domain.Entities;
 
 public sealed class ActivityExecution
@@ -637,7 +637,7 @@ public sealed class ActivityExecution
 
 Observa este método:
 
-```
+```csharp
 public void Complete(
     IReadOnlyCollection<ActivityField> fields,
     DateTimeOffset completedAt)
@@ -668,7 +668,7 @@ Para evitar una tabla diferente por cada tipo de respuesta, utilizaremos columna
 
 **ActivityAnswer.cs**
 
-```
+```csharp
 namespace AcSoft.Domain.Entities;
 
 public sealed class ActivityAnswer
@@ -931,7 +931,7 @@ Utilizaremos:
 
 Almacena las definiciones de las actividades.
 
-```
+```sql
 CREATE TABLE activities
 (
     id UUID PRIMARY KEY,
@@ -953,7 +953,7 @@ CREATE TABLE activities
 
 Almacena los campos que componen cada actividad.
 
-```
+```sql
 CREATE TABLE activity_fields
 (
     id UUID PRIMARY KEY,
@@ -1021,7 +1021,7 @@ CREATE TABLE activity_fields
 
 Almacena las ejecuciones realizadas en las órdenes de trabajo.
 
-```
+```sql
 CREATE TABLE activity_executions
 (
     id UUID PRIMARY KEY,
@@ -1070,7 +1070,7 @@ He supuesto que tus tablas existentes se llaman `work_orders` y `technicians`, y
 
 Esta tabla almacena los resultados de las ejecuciones.
 
-```
+```sql
 CREATE TABLE activity_answers
 (
     id UUID PRIMARY KEY,
@@ -1148,7 +1148,7 @@ Las configuraciones pertenecen a Infrastructure.
 
 ### **ActivityConfiguration.cs**
 
-```
+```csharp
 using AcSoft.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -1201,7 +1201,7 @@ public sealed class ActivityConfiguration
 
 ### **ActivityFieldConfiguration.cs**
 
-```
+```csharp
 using AcSoft.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -1282,7 +1282,7 @@ public sealed class ActivityFieldConfiguration
 
 ### **ActivityExecutionConfiguration.cs**
 
-```
+```csharp
 using AcSoft.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
