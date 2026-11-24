@@ -2,9 +2,9 @@
 title: "Modelando DDD Parte 9 Persistir Orden de trabajo y sus actividades"
 date: "2026-10-29"
 description: "Persistir Orden de trabajo y sus actividades"
-slug: "modelando-DDD-9"
+slug: "modelando-DDD-09"
 category: "clean Arquitecture"
-tags: ["netcore", "csharp", "backend"]
+tags: ["DDD","netcore", "csharp", "backend"]
 published: true
 featured: true
 ---
@@ -276,3 +276,5 @@ ActividadRealizada
 Mi recomendación: antes de crear la migración, resolvamos esa instantánea de parámetros. Es importante para que el agregado se comporte igual antes y después de persistirlo.
 
 El siguiente cambio sería crear una entidad pequeña, por ejemplo `ParametroActividadSnapshot`, con `ParametroRespuestaId` y `Obligatorio`, y reemplazar esos dos `HashSet<Guid>` por una colección persistible. Esto también nos permitirá validar que una respuesta corresponde a un parámetro que realmente estaba configurado para esa actividad.
+
+paso a paso con [modelando DDD parte 10  implementar la instantánea de parámetros de ActividadRealizada](/blog/modelando-DDD-10)

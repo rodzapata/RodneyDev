@@ -1,0 +1,559 @@
+---
+title: "Modelando DDD Parte 10 implementar la instantánea de parámetros de ActividadRealizada"
+date: "2026-11-24"
+description: "Persistir Orden de trabajo y sus actividades"
+slug: "modelando-DDD-10"
+category: "clean Arquitecture"
+tags: ["DDD","netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+Vamos a implementar la **instantánea de parámetros de&#x20;**`ActividadRealizada` antes de crear las migraciones de EF Core.
+
+La idea es importante para ACSoft: cuando agregas una actividad a una orden de trabajo, debes conservar la configuración que tenía el catálogo en ese momento. Si meses después modificas el catálogo, no deben cambiar las reglas de una orden histórica.
+
+Por ejemplo, si una actividad de medición eléctrica tenía los parámetros RS, RT y ST obligatorios, la orden debe conservar esa configuración aunque posteriormente el administrador agregue o elimine parámetros del catálogo.
+
+**1. Crear&#x20;**`ParametroActividadSnapshot`
+
+Esta entidad representa la configuración de un parámetro en el momento en que se agregó la actividad a la orden.
+
+Ubicación:
+
+```
+AcSoft.Domain
+└── Entities
+    └── ParametroActividadSnapshot.cs
+```
+
+**1. Crear&#x20;**`ParametroActividadSnapshot`
+
+En lugar de guardar únicamente el identificador y si es obligatorio, guardaremos también los datos necesarios para interpretar la respuesta histórica:
+
+- Identificador del parámetro original.
+- Nombre y unidad.
+- Tipo de respuesta.
+- Si es obligatorio.
+- Opciones permitidas, cuando sea una respuesta de tipo `Opcion`.
+
+Crea `ParametroActividadSnapshot.cs`:
+
+```csharp
+namespace AcSoft.Domain.Entities;
+
+public sealed class ParametroActividadSnapshot
+{
+    public Guid Id { get; private set; }
+
+    public Guid ParametroRespuestaId { get; private set; }
+
+    public string Nombre { get; private set; } = null!;
+
+    public string? Unidad { get; private set; }
+
+    public TipoRespuesta TipoRespuesta { get; private set; }
+
+    public bool Obligatorio { get; private set; }
+
+    public int Orden { get; private set; }
+
+    private readonly List<OpcionActividadSnapshot> _opciones = [];
+
+    public IReadOnlyCollection<OpcionActividadSnapshot> Opciones =>
+        _opciones.AsReadOnly();
+
+    private ParametroActividadSnapshot() { }
+
+    public ParametroActividadSnapshot(ParametroRespuesta parametro)
+    {
+        ArgumentNullException.ThrowIfNull(parametro);
+
+        Id = Guid.NewGuid();
+        ParametroRespuestaId = parametro.Id;
+        Nombre = parametro.Nombre;
+        Unidad = parametro.Unidad;
+        TipoRespuesta = parametro.TipoRespuesta;
+        Obligatorio = parametro.Obligatorio;
+        Orden = parametro.Orden;
+
+        // Copiamos las opciones activas del catálogo.
+        foreach (var opcion in parametro.OpcionesRespuesta
+                     .Where(x => x.Activa))
+        {
+            _opciones.Add(new OpcionActividadSnapshot(opcion));
+        }
+    }
+}
+```
+
+Aquí asumí que tu colección pública se llama `OpcionesRespuesta`. Si en tu clase `ParametroRespuesta` tiene otro nombre, utiliza el que ya tienes.
+
+También necesitamos la entidad que conserva las opciones.
+
+## **2. Crear&#x20;**`OpcionActividadSnapshot`
+
+Ubicación: `Entities/OpcionActividadSnapshot.cs`.
+
+```
+namespace AcSoft.Domain.Entities;
+
+public sealed class OpcionActividadSnapshot
+{
+    public Guid Id { get; private set; }
+
+    public string Codigo { get; private set; } = null!;
+
+    public string Nombre { get; private set; } = null!;
+
+    public int Orden { get; private set; }
+
+    private OpcionActividadSnapshot() { }
+
+    public OpcionActividadSnapshot(OpcionRespuesta opcion)
+    {
+        ArgumentNullException.ThrowIfNull(opcion);
+
+        Id = Guid.NewGuid();
+        Codigo = opcion.Codigo;
+        Nombre = opcion.Nombre;
+        Orden = opcion.Orden;
+    }
+}
+```
+
+Así, si en el catálogo una opción cambia de nombre o se desactiva, la actividad histórica conserva la opción original.
+
+## **3. Modificar&#x20;**`ActividadRealizada`
+
+Ahora reemplazaremos los dos `HashSet<Guid>`:
+
+```
+private readonly HashSet<Guid> _parametrosPermitidos = [];
+private readonly HashSet<Guid> _parametrosObligatorios = [];
+```
+
+Por una colección persistible:
+
+```
+private readonly List<ParametroActividadSnapshot> _parametros = [];
+
+public IReadOnlyCollection<ParametroActividadSnapshot> Parametros =>
+    _parametros.AsReadOnly();
+```
+
+La clase quedaría así en su estructura principal:
+
+```
+using AcSoft.Domain.Enums;
+using AcSoft.Domain.Exceptions;
+
+namespace AcSoft.Domain.Entities;
+
+public sealed class ActividadRealizada
+{
+    public Guid Id { get; private set; }
+
+    public Guid ActividadCatalogoId { get; private set; }
+
+    private readonly List<ParametroActividadSnapshot> _parametros = [];
+
+    private readonly List<Medicion> _mediciones = [];
+
+    public IReadOnlyCollection<ParametroActividadSnapshot> Parametros =>
+        _parametros.AsReadOnly();
+
+    public IReadOnlyCollection<Medicion> Mediciones =>
+        _mediciones.AsReadOnly();
+
+    private ActividadRealizada() { }
+
+    public ActividadRealizada(ActividadCatalogo catalogo)
+    {
+        ArgumentNullException.ThrowIfNull(catalogo);
+
+        catalogo.ValidarConfiguracion();
+
+        Id = Guid.NewGuid();
+        ActividadCatalogoId = catalogo.Id;
+
+        foreach (var parametro in catalogo.ParametrosRespuesta)
+        {
+            _parametros.Add(
+                new ParametroActividadSnapshot(parametro));
+        }
+
+        foreach (var etapa in catalogo.Etapas)
+        {
+            _mediciones.Add(new Medicion(etapa.Etapa));
+        }
+    }
+
+    public void RegistrarRespuesta(
+        EtapaMantenimiento etapa,
+        Guid parametroRespuestaId,
+        string valor)
+    {
+        var parametro = _parametros.SingleOrDefault(
+            x => x.ParametroRespuestaId == parametroRespuestaId);
+
+        if (parametro is null)
+            throw new DomainException(
+                "El parámetro no pertenece a esta actividad.");
+
+        var medicion = _mediciones.SingleOrDefault(
+            x => x.Etapa == etapa);
+
+        if (medicion is null)
+            throw new DomainException(
+                $"La etapa '{etapa}' no está configurada.");
+
+        // En el siguiente paso adaptaremos la validación
+        // de la respuesta para utilizar la instantánea.
+        medicion.RegistrarRespuesta(
+            parametroRespuestaId,
+            valor);
+    }
+
+    public bool EstaCompleta()
+    {
+        return _mediciones.All(medicion =>
+            _parametros
+                .Where(x => x.Obligatorio)
+                .All(parametro =>
+                    medicion.Valores.Any(
+                        valor => valor.ParametroRespuestaId ==
+                                 parametro.ParametroRespuestaId)));
+    }
+}
+```
+
+**Observa el cambio importante:** ahora `RegistrarRespuesta` recibe el identificador del parámetro, no la entidad `ParametroRespuesta` del catálogo. De esta manera, la actividad realizada no necesita consultar ni depender de la configuración actual del catálogo.
+
+## **4. Validar las respuestas utilizando la instantánea**
+
+Este paso evita que la validación dependa del catálogo actual.
+
+Agrega este método dentro de `ParametroActividadSnapshot`:
+
+```
+using System.Globalization;
+using AcSoft.Domain.Exceptions;
+
+public ValorRespuesta CrearValor(string valor)
+{
+    if (string.IsNullOrWhiteSpace(valor))
+        throw new DomainException("La respuesta no puede estar vacía.");
+
+    switch (TipoRespuesta)
+    {
+        case TipoRespuesta.Decimal:
+
+            if (!decimal.TryParse(
+                    valor,
+                    NumberStyles.Number,
+                    CultureInfo.InvariantCulture,
+                    out _))
+            {
+                throw new DomainException(
+                    $"El valor '{valor}' no es un decimal válido.");
+            }
+
+            break;
+
+        case TipoRespuesta.Entero:
+
+            if (!int.TryParse(
+                    valor,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out _))
+            {
+                throw new DomainException(
+                    $"El valor '{valor}' no es un entero válido.");
+            }
+
+            break;
+
+        case TipoRespuesta.Texto:
+            break;
+
+        case TipoRespuesta.Opcion:
+
+            if (!_opciones.Any(x =>
+                    x.Codigo.Equals(
+                        valor,
+                        StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new DomainException(
+                    $"La opción '{valor}' no está permitida.");
+            }
+
+            break;
+
+        default:
+            throw new DomainException(
+                "El tipo de respuesta no está soportado.");
+    }
+
+    return new ValorRespuesta(valor);
+}
+```
+
+Esto asume que `ValorRespuesta` es el record que definimos anteriormente:
+
+```
+public sealed record ValorRespuesta(string Valor);
+```
+
+Y que `TipoRespuesta` tiene los valores `Decimal`, `Entero`, `Texto` y `Opcion`.
+
+Ahora modifica el método de `ActividadRealizada`:
+
+```
+var respuesta = parametro.CrearValor(valor);
+
+medicion.RegistrarRespuesta(
+    parametroRespuestaId,
+    respuesta);
+```
+
+Y en `Medicion`, adapta el método para recibir el valor ya validado:
+
+```
+public void RegistrarRespuesta(
+    Guid parametroRespuestaId,
+    ValorRespuesta valor)
+{
+    ArgumentNullException.ThrowIfNull(valor);
+
+    if (parametroRespuestaId == Guid.Empty)
+        throw new DomainException("El parámetro es obligatorio.");
+
+    if (_valores.Any(x =>
+            x.ParametroRespuestaId == parametroRespuestaId))
+    {
+        throw new DomainException(
+            "Ya existe una respuesta para este parámetro en esta medición.");
+    }
+
+    _valores.Add(
+        new ValorRespuestaItem(parametroRespuestaId, valor));
+}
+```
+
+De esta forma, `ActividadRealizada` valida que el parámetro pertenece a su instantánea y que el valor corresponde al tipo y a las opciones que estaban configuradas.
+
+## **5. Configurar las instantáneas en EF Core**
+
+Crea `ParametroActividadSnapshotConfiguration.cs`:
+
+```
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class ParametroActividadSnapshotConfiguration
+    : IEntityTypeConfiguration<ParametroActividadSnapshot>
+{
+    public void Configure(
+        EntityTypeBuilder<ParametroActividadSnapshot> builder)
+    {
+        builder.ToTable("work_order_activity_parameters");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.ParametroRespuestaId)
+            .IsRequired();
+
+        builder.Property(x => x.Nombre)
+            .HasMaxLength(150)
+            .IsRequired();
+
+        builder.Property(x => x.Unidad)
+            .HasMaxLength(30);
+
+        builder.Property(x => x.TipoRespuesta)
+            .HasConversion<int>()
+            .IsRequired();
+
+        builder.Property(x => x.Obligatorio)
+            .IsRequired();
+
+        builder.Property(x => x.Orden)
+            .IsRequired();
+
+        builder.HasMany(x => x.Opciones)
+            .WithOne()
+            .HasForeignKey("ParametroActividadSnapshotId")
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.Navigation(x => x.Opciones)
+            .HasField("_opciones")
+            .UsePropertyAccessMode(PropertyAccessMode.Field);
+
+        builder.HasIndex(x => new
+        {
+            x.ParametroRespuestaId
+        });
+    }
+}
+```
+
+Crea `OpcionActividadSnapshotConfiguration.cs`:
+
+```
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace AcSoft.Infrastructure.Persistence.Configurations;
+
+public sealed class OpcionActividadSnapshotConfiguration
+    : IEntityTypeConfiguration<OpcionActividadSnapshot>
+{
+    public void Configure(
+        EntityTypeBuilder<OpcionActividadSnapshot> builder)
+    {
+        builder.ToTable("work_order_activity_parameter_options");
+
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.Codigo)
+            .HasMaxLength(50)
+            .IsRequired();
+
+        builder.Property(x => x.Nombre)
+            .HasMaxLength(100)
+            .IsRequired();
+
+        builder.Property(x => x.Orden)
+            .IsRequired();
+    }
+}
+```
+
+Finalmente, agrega la relación en `ActividadRealizadaConfiguration`:
+
+```
+builder.HasMany(x => x.Parametros)
+    .WithOne()
+    .HasForeignKey("ActividadRealizadaId")
+    .OnDelete(DeleteBehavior.Cascade);
+
+builder.Navigation(x => x.Parametros)
+    .HasField("_parametros")
+    .UsePropertyAccessMode(PropertyAccessMode.Field);
+```
+
+Esto permite que EF Core reconstruya las instantáneas al recuperar una orden desde PostgreSQL.
+
+## **6. Actualizar&#x20;**`ActividadRealizadaConfiguration`
+
+La configuración completa debe incluir las dos colecciones:
+
+```
+builder.HasMany(x => x.Mediciones)
+    .WithOne()
+    .HasForeignKey("ActividadRealizadaId")
+    .OnDelete(DeleteBehavior.Cascade);
+
+builder.Navigation(x => x.Mediciones)
+    .HasField("_mediciones")
+    .UsePropertyAccessMode(PropertyAccessMode.Field);
+
+builder.HasMany(x => x.Parametros)
+    .WithOne()
+    .HasForeignKey("ActividadRealizadaId")
+    .OnDelete(DeleteBehavior.Cascade);
+
+builder.Navigation(x => x.Parametros)
+    .HasField("_parametros")
+    .UsePropertyAccessMode(PropertyAccessMode.Field);
+```
+
+La estructura que persistiremos queda así:
+
+**work_orders**
+
+Raíz del agregado
+
+**work_order_activities**
+
+work_order_activity_parameters
+
+**work_order_activity_parameter_options**
+
+**work_order_measurements**
+
+**work_order_answer_items**
+
+## **7. Ejemplo práctico de funcionamiento**
+
+Supongamos que agregas la actividad de medición de amperaje a una orden.
+
+El catálogo tiene:
+
+| Parámetro | Tipo    | Unidad | Obligatorio |
+| --------- | ------- | ------ | ----------- |
+| RS        | Decimal | A      | Sí          |
+| RT        | Decimal | A      | Sí          |
+| ST        | Decimal | A      | Sí          |
+
+Al ejecutar:
+
+```
+workOrder.AgregarActividad(catalogo);
+```
+
+Se crean las instantáneas de los tres parámetros.
+
+Después puedes registrar las respuestas:
+
+```
+actividad.RegistrarRespuesta(
+    EtapaMantenimiento.Antes,
+    parametroRS.Id,
+    "12.5");
+
+actividad.RegistrarRespuesta(
+    EtapaMantenimiento.Antes,
+    parametroRT.Id,
+    "12.8");
+
+actividad.RegistrarRespuesta(
+    EtapaMantenimiento.Antes,
+    parametroST.Id,
+    "12.6");
+```
+
+Y repetir para la etapa `Despues`.
+
+Si posteriormente modificas el catálogo, las instantáneas de esa orden no cambian.
+
+## **8. Antes de crear la migración**
+
+Hay tres verificaciones importantes:
+
+1. `Medicion` debe tener la colección privada `_valores` y la propiedad pública `Valores`.
+2. `ParametroActividadSnapshot` debe importar el namespace donde declaraste `TipoRespuesta` y `DomainException`.
+3. `ActividadRealizada.EstaCompleta()` actualmente exige todos los parámetros obligatorios en cada etapa. Esto es correcto para nuestro ejemplo de amperaje Antes/Después, pero debemos revisarlo cuando tengamos actividades que solo requieran una etapa.
+
+También ten presente que los nombres de propiedades utilizados en las configuraciones deben coincidir exactamente con tus clases actuales.
+
+**No ejecutes todavía la migración.** Primero conviene compilar y comprobar que todos los mapeos coinciden con las entidades reales.
+
+## **Siguiente paso**
+
+Mi recomendación es que implementemos y probemos el ciclo completo de persistencia:
+
+1. Crear una orden.
+2. Agregar una actividad desde el catálogo.
+3. Guardar la orden en PostgreSQL.
+4. Cerrar el contexto de EF Core.
+5. Consultar nuevamente la orden.
+6. Registrar respuestas y comprobar que `EstaCompleta()` funciona.
+
+Así verificaremos que EF Core reconstruye correctamente todo el agregado, incluidas sus instantáneas, sin perder las reglas del dominio.

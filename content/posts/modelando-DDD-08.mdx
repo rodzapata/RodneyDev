@@ -2,9 +2,9 @@
 title: "Modelando DDD parte 8 Aggregate Root"
 date: "2026-10-15"
 description: "Estructura para implementar Aggregate Root"
-slug: "modelando-DDD-8"
+slug: "modelando-DDD-08"
 category: "clean Arquitecture"
-tags: ["netcore", "csharp", "backend"]
+tags: ["DDD","netcore", "csharp", "backend"]
 published: true
 featured: true
 ---
@@ -143,7 +143,7 @@ Importante: no todas las actividades tienen que usar `Antes` y `Después`. Una i
 
 En `AcSoft.Domain.Enums`, creamos `EstadoOrdenMantenimiento.cs`:
 
-```
+```csharp
 namespace AcSoft.Domain.Enums;
 
 public enum EstadoOrdenMantenimiento
@@ -165,7 +165,7 @@ Por eso, al crear la actividad realizada, guardaremos una copia de los identific
 
 Actualiza `ActividadRealizada.cs`:
 
-```
+```csharp
 using AcSoft.Domain.Enums;
 using AcSoft.Domain.Exceptions;
 
@@ -256,7 +256,7 @@ Como tu proyecto ya utiliza el nombre `WorkOrder`, mantengámoslo en lugar de in
 
 Creamos `WorkOrderStatus.cs`:
 
-```
+```csharp
 namespace AcSoft.Domain.Enums;
 
 public enum WorkOrderStatus
@@ -270,7 +270,7 @@ public enum WorkOrderStatus
 
 Ahora `WorkOrder.cs`:
 
-```
+```csharp
 using AcSoft.Domain.Enums;
 using AcSoft.Domain.Exceptions;
 
@@ -405,7 +405,7 @@ Imaginemos que el catálogo contiene la actividad de amperaje con tres parámetr
 
 Desde la capa de aplicación, el flujo sería conceptualmente así:
 
-```
+```csharp
 // El repositorio de catálogo obtiene la actividad configurada.
 var catalogo = await actividadCatalogoRepository
     .GetByIdAsync(actividadCatalogoId, cancellationToken);
@@ -423,7 +423,7 @@ workOrder.Iniciar();
 
 Luego el técnico registra las respuestas mediante la actividad realizada que pertenece a la orden:
 
-```
+```csharp
 var actividad = workOrder.Actividades.Single(
     a => a.ActividadCatalogoId == catalogo.Id);
 
@@ -457,4 +457,4 @@ Importante: este ejemplo muestra el comportamiento del dominio, no el flujo comp
 
 El siguiente paso recomendado es configurar estas entidades en EF Core 10, especialmente las colecciones privadas, las relaciones entre `WorkOrder`, `ActividadRealizada`, `Medicion` y `ValorRespuestaItem`, y la persistencia de los tipos de respuesta y las opciones del catálogo. Antes de hacerlo, conviene revisar que los archivos actuales de tu proyecto coincidan con estas versiones para evitar duplicar clases o introducir incompatibilidades.
 
-paso a paso con [modelando DDD parte 9](/blog/modelando-DDD-9)
+paso a paso con [modelando DDD parte 9](/blog/modelando-DDD-09)

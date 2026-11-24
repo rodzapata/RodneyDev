@@ -1333,7 +1333,7 @@ public sealed class ActivityExecutionConfiguration
 
 ### **ActivityAnswerConfiguration.cs**
 
-```
+```csharp
 using AcSoft.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -1426,7 +1426,7 @@ public sealed class ActivityAnswerConfiguration
 
 Finalmente, registramos las configuraciones en tu `AcSoftDbContext`:
 
-```
+```csharp
 protected override void OnModelCreating(
     ModelBuilder modelBuilder)
 {
@@ -1441,7 +1441,7 @@ protected override void OnModelCreating(
 
 En tu `AcSoftDbContext` también debemos tener los DbSet:
 
-```
+```csharp
 public DbSet<Activity> Activities => Set<Activity>();
 
 public DbSet<ActivityField> ActivityFields =>
@@ -1456,7 +1456,7 @@ public DbSet<ActivityAnswer> ActivityAnswers =>
 
 Para que el modelo quede completo, agrega las relaciones de `ActivityExecution` con las entidades que ya existen en tu dominio:
 
-```
+```csharp
 builder.HasOne<WorkOrder>()
     .WithMany()
     .HasForeignKey(x => x.WorkOrderId)
@@ -1478,7 +1478,7 @@ Estas relaciones van dentro de `ActivityExecutionConfiguration`. Así EF Core po
 
 También hay una pequeña protección adicional que debemos incorporar en `ActivityExecution.AddAnswer()`: comprobar que la respuesta realmente pertenece a la ejecución que la está recibiendo.
 
-```
+```csharp
 if (answer.ActivityExecutionId != Id)
     throw new InvalidOperationException(
         "La respuesta pertenece a otra ejecución.");
@@ -1488,7 +1488,7 @@ Colócala antes de agregar la respuesta a `_answers`.
 
 En `ActivityAnswerConfiguration`, para el enum nullable `InspectionStatus`, puedes utilizar:
 
-```
+```csharp
 .HasConversion<short>();
 ```
 
