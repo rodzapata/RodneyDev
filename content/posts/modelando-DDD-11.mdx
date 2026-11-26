@@ -1,0 +1,403 @@
+---
+title: "Modelando DDD Parte 11 Ciclo completo de Persistencia en una Orden de Trabajo"
+date: "2026-11-25"
+description: "Persistir Orden de trabajo ciclo completo"
+slug: "modelando-DDD-11"
+category: "clean Arquitecture"
+tags: ["DDD","netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+Continuemos. Ahora vamos a probar el **ciclo completo de persistencia de una orden de trabajo en PostgreSQL con EF Core 10**.
+
+El objetivo es comprobar algo fundamental en DDD: que `WorkOrder` y todos sus objetos internos se guarden juntos y que, al consultar nuevamente la orden, el dominio conserve su comportamiento.
+
+Trabajaremos con este flujo:
+
+1. Crear una orden de trabajo.
+2. Agregar una actividad desde el catálogo.
+3. Guardar el agregado en PostgreSQL.
+4. Consultar la orden usando un nuevo contexto.
+5. Registrar las mediciones Antes y Después.
+6. Completar la orden y guardar los cambios.
+
+## **1. Preparar el repositorio**
+
+En `AcSoft.Application`, define el contrato del repositorio:
+
+```csharp
+using AcSoft.Domain.Entities;
+
+namespace AcSoft.Application.Abstractions.Persistence;
+
+public interface IWorkOrderRepository
+{
+    Task AddAsync(
+        WorkOrder workOrder,
+        CancellationToken cancellationToken = default);
+
+    Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken = default);
+}
+```
+
+No necesitamos un método `UpdateAsync` si usamos EF Core con seguimiento de entidades (`tracking`). Cuando recuperamos una orden, modificamos sus métodos de dominio y guardamos los cambios mediante `SaveChangesAsync`.
+
+## **2. Implementar el repositorio en Infrastructure**
+
+Crea:
+
+```
+AcSoft.Infrastructure
+└── Persistence
+    └── Repositories
+        └── WorkOrderRepository.cs
+```
+
+```csharp
+using AcSoft.Application.Abstractions.Persistence;
+using AcSoft.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace AcSoft.Infrastructure.Persistence.Repositories;
+
+public sealed class WorkOrderRepository(
+    AcDbContext context) : IWorkOrderRepository
+{
+    public async Task AddAsync(
+        WorkOrder workOrder,
+        CancellationToken cancellationToken = default)
+    {
+        await context.WorkOrders.AddAsync(
+            workOrder,
+            cancellationToken);
+    }
+
+    public async Task<WorkOrder?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken = default)
+    {
+        return await context.WorkOrders
+            .Include(x => x.Actividades)
+                .ThenInclude(x => x.Mediciones)
+                    .ThenInclude(x => x.Valores)
+            .Include(x => x.Actividades)
+                .ThenInclude(x => x.Parametros)
+                    .ThenInclude(x => x.Opciones)
+            .SingleOrDefaultAsync(
+                x => x.Id == id,
+                cancellationToken);
+    }
+}
+```
+
+**¿Por qué usamos&#x20;**`Include`**?**
+
+Porque las colecciones privadas no se cargan automáticamente. Queremos recuperar toda la estructura que necesita el agregado para validar las respuestas y completar la orden.
+
+`AsNoTracking()` no debe usarse aquí: necesitamos que EF Core siga las entidades para detectar los cambios posteriores.
+
+## **3. Implementar&#x20;**`IUnitOfWork`
+
+Si ya tienes esta interfaz en tu proyecto, conserva la tuya. Una versión sencilla sería:
+
+```csharp
+namespace AcSoft.Application.Abstractions.Persistence;
+
+public interface IUnitOfWork
+{
+    Task<int> SaveChangesAsync(
+        CancellationToken cancellationToken = default);
+}
+```
+
+En Infrastructure:
+
+```
+using AcSoft.Application.Abstractions.Persistence;
+
+namespace AcSoft.Infrastructure.Persistence;
+
+public sealed class UnitOfWork(
+    AcDbContext context) : IUnitOfWork
+{
+    public Task<int> SaveChangesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return context.SaveChangesAsync(cancellationToken);
+    }
+}
+```
+
+El repositorio agrega o recupera entidades; el `UnitOfWork` confirma los cambios en la base de datos.
+
+## **4. Registrar repositorio y Unit of Work en DI**
+
+En `AcSoft.Infrastructure.DependencyInjection`, agrega los registros:
+
+```
+services.AddScoped<IWorkOrderRepository, WorkOrderRepository>();
+
+services.AddScoped<IUnitOfWork, UnitOfWork>();
+```
+
+Por ejemplo, tu método `AddInfrastructure()` podría tener esta estructura:
+
+```
+public static IServiceCollection AddInfrastructure(
+    this IServiceCollection services,
+    IConfiguration configuration)
+{
+    services.AddDbContext<AcDbContext>(options =>
+        options.UseNpgsql(
+            configuration.GetConnectionString("AcSoftConnection")));
+
+    services.AddScoped<IWorkOrderRepository, WorkOrderRepository>();
+    services.AddScoped<IUnitOfWork, UnitOfWork>();
+
+    // Conserva aquí los registros de tus otros repositorios.
+
+    return services;
+}
+```
+
+Asegúrate de tener los `using` correspondientes:
+
+```
+using AcSoft.Application.Abstractions.Persistence;
+using AcSoft.Infrastructure.Persistence;
+using AcSoft.Infrastructure.Persistence.Repositories;
+using Microsoft.EntityFrameworkCore;
+```
+
+No registres dos veces el mismo servicio si ya lo tienes configurado.
+
+## **5. Crear una orden y guardar el agregado**
+
+Para probarlo, supongamos que ya tienes un `ActividadCatalogo` guardado en PostgreSQL.
+
+En Application puedes crear un caso de uso que reciba el identificador del catálogo:
+
+```
+public sealed class CreateWorkOrderHandler(
+    IWorkOrderRepository workOrderRepository,
+    IActividadCatalogoRepository actividadCatalogoRepository,
+    IUnitOfWork unitOfWork)
+{
+    public async Task<Guid> Handle(
+        Guid customerId,
+        Guid equipmentId,
+        Guid actividadCatalogoId,
+        CancellationToken cancellationToken = default)
+    {
+        var catalogo = await actividadCatalogoRepository
+            .GetByIdAsync(actividadCatalogoId, cancellationToken);
+
+        if (catalogo is null)
+            throw new InvalidOperationException(
+                "No se encontró el catálogo de actividades.");
+
+        var workOrder = new WorkOrder(
+            number: $"OT-{DateTime.UtcNow:yyyyMMddHHmmss}",
+            customerId: customerId,
+            equipmentId: equipmentId);
+
+        workOrder.AgregarActividad(catalogo);
+
+        await workOrderRepository.AddAsync(
+            workOrder,
+            cancellationToken);
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return workOrder.Id;
+    }
+}
+```
+
+Este ejemplo supone que tu repositorio de catálogo expone `GetByIdAsync`. Ajusta el nombre al contrato que ya tengas.
+
+**Una decisión importante:** el handler no crea directamente las mediciones ni las instantáneas. Eso lo hace `ActividadRealizada` al recibir el catálogo. Así mantenemos la lógica de creación dentro del dominio.
+
+## **6. Consultar la orden con un nuevo contexto**
+
+Ahora viene la prueba más importante: recuperar la orden desde PostgreSQL.
+
+Podemos hacerlo desde otro caso de uso:
+
+```
+public sealed class GetWorkOrderHandler(
+    IWorkOrderRepository repository)
+{
+    public async Task<WorkOrder?> Handle(
+        Guid id,
+        CancellationToken cancellationToken = default)
+    {
+        return await repository.GetByIdAsync(
+            id,
+            cancellationToken);
+    }
+}
+```
+
+El repositorio debe traer:
+
+- La orden.
+- Sus actividades realizadas.
+- Sus mediciones.
+- Sus respuestas.
+- Las instantáneas de parámetros.
+- Las opciones de respuesta guardadas en cada instantánea.
+
+Así, el dominio podrá validar respuestas aunque el catálogo original haya cambiado.
+
+## **7. Registrar las mediciones después de recuperar la orden**
+
+Supongamos que la orden ya fue creada y que conocemos su `workOrderId`.
+
+Recuperamos la orden:
+
+```
+var workOrder = await workOrderRepository.GetByIdAsync(
+    workOrderId,
+    cancellationToken);
+
+if (workOrder is null)
+    throw new InvalidOperationException("Orden no encontrada.");
+```
+
+Obtenemos la actividad:
+
+```
+var actividad = workOrder.Actividades.Single();
+```
+
+Buscamos los parámetros de la instantánea:
+
+```
+var parametroRS = actividad.Parametros
+    .Single(x => x.Nombre == "RS");
+
+var parametroRT = actividad.Parametros
+    .Single(x => x.Nombre == "RT");
+
+var parametroST = actividad.Parametros
+    .Single(x => x.Nombre == "ST");
+```
+
+Registramos las mediciones:
+
+```
+actividad.RegistrarRespuesta(
+    EtapaMantenimiento.Antes,
+    parametroRS.ParametroRespuestaId,
+    "12.5");
+
+actividad.RegistrarRespuesta(
+    EtapaMantenimiento.Antes,
+    parametroRT.ParametroRespuestaId,
+    "12.8");
+
+actividad.RegistrarRespuesta(
+    EtapaMantenimiento.Antes,
+    parametroST.ParametroRespuestaId,
+    "12.6");
+```
+
+Y después de realizar el mantenimiento:
+
+```
+actividad.RegistrarRespuesta(
+    EtapaMantenimiento.Despues,
+    parametroRS.ParametroRespuestaId,
+    "11.9");
+
+actividad.RegistrarRespuesta(
+    EtapaMantenimiento.Despues,
+    parametroRT.ParametroRespuestaId,
+    "12.0");
+
+actividad.RegistrarRespuesta(
+    EtapaMantenimiento.Despues,
+    parametroST.ParametroRespuestaId,
+    "12.1");
+```
+
+Finalmente:
+
+```
+workOrder.Completar();
+
+await unitOfWork.SaveChangesAsync(cancellationToken);
+```
+
+Recuerda que para que `Completar()` funcione, la orden debe estar en estado `InProgress`. Por eso, en el caso de uso de creación, debes iniciar la orden antes de guardarla:
+
+```
+workOrder.AgregarActividad(catalogo);
+workOrder.Iniciar();
+```
+
+En una aplicación real, el registro de respuestas y la finalización deberían ser casos de uso separados.
+
+## **8. Crear la migración de EF Core**
+
+Cuando hayas verificado que compila el proyecto, desde la carpeta de la solución ejecuta:
+
+```
+dotnet ef migrations add AddWorkOrderActivitySnapshots \
+  --project AcSoft.Infrastructure \
+  --startup-project AcSoft.Api \
+  --output-dir Persistence/Migrations
+```
+
+Después:
+
+```
+dotnet ef database update \
+  --project AcSoft.Infrastructure \
+  --startup-project AcSoft.Api
+```
+
+Si no tienes instalado `dotnet-ef`:
+
+```
+dotnet tool install --global dotnet-ef --version 10.0.4
+```
+
+Utiliza la misma versión de EF Core que tienes instalada en tus proyectos.
+
+## **9. ¿Qué debemos comprobar en PostgreSQL?**
+
+Después de ejecutar la migración, revisa que existan estas tablas:
+
+| Tabla                                   | Contenido                           |
+| --------------------------------------- | ----------------------------------- |
+| `work_orders`                           | Órdenes de trabajo                  |
+| `work_order_activities`                 | Actividades agregadas a las órdenes |
+| `work_order_activity_parameters`        | Instantáneas de parámetros          |
+| `work_order_activity_parameter_options` | Opciones históricas                 |
+| `work_order_measurements`               | Mediciones Antes y Después          |
+| `work_order_answer_items`               | Respuestas registradas              |
+
+Prueba esperada
+
+Al recuperar una orden desde un contexto nuevo, debes poder consultar sus parámetros y mediciones. Después de registrar las respuestas y ejecutar `SaveChangesAsync`, los datos deben persistir correctamente.
+
+## **10. Una precaución antes de dar por terminado este paso**
+
+Hay un detalle que debemos verificar en tu implementación: el `DbContext` debe poder reconstruir todas las entidades usando sus relaciones y campos privados.
+
+También debemos comprobar que:
+
+- `ValorRespuesta` se convierte correctamente a `string`.
+- Las colecciones privadas utilizan los nombres de campo correctos.
+- Las relaciones tienen sus claves foráneas.
+- La consulta no genera múltiples problemas de seguimiento.
+- La propiedad `ActividadCatalogoId` conserva el identificador histórico sin obligar a cargar el catálogo actual.
+
+**Mi recomendación:** no avancemos todavía a los controladores ni a las pruebas de API. Primero validemos la persistencia completa.
+
+Si me compartes el código actual de `ActividadRealizada`, `Medicion`, `ValorRespuestaItem`, `ParametroActividadSnapshot` y `AcDbContext`, puedo revisar las diferencias con estos ejemplos y dejarte las configuraciones de EF Core 10 listas para compilar, sin introducir errores por nombres de propiedades o relaciones que no coincidan.

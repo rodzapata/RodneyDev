@@ -95,7 +95,7 @@ También necesitamos la entidad que conserva las opciones.
 
 Ubicación: `Entities/OpcionActividadSnapshot.cs`.
 
-```
+```csharp
 namespace AcSoft.Domain.Entities;
 
 public sealed class OpcionActividadSnapshot
@@ -128,14 +128,14 @@ Así, si en el catálogo una opción cambia de nombre o se desactiva, la activid
 
 Ahora reemplazaremos los dos `HashSet<Guid>`:
 
-```
+```csharp
 private readonly HashSet<Guid> _parametrosPermitidos = [];
 private readonly HashSet<Guid> _parametrosObligatorios = [];
 ```
 
 Por una colección persistible:
 
-```
+```csharp
 private readonly List<ParametroActividadSnapshot> _parametros = [];
 
 public IReadOnlyCollection<ParametroActividadSnapshot> Parametros =>
@@ -144,7 +144,7 @@ public IReadOnlyCollection<ParametroActividadSnapshot> Parametros =>
 
 La clase quedaría así en su estructura principal:
 
-```
+```csharp
 using AcSoft.Domain.Enums;
 using AcSoft.Domain.Exceptions;
 
@@ -236,7 +236,7 @@ Este paso evita que la validación dependa del catálogo actual.
 
 Agrega este método dentro de `ParametroActividadSnapshot`:
 
-```
+```csharp
 using System.Globalization;
 using AcSoft.Domain.Exceptions;
 
@@ -302,7 +302,7 @@ public ValorRespuesta CrearValor(string valor)
 
 Esto asume que `ValorRespuesta` es el record que definimos anteriormente:
 
-```
+```csharp
 public sealed record ValorRespuesta(string Valor);
 ```
 
@@ -310,7 +310,7 @@ Y que `TipoRespuesta` tiene los valores `Decimal`, `Entero`, `Texto` y `Opcion`.
 
 Ahora modifica el método de `ActividadRealizada`:
 
-```
+```csharp
 var respuesta = parametro.CrearValor(valor);
 
 medicion.RegistrarRespuesta(
@@ -320,7 +320,7 @@ medicion.RegistrarRespuesta(
 
 Y en `Medicion`, adapta el método para recibir el valor ya validado:
 
-```
+```csharp
 public void RegistrarRespuesta(
     Guid parametroRespuestaId,
     ValorRespuesta valor)
@@ -348,7 +348,7 @@ De esta forma, `ActividadRealizada` valida que el parámetro pertenece a su inst
 
 Crea `ParametroActividadSnapshotConfiguration.cs`:
 
-```
+```csharp
 using AcSoft.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -404,7 +404,7 @@ public sealed class ParametroActividadSnapshotConfiguration
 
 Crea `OpcionActividadSnapshotConfiguration.cs`:
 
-```
+```csharp
 using AcSoft.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -437,7 +437,7 @@ public sealed class OpcionActividadSnapshotConfiguration
 
 Finalmente, agrega la relación en `ActividadRealizadaConfiguration`:
 
-```
+```csharp
 builder.HasMany(x => x.Parametros)
     .WithOne()
     .HasForeignKey("ActividadRealizadaId")
@@ -454,7 +454,7 @@ Esto permite que EF Core reconstruya las instantáneas al recuperar una orden de
 
 La configuración completa debe incluir las dos colecciones:
 
-```
+```csharp
 builder.HasMany(x => x.Mediciones)
     .WithOne()
     .HasForeignKey("ActividadRealizadaId")
@@ -504,7 +504,7 @@ El catálogo tiene:
 
 Al ejecutar:
 
-```
+```csharp
 workOrder.AgregarActividad(catalogo);
 ```
 
@@ -512,7 +512,7 @@ Se crean las instantáneas de los tres parámetros.
 
 Después puedes registrar las respuestas:
 
-```
+```csharp
 actividad.RegistrarRespuesta(
     EtapaMantenimiento.Antes,
     parametroRS.Id,
@@ -557,3 +557,5 @@ Mi recomendación es que implementemos y probemos el ciclo completo de persisten
 6. Registrar respuestas y comprobar que `EstaCompleta()` funciona.
 
 Así verificaremos que EF Core reconstruye correctamente todo el agregado, incluidas sus instantáneas, sin perder las reglas del dominio.
+
+paso a paso con [modelando DDD parte 11  Ciclo completo de persistencia en una Orden de Trabajo](/blog/modelando-DDD-11)

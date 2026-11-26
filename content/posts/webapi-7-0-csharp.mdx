@@ -1,0 +1,114 @@
+---
+title: "Crear webapi Parte 7-0  Verificar el modelo completo"
+date: "2026-11-25"
+description: "Crear webapi Parte 7-0  Verificar el modelo completo"
+slug: "webapi-7-0-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+
+¡Claro! Continuemos con ACSoft.
+
+## **Siguiente paso: verificar el modelo completo de EF Core**
+
+Antes de realizar una inserción real en PostgreSQL, vamos a comprobar que EF Core reconoce correctamente las relaciones entre `WorkOrder`, `WorkOrderAssignment` y `WorkOrderActivity`.
+
+### **1. Revisa tu DbContext**
+
+En `AcSoftDbContext.cs`, dentro de `OnModelCreating`, deberías tener:
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    base.OnModelCreating(modelBuilder);
+
+    modelBuilder.ApplyConfigurationsFromAssembly(
+        typeof(AcSoftDbContext).Assembly);
+}
+```
+
+Esto permite que EF Core encuentre automáticamente las clases que implementan `IEntityTypeConfiguration<T>`.
+
+### **2. Compila el proyecto**
+
+Desde la raíz de la solución:
+
+```bash
+dotnet build
+```
+
+### **3. Comprueba la conexión con PostgreSQL**
+
+Si ya tienes una prueba de conexión en tu proyecto, puedes volver a ejecutarla.
+
+**Antes de avanzar**, compárteme el contenido actual de `AcSoftDbContext.cs`.
+
+Quiero revisar cómo tienes registrado el modelo para que nuestro siguiente paso sea probar la persistencia real de una orden de trabajo, incluyendo sus asignaciones y actividades, sin introducir configuraciones duplicadas.
+
+
+Perfecto. Entonces ya tenemos los dos elementos necesarios para comenzar a crear las tablas de ACSoft:
+
+- Base de datos PostgreSQL: `acsoft`.
+- Cadena de conexión configurada mediante User Secrets.
+- Entidades del dominio y configuraciones de EF Core creadas.
+
+Ahora vamos a preparar la creación de las tablas utilizando **EF Core 10 y migraciones**.
+
+## **Paso 1. Verificar los paquetes NuGet**
+
+En el proyecto `AcSoft.Infrastructure` necesitamos:
+
+```
+dotnet list .\AcSoft.Infrastructure\AcSoft.Infrastructure.csproj package
+```
+
+Comprueba que tienes estos paquetes:
+
+| Paquete                                 | Función                       |
+| --------------------------------------- | ----------------------------- |
+| `Microsoft.EntityFrameworkCore`         | ORM de EF Core                |
+| `Npgsql.EntityFrameworkCore.PostgreSQL` | Proveedor PostgreSQL          |
+| `Microsoft.EntityFrameworkCore.Design`  | Herramientas para migraciones |
+
+Los paquetes de EF Core deben ser compatibles con la versión 10.
+
+## **Paso 2. Verificar la configuración de DI**
+
+En tu método `AddInfrastructure()`, necesitamos que el contexto esté registrado utilizando la cadena de conexión `AcSoftConnection`.
+
+La configuración debería tener esta estructura:
+
+```csharp
+services.AddDbContext<AcDbContext>(options =>
+    options.UseNpgsql(
+        configuration.GetConnectionString("AcSoftConnection")));
+```
+
+No reemplaces todavía tu código si ya lo tienes configurado de otra manera.
+
+## **Paso 3. Crear la primera migración**
+
+Una vez verificados los paquetes y el registro del contexto, ejecutaremos:
+
+```
+dotnet ef migrations add InitialCreate `
+    --project .\AcSoft.Infrastructure `
+    --startup-project .\AcSoft.Api `
+    --output-dir Persistence\Migrations
+```
+
+Esto generará los archivos que describen las tablas y relaciones de nuestro modelo.
+
+**Importante:** `migrations add` crea los archivos de migración, pero todavía no modifica la base de datos.
+
+### **Antes de ejecutar la migración**
+
+Quiero revisar dos archivos para evitar errores de configuración:
+
+1. `AcSoft.Infrastructure.csproj`
+2. La clase donde tienes implementado `AddInfrastructure()`.
+
+Compártemelos y verificaremos que todo esté preparado para crear las tablas de ACSoft sin introducir dependencias o configuraciones innecesarias.
