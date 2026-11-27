@@ -489,8 +489,8 @@ public class WorkOrder
 Creamos algunos registros:
 
 ```csharp
-var workOrders = new List<WorkOrder>
-{
+List<WorkOrder> workOrders =
+[
     new()
     {
         Number = "OT-001",
@@ -511,7 +511,7 @@ var workOrders = new List<WorkOrder>
         Number = "OT-004",
         Status = "InProgress"
     }
-};
+];
 ```
 
 ### **Ejemplo 1. Obtener todas las órdenes pendientes**

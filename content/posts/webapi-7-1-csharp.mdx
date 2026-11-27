@@ -1,0 +1,992 @@
+---
+title: "Crear webapi Parte 7-1  Migraciones"
+date: "2026-11-27"
+description: "Crear webapi Parte 7-1  Migraciones"
+slug: "webapi-7-1-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+¡Perfecto! Continuemos con la creación de nuestra primera migración de ACSoft: `InitialCreate`.
+
+Esta migración generará la estructura de tablas de PostgreSQL a partir de las entidades y configuraciones que hemos construido con DDD y EF Core 10.
+
+## **Paso 1. Verificar que tienes instalada la herramienta EF Core**
+
+Desde PowerShell, en la raíz de `AcSoft-BackEnd`, ejecuta:
+
+```bash
+dotnet ef --version
+```
+
+Deberías obtener una versión `10.0.4`.
+
+Si aparece que no se reconoce el comando, instala la herramienta:
+
+```bash
+dotnet tool install --global dotnet-ef --version 10.0.4
+```
+
+Si ya la tienes instalada, pero con otra versión:
+
+```bash
+dotnet tool update --global dotnet-ef --version 10.0.15
+```
+
+## **Paso 2. Crear la migración**
+
+Ejecuta desde la raíz de la solución:
+
+```bash
+dotnet ef migrations add InitialCreate `
+    --project .\AcSoft.Infrastructure `
+    --startup-project .\AcSoft.Api `
+    --output-dir Persistence\Migrations `
+    --context AcDbContext
+```
+
+Al ejecutar este comando me salia un error de Microsoft.CodeAnalysis.Workspaces, Version=5.0.0.0
+
+lo que hice fue borrar de la caché local con el comando
+
+```bash
+dotnet restore --force
+```
+
+y despues compilar de nuevo
+
+```bash
+dotnet build
+```
+
+
+**¿Qué significa cada parámetro?**
+
+| Parámetro           | Función                                                           |
+| ------------------- | ----------------------------------------------------------------- |
+| `InitialCreate`     | Nombre de la migración                                            |
+| `--project`         | Proyecto donde se guardarán las migraciones                       |
+| `--startup-project` | Proyecto que proporciona la configuración de ejecución y conexión |
+| `--output-dir`      | Carpeta donde se guardarán                                        |
+| `--context`         | Contexto de EF Core que utilizaremos                              |
+
+## **Paso 3. Revisar los archivos generados**
+
+Si todo funciona, encontrarás una estructura similar a esta:
+
+```
+AcSoft.Infrastructure
+└── Persistence
+    ├── Configurations
+    │   ├── WorkOrderConfiguration.cs
+    │   ├── WorkOrderAssignmentConfiguration.cs
+    │   ├── WorkOrderActivityConfiguration.cs
+    │   └── ...
+    │
+    ├── Migrations
+    │   ├── 20261127082100_InitialCreate.cs
+    │   ├── 20261127082100_InitialCreate.Designer.cs
+    │   └── AcDbContextModelSnapshot.cs
+    │
+    └── AcDbContext.cs
+```
+
+El nombre y la marca de tiempo serán generados automáticamente.
+
+## **Paso 4. Todavía no actualices la base de datos**
+
+Primero quiero que revisemos la migración generada.
+
+Esto es importante porque necesitamos verificar:
+
+- Que `WorkOrders` tenga sus columnas y restricciones.
+- Que `WorkOrderAssignments` tenga la relación con `WorkOrders`.
+- Que `WorkOrderActivities` tenga sus relaciones.
+- Que las respuestas y mediciones estén correctamente representadas.
+- Que los índices únicos y las claves foráneas sean correctos.
+
+**Tu siguiente tarea:** ejecuta el comando del paso 2 y compárteme el resultado.
+
+Si aparece un error, envíame el mensaje completo. No ejecutaremos `database update` hasta validar la migración.
+
+el codig **InitialCreate** ese el siguiente:
+
+```csharp
+using Microsoft.EntityFrameworkCore.Migrations;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
+
+#nullable disable
+
+namespace AcSoft.Infrastructure.Persistence.Migrations;
+
+/// <inheritdoc />
+public partial class InitialCreate : Migration
+{
+    /// <inheritdoc />
+    protected override void Up(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.CreateTable(
+            name: "Activities",
+            columns: table => new
+            {
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
+                Code = table.Column<string>(type: "character varying(30)", maxLength: 30, nullable: false),
+                Name = table.Column<string>(type: "character varying(150)", maxLength: 150, nullable: false),
+                Description = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_Activities", x => x.Id);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "MaintenancePlans",
+            columns: table => new
+            {
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
+                Code = table.Column<string>(type: "character varying(30)", maxLength: 30, nullable: false),
+                Name = table.Column<string>(type: "character varying(150)", maxLength: 150, nullable: false),
+                Description = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
+                Status = table.Column<int>(type: "integer", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_MaintenancePlans", x => x.Id);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "Questions",
+            columns: table => new
+            {
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
+                Code = table.Column<string>(type: "character varying(30)", maxLength: 30, nullable: false),
+                Text = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: false),
+                AnswerType = table.Column<int>(type: "integer", nullable: false),
+                MeasurementType = table.Column<int>(type: "integer", nullable: true)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_Questions", x => x.Id);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "WorkOrders",
+            columns: table => new
+            {
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
+                Number = table.Column<string>(type: "character varying(30)", maxLength: 30, nullable: false),
+                CustomerId = table.Column<Guid>(type: "uuid", nullable: false),
+                EquipmentId = table.Column<Guid>(type: "uuid", nullable: false),
+                Status = table.Column<int>(type: "integer", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_WorkOrders", x => x.Id);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "MaintenancePlanActivities",
+            columns: table => new
+            {
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
+                MaintenancePlanId = table.Column<Guid>(type: "uuid", nullable: false),
+                ActivityId = table.Column<Guid>(type: "uuid", nullable: false),
+                Moment = table.Column<int>(type: "integer", nullable: false),
+                Sequence = table.Column<int>(type: "integer", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_MaintenancePlanActivities", x => x.Id);
+                table.ForeignKey(
+                    name: "FK_MaintenancePlanActivities_Activities_ActivityId",
+                    column: x => x.ActivityId,
+                    principalTable: "Activities",
+                    principalColumn: "Id",
+                    onDelete: ReferentialAction.Restrict);
+                table.ForeignKey(
+                    name: "FK_MaintenancePlanActivities_MaintenancePlans_MaintenancePlanId",
+                    column: x => x.MaintenancePlanId,
+                    principalTable: "MaintenancePlans",
+                    principalColumn: "Id",
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "ActivityQuestions",
+            columns: table => new
+            {
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
+                ActivityId = table.Column<Guid>(type: "uuid", nullable: false),
+                QuestionId = table.Column<Guid>(type: "uuid", nullable: false),
+                Sequence = table.Column<int>(type: "integer", nullable: false),
+                IsRequired = table.Column<bool>(type: "boolean", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_ActivityQuestions", x => x.Id);
+                table.ForeignKey(
+                    name: "FK_ActivityQuestions_Activities_ActivityId",
+                    column: x => x.ActivityId,
+                    principalTable: "Activities",
+                    principalColumn: "Id",
+                    onDelete: ReferentialAction.Cascade);
+                table.ForeignKey(
+                    name: "FK_ActivityQuestions_Questions_QuestionId",
+                    column: x => x.QuestionId,
+                    principalTable: "Questions",
+                    principalColumn: "Id",
+                    onDelete: ReferentialAction.Restrict);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "WorkOrderActivities",
+            columns: table => new
+            {
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
+                IsUnplanned = table.Column<bool>(type: "boolean", nullable: false),
+                WorkOrderId = table.Column<Guid>(type: "uuid", nullable: false),
+                ActivityId = table.Column<Guid>(type: "uuid", nullable: false),
+                Moment = table.Column<int>(type: "integer", nullable: false),
+                Sequence = table.Column<int>(type: "integer", nullable: false),
+                IsCompleted = table.Column<bool>(type: "boolean", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_WorkOrderActivities", x => x.Id);
+                table.ForeignKey(
+                    name: "FK_WorkOrderActivities_Activities_ActivityId",
+                    column: x => x.ActivityId,
+                    principalTable: "Activities",
+                    principalColumn: "Id",
+                    onDelete: ReferentialAction.Restrict);
+                table.ForeignKey(
+                    name: "FK_WorkOrderActivities_WorkOrders_WorkOrderId",
+                    column: x => x.WorkOrderId,
+                    principalTable: "WorkOrders",
+                    principalColumn: "Id",
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "WorkOrderAssignments",
+            columns: table => new
+            {
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
+                WorkOrderId = table.Column<Guid>(type: "uuid", nullable: false),
+                TechnicianId = table.Column<Guid>(type: "uuid", nullable: false),
+                AssignedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                UnassignedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                EndReason = table.Column<int>(type: "integer", nullable: true)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_WorkOrderAssignments", x => x.Id);
+                table.ForeignKey(
+                    name: "FK_WorkOrderAssignments_WorkOrders_WorkOrderId",
+                    column: x => x.WorkOrderId,
+                    principalTable: "WorkOrders",
+                    principalColumn: "Id",
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "ActivityAnswers",
+            columns: table => new
+            {
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
+                QuestionId = table.Column<Guid>(type: "uuid", nullable: false),
+                AnswerType = table.Column<int>(type: "integer", nullable: false),
+                AnswerStatus = table.Column<int>(type: "integer", nullable: true),
+                NumericValue = table.Column<decimal>(type: "numeric", nullable: true),
+                TextValue = table.Column<string>(type: "character varying(1000)", maxLength: 1000, nullable: true),
+                WorkOrderActivityId = table.Column<Guid>(type: "uuid", nullable: true)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_ActivityAnswers", x => x.Id);
+                table.ForeignKey(
+                    name: "FK_ActivityAnswers_WorkOrderActivities_WorkOrderActivityId",
+                    column: x => x.WorkOrderActivityId,
+                    principalTable: "WorkOrderActivities",
+                    principalColumn: "Id",
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "WorkOrderActivityQuestions",
+            columns: table => new
+            {
+                Id = table.Column<Guid>(type: "uuid", nullable: false),
+                WorkOrderActivityId = table.Column<Guid>(type: "uuid", nullable: false),
+                QuestionId = table.Column<Guid>(type: "uuid", nullable: false),
+                QuestionCode = table.Column<string>(type: "character varying(30)", maxLength: 30, nullable: false),
+                QuestionText = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: false),
+                Sequence = table.Column<int>(type: "integer", nullable: false),
+                IsRequired = table.Column<bool>(type: "boolean", nullable: false),
+                AnswerType = table.Column<int>(type: "integer", nullable: false),
+                MeasurementType = table.Column<int>(type: "integer", nullable: true)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_WorkOrderActivityQuestions", x => x.Id);
+                table.ForeignKey(
+                    name: "FK_WorkOrderActivityQuestions_WorkOrderActivities_WorkOrderAct~",
+                    column: x => x.WorkOrderActivityId,
+                    principalTable: "WorkOrderActivities",
+                    principalColumn: "Id",
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "AnswerMeasurements",
+            columns: table => new
+            {
+                ActivityAnswerId = table.Column<Guid>(type: "uuid", nullable: false),
+                Id = table.Column<int>(type: "integer", nullable: false)
+                    .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
+                Point = table.Column<string>(type: "character varying(50)", maxLength: 50, nullable: false),
+                MeasurementType = table.Column<int>(type: "integer", nullable: false),
+                MeasuredValue = table.Column<decimal>(type: "numeric", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_AnswerMeasurements", x => new { x.ActivityAnswerId, x.Id });
+                table.ForeignKey(
+                    name: "FK_AnswerMeasurements_ActivityAnswers_ActivityAnswerId",
+                    column: x => x.ActivityAnswerId,
+                    principalTable: "ActivityAnswers",
+                    principalColumn: "Id",
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateIndex(
+            name: "IX_Activities_Code",
+            table: "Activities",
+            column: "Code",
+            unique: true);
+
+        migrationBuilder.CreateIndex(
+            name: "IX_ActivityAnswers_WorkOrderActivityId",
+            table: "ActivityAnswers",
+            column: "WorkOrderActivityId");
+
+        migrationBuilder.CreateIndex(
+            name: "IX_ActivityQuestions_ActivityId_Sequence",
+            table: "ActivityQuestions",
+            columns: new[] { "ActivityId", "Sequence" },
+            unique: true);
+
+        migrationBuilder.CreateIndex(
+            name: "IX_ActivityQuestions_QuestionId",
+            table: "ActivityQuestions",
+            column: "QuestionId");
+
+        migrationBuilder.CreateIndex(
+            name: "IX_MaintenancePlanActivities_ActivityId",
+            table: "MaintenancePlanActivities",
+            column: "ActivityId");
+
+        migrationBuilder.CreateIndex(
+            name: "IX_MaintenancePlanActivities_MaintenancePlanId_Moment_Sequence",
+            table: "MaintenancePlanActivities",
+            columns: new[] { "MaintenancePlanId", "Moment", "Sequence" },
+            unique: true);
+
+        migrationBuilder.CreateIndex(
+            name: "IX_MaintenancePlans_Code",
+            table: "MaintenancePlans",
+            column: "Code",
+            unique: true);
+
+        migrationBuilder.CreateIndex(
+            name: "IX_Questions_Code",
+            table: "Questions",
+            column: "Code",
+            unique: true);
+
+        migrationBuilder.CreateIndex(
+            name: "IX_WorkOrderActivities_ActivityId",
+            table: "WorkOrderActivities",
+            column: "ActivityId");
+
+        migrationBuilder.CreateIndex(
+            name: "IX_WorkOrderActivities_WorkOrderId_Moment_Sequence",
+            table: "WorkOrderActivities",
+            columns: new[] { "WorkOrderId", "Moment", "Sequence" },
+            unique: true);
+
+        migrationBuilder.CreateIndex(
+            name: "IX_WorkOrderActivityQuestions_WorkOrderActivityId_Sequence",
+            table: "WorkOrderActivityQuestions",
+            columns: new[] { "WorkOrderActivityId", "Sequence" },
+            unique: true);
+
+        migrationBuilder.CreateIndex(
+            name: "IX_WorkOrderAssignments_WorkOrderId",
+            table: "WorkOrderAssignments",
+            column: "WorkOrderId",
+            unique: true,
+            filter: "\"UnassignedAt\" IS NULL");
+
+        migrationBuilder.CreateIndex(
+            name: "IX_WorkOrders_Number",
+            table: "WorkOrders",
+            column: "Number",
+            unique: true);
+    }
+
+    /// <inheritdoc />
+    protected override void Down(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.DropTable(
+            name: "ActivityQuestions");
+
+        migrationBuilder.DropTable(
+            name: "AnswerMeasurements");
+
+        migrationBuilder.DropTable(
+            name: "MaintenancePlanActivities");
+
+        migrationBuilder.DropTable(
+            name: "WorkOrderActivityQuestions");
+
+        migrationBuilder.DropTable(
+            name: "WorkOrderAssignments");
+
+        migrationBuilder.DropTable(
+            name: "Questions");
+
+        migrationBuilder.DropTable(
+            name: "ActivityAnswers");
+
+        migrationBuilder.DropTable(
+            name: "MaintenancePlans");
+
+        migrationBuilder.DropTable(
+            name: "WorkOrderActivities");
+
+        migrationBuilder.DropTable(
+            name: "Activities");
+
+        migrationBuilder.DropTable(
+            name: "WorkOrders");
+    }
+}
+
+```
+
+y el codigo de **AcDbContextModelSnapshot** es :
+
+```csharp
+
+using System;
+using AcSoft.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
+
+#nullable disable
+
+namespace AcSoft.Infrastructure.Persistence.Migrations;
+
+[DbContext(typeof(AcDbContext))]
+partial class AcDbContextModelSnapshot : ModelSnapshot
+{
+    protected override void BuildModel(ModelBuilder modelBuilder)
+    {
+#pragma warning disable 612, 618
+        modelBuilder
+            .HasAnnotation("ProductVersion", "10.0.15")
+            .HasAnnotation("Relational:MaxIdentifierLength", 63);
+
+        NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.Activity", b =>
+            {
+                b.Property<Guid>("Id")
+                    .ValueGeneratedOnAdd()
+                    .HasColumnType("uuid");
+
+                b.Property<string>("Code")
+                    .IsRequired()
+                    .HasMaxLength(30)
+                    .HasColumnType("character varying(30)");
+
+                b.Property<string>("Description")
+                    .IsRequired()
+                    .HasMaxLength(500)
+                    .HasColumnType("character varying(500)");
+
+                b.Property<string>("Name")
+                    .IsRequired()
+                    .HasMaxLength(150)
+                    .HasColumnType("character varying(150)");
+
+                b.HasKey("Id");
+
+                b.HasIndex("Code")
+                    .IsUnique();
+
+                b.ToTable("Activities", (string)null);
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.ActivityAnswer", b =>
+            {
+                b.Property<Guid>("Id")
+                    .ValueGeneratedOnAdd()
+                    .HasColumnType("uuid");
+
+                b.Property<Guid>("QuestionId")
+                    .HasColumnType("uuid");
+
+                b.Property<Guid?>("WorkOrderActivityId")
+                    .HasColumnType("uuid");
+
+                b.HasKey("Id");
+
+                b.HasIndex("WorkOrderActivityId");
+
+                b.ToTable("ActivityAnswers", (string)null);
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.ActivityQuestion", b =>
+            {
+                b.Property<Guid>("Id")
+                    .ValueGeneratedOnAdd()
+                    .HasColumnType("uuid");
+
+                b.Property<Guid>("ActivityId")
+                    .HasColumnType("uuid");
+
+                b.Property<bool>("IsRequired")
+                    .HasColumnType("boolean");
+
+                b.Property<Guid>("QuestionId")
+                    .HasColumnType("uuid");
+
+                b.Property<int>("Sequence")
+                    .HasColumnType("integer");
+
+                b.HasKey("Id");
+
+                b.HasIndex("QuestionId");
+
+                b.HasIndex("ActivityId", "Sequence")
+                    .IsUnique();
+
+                b.ToTable("ActivityQuestions", (string)null);
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.MaintenancePlan", b =>
+            {
+                b.Property<Guid>("Id")
+                    .ValueGeneratedOnAdd()
+                    .HasColumnType("uuid");
+
+                b.Property<string>("Code")
+                    .IsRequired()
+                    .HasMaxLength(30)
+                    .HasColumnType("character varying(30)");
+
+                b.Property<string>("Description")
+                    .HasMaxLength(500)
+                    .HasColumnType("character varying(500)");
+
+                b.Property<string>("Name")
+                    .IsRequired()
+                    .HasMaxLength(150)
+                    .HasColumnType("character varying(150)");
+
+                b.Property<int>("Status")
+                    .HasColumnType("integer");
+
+                b.HasKey("Id");
+
+                b.HasIndex("Code")
+                    .IsUnique();
+
+                b.ToTable("MaintenancePlans", (string)null);
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.MaintenancePlanActivity", b =>
+            {
+                b.Property<Guid>("Id")
+                    .ValueGeneratedOnAdd()
+                    .HasColumnType("uuid");
+
+                b.Property<Guid>("ActivityId")
+                    .HasColumnType("uuid");
+
+                b.Property<Guid>("MaintenancePlanId")
+                    .HasColumnType("uuid");
+
+                b.Property<int>("Moment")
+                    .HasColumnType("integer");
+
+                b.Property<int>("Sequence")
+                    .HasColumnType("integer");
+
+                b.HasKey("Id");
+
+                b.HasIndex("ActivityId");
+
+                b.HasIndex("MaintenancePlanId", "Moment", "Sequence")
+                    .IsUnique();
+
+                b.ToTable("MaintenancePlanActivities", (string)null);
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.Question", b =>
+            {
+                b.Property<Guid>("Id")
+                    .ValueGeneratedOnAdd()
+                    .HasColumnType("uuid");
+
+                b.Property<int>("AnswerType")
+                    .HasColumnType("integer");
+
+                b.Property<string>("Code")
+                    .IsRequired()
+                    .HasMaxLength(30)
+                    .HasColumnType("character varying(30)");
+
+                b.Property<int?>("MeasurementType")
+                    .HasColumnType("integer");
+
+                b.Property<string>("Text")
+                    .IsRequired()
+                    .HasMaxLength(500)
+                    .HasColumnType("character varying(500)");
+
+                b.HasKey("Id");
+
+                b.HasIndex("Code")
+                    .IsUnique();
+
+                b.ToTable("Questions", (string)null);
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.WorkOrder", b =>
+            {
+                b.Property<Guid>("Id")
+                    .ValueGeneratedOnAdd()
+                    .HasColumnType("uuid");
+
+                b.Property<Guid>("CustomerId")
+                    .HasColumnType("uuid");
+
+                b.Property<Guid>("EquipmentId")
+                    .HasColumnType("uuid");
+
+                b.Property<string>("Number")
+                    .IsRequired()
+                    .HasMaxLength(30)
+                    .HasColumnType("character varying(30)");
+
+                b.Property<int>("Status")
+                    .HasColumnType("integer");
+
+                b.HasKey("Id");
+
+                b.HasIndex("Number")
+                    .IsUnique();
+
+                b.ToTable("WorkOrders", (string)null);
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.WorkOrderActivity", b =>
+            {
+                b.Property<Guid>("Id")
+                    .ValueGeneratedOnAdd()
+                    .HasColumnType("uuid");
+
+                b.Property<Guid>("ActivityId")
+                    .HasColumnType("uuid");
+
+                b.Property<bool>("IsCompleted")
+                    .HasColumnType("boolean");
+
+                b.Property<bool>("IsUnplanned")
+                    .HasColumnType("boolean");
+
+                b.Property<int>("Moment")
+                    .HasColumnType("integer");
+
+                b.Property<int>("Sequence")
+                    .HasColumnType("integer");
+
+                b.Property<Guid>("WorkOrderId")
+                    .HasColumnType("uuid");
+
+                b.HasKey("Id");
+
+                b.HasIndex("ActivityId");
+
+                b.HasIndex("WorkOrderId", "Moment", "Sequence")
+                    .IsUnique();
+
+                b.ToTable("WorkOrderActivities", (string)null);
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.WorkOrderActivityQuestion", b =>
+            {
+                b.Property<Guid>("Id")
+                    .ValueGeneratedOnAdd()
+                    .HasColumnType("uuid");
+
+                b.Property<int>("AnswerType")
+                    .HasColumnType("integer");
+
+                b.Property<bool>("IsRequired")
+                    .HasColumnType("boolean");
+
+                b.Property<int?>("MeasurementType")
+                    .HasColumnType("integer");
+
+                b.Property<string>("QuestionCode")
+                    .IsRequired()
+                    .HasMaxLength(30)
+                    .HasColumnType("character varying(30)");
+
+                b.Property<Guid>("QuestionId")
+                    .HasColumnType("uuid");
+
+                b.Property<string>("QuestionText")
+                    .IsRequired()
+                    .HasMaxLength(500)
+                    .HasColumnType("character varying(500)");
+
+                b.Property<int>("Sequence")
+                    .HasColumnType("integer");
+
+                b.Property<Guid>("WorkOrderActivityId")
+                    .HasColumnType("uuid");
+
+                b.HasKey("Id");
+
+                b.HasIndex("WorkOrderActivityId", "Sequence")
+                    .IsUnique();
+
+                b.ToTable("WorkOrderActivityQuestions", (string)null);
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.WorkOrderAssignment", b =>
+            {
+                b.Property<Guid>("Id")
+                    .ValueGeneratedOnAdd()
+                    .HasColumnType("uuid");
+
+                b.Property<DateTimeOffset>("AssignedAt")
+                    .HasColumnType("timestamp with time zone");
+
+                b.Property<int?>("EndReason")
+                    .HasColumnType("integer");
+
+                b.Property<Guid>("TechnicianId")
+                    .HasColumnType("uuid");
+
+                b.Property<DateTimeOffset?>("UnassignedAt")
+                    .HasColumnType("timestamp with time zone");
+
+                b.Property<Guid>("WorkOrderId")
+                    .HasColumnType("uuid");
+
+                b.HasKey("Id");
+
+                b.HasIndex("WorkOrderId")
+                    .IsUnique()
+                    .HasFilter("\"UnassignedAt\" IS NULL");
+
+                b.ToTable("WorkOrderAssignments", (string)null);
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.ActivityAnswer", b =>
+            {
+                b.HasOne("AcSoft.Domain.Entities.WorkOrderActivity", null)
+                    .WithMany("Answers")
+                    .HasForeignKey("WorkOrderActivityId")
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                b.OwnsOne("AcSoft.Domain.ValueObjects.AnswerValue", "Value", b1 =>
+                    {
+                        b1.Property<Guid>("ActivityAnswerId")
+                            .HasColumnType("uuid");
+
+                        b1.Property<decimal?>("NumericValue")
+                            .HasColumnType("numeric")
+                            .HasColumnName("NumericValue");
+
+                        b1.Property<int?>("Status")
+                            .HasColumnType("integer")
+                            .HasColumnName("AnswerStatus");
+
+                        b1.Property<string>("TextValue")
+                            .HasMaxLength(1000)
+                            .HasColumnType("character varying(1000)")
+                            .HasColumnName("TextValue");
+
+                        b1.Property<int>("Type")
+                            .HasColumnType("integer")
+                            .HasColumnName("AnswerType");
+
+                        b1.HasKey("ActivityAnswerId");
+
+                        b1.ToTable("ActivityAnswers");
+
+                        b1.WithOwner()
+                            .HasForeignKey("ActivityAnswerId");
+
+                        b1.OwnsMany("AcSoft.Domain.ValueObjects.MeasurementReading", "Measurements", b2 =>
+                            {
+                                b2.Property<Guid>("ActivityAnswerId")
+                                    .HasColumnType("uuid");
+
+                                b2.Property<int>("Id")
+                                    .ValueGeneratedOnAdd()
+                                    .HasColumnType("integer");
+
+                                NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b2.Property<int>("Id"));
+
+                                b2.Property<string>("Point")
+                                    .IsRequired()
+                                    .HasMaxLength(50)
+                                    .HasColumnType("character varying(50)");
+
+                                b2.HasKey("ActivityAnswerId", "Id");
+
+                                b2.ToTable("AnswerMeasurements", (string)null);
+
+                                b2.WithOwner()
+                                    .HasForeignKey("ActivityAnswerId");
+
+                                b2.OwnsOne("AcSoft.Domain.ValueObjects.MeasurementValue", "Value", b3 =>
+                                    {
+                                        b3.Property<Guid>("MeasurementReadingActivityAnswerId")
+                                            .HasColumnType("uuid");
+
+                                        b3.Property<int>("MeasurementReadingId")
+                                            .HasColumnType("integer");
+
+                                        b3.Property<int>("Type")
+                                            .HasColumnType("integer")
+                                            .HasColumnName("MeasurementType");
+
+                                        b3.Property<decimal>("Value")
+                                            .HasColumnType("numeric")
+                                            .HasColumnName("MeasuredValue");
+
+                                        b3.HasKey("MeasurementReadingActivityAnswerId", "MeasurementReadingId");
+
+                                        b3.ToTable("AnswerMeasurements");
+
+                                        b3.WithOwner()
+                                            .HasForeignKey("MeasurementReadingActivityAnswerId", "MeasurementReadingId");
+                                    });
+
+                                b2.Navigation("Value")
+                                    .IsRequired();
+                            });
+
+                        b1.Navigation("Measurements");
+                    });
+
+                b.Navigation("Value")
+                    .IsRequired();
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.ActivityQuestion", b =>
+            {
+                b.HasOne("AcSoft.Domain.Entities.Activity", null)
+                    .WithMany("Questions")
+                    .HasForeignKey("ActivityId")
+                    .OnDelete(DeleteBehavior.Cascade)
+                    .IsRequired();
+
+                b.HasOne("AcSoft.Domain.Entities.Question", "Question")
+                    .WithMany()
+                    .HasForeignKey("QuestionId")
+                    .OnDelete(DeleteBehavior.Restrict)
+                    .IsRequired();
+
+                b.Navigation("Question");
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.MaintenancePlanActivity", b =>
+            {
+                b.HasOne("AcSoft.Domain.Entities.Activity", null)
+                    .WithMany()
+                    .HasForeignKey("ActivityId")
+                    .OnDelete(DeleteBehavior.Restrict)
+                    .IsRequired();
+
+                b.HasOne("AcSoft.Domain.Entities.MaintenancePlan", null)
+                    .WithMany("Activities")
+                    .HasForeignKey("MaintenancePlanId")
+                    .OnDelete(DeleteBehavior.Cascade)
+                    .IsRequired();
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.WorkOrderActivity", b =>
+            {
+                b.HasOne("AcSoft.Domain.Entities.Activity", null)
+                    .WithMany()
+                    .HasForeignKey("ActivityId")
+                    .OnDelete(DeleteBehavior.Restrict)
+                    .IsRequired();
+
+                b.HasOne("AcSoft.Domain.Entities.WorkOrder", null)
+                    .WithMany("Activities")
+                    .HasForeignKey("WorkOrderId")
+                    .OnDelete(DeleteBehavior.Cascade)
+                    .IsRequired();
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.WorkOrderActivityQuestion", b =>
+            {
+                b.HasOne("AcSoft.Domain.Entities.WorkOrderActivity", null)
+                    .WithMany("Questions")
+                    .HasForeignKey("WorkOrderActivityId")
+                    .OnDelete(DeleteBehavior.Cascade)
+                    .IsRequired();
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.WorkOrderAssignment", b =>
+            {
+                b.HasOne("AcSoft.Domain.Entities.WorkOrder", null)
+                    .WithMany("Assignments")
+                    .HasForeignKey("WorkOrderId")
+                    .OnDelete(DeleteBehavior.Cascade)
+                    .IsRequired();
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.Activity", b =>
+            {
+                b.Navigation("Questions");
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.MaintenancePlan", b =>
+            {
+                b.Navigation("Activities");
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.WorkOrder", b =>
+            {
+                b.Navigation("Activities");
+
+                b.Navigation("Assignments");
+            });
+
+        modelBuilder.Entity("AcSoft.Domain.Entities.WorkOrderActivity", b =>
+            {
+                b.Navigation("Answers");
+
+                b.Navigation("Questions");
+            });
+#pragma warning restore 612, 618
+    }
+}
+
+```

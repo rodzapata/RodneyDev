@@ -1,0 +1,285 @@
+---
+title: "Crear webapi Parte 7-2  Aplicando la primera Migracion"
+date: "2026-11-27"
+description: "Crear webapi Parte 7-2  Aplicando la primera Migracion"
+slug: "webapi-7-2-csharp"
+category: "clean Arquitecture"
+tags: ["netcore", "csharp", "backend","Acsoft"]
+published: true
+featured: true
+---
+
+¡Excelente! Continuemos con ACSoft. El siguiente paso es **aplicar la migración&#x20;**`InitialCreate`**&#x20;a PostgreSQL** para crear físicamente las tablas.
+
+## **Paso 1. Verificar que se generó la migración**
+
+Comprueba que tienes esta carpeta:
+
+```
+AcSoft.Infrastructure
+└── Persistence
+    └── Migrations
+        ├── ..._InitialCreate.cs
+        ├── ..._InitialCreate.Designer.cs
+        └── AcDbContextModelSnapshot.cs
+```
+
+Si existe, continuamos.
+
+## **Paso 2. Revisar el SQL que ejecutará EF Core**
+
+Antes de modificar la base de datos, genera el script SQL:
+
+```bash
+dotnet ef migrations script `
+    --project .\AcSoft.Infrastructure `
+    --startup-project .\AcSoft.Api `
+    --context AcDbContext `
+    --output .\InitialCreate.sql
+```
+
+Esto genera `InitialCreate.sql` en la raíz de la solución, sin ejecutar todavía las instrucciones en PostgreSQL.
+
+## **Paso 3. Aplicar la migración**
+
+Si el script y la migración están correctos, ejecuta:
+
+```bash
+dotnet ef database update `
+    --project .\AcSoft.Infrastructure `
+    --startup-project .\AcSoft.Api `
+    --context AcDbContext
+```
+
+EF Core creará las tablas y registrará la migración aplicada en `__EFMigrationsHistory`.
+
+## **Paso 4. Verificar en PostgreSQL**
+
+Conéctate a la base de datos `acsoft` y ejecuta:
+
+```sql
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema = 'public'
+ORDER BY table_name;
+```
+
+Deberías encontrar, entre otras, las tablas correspondientes a:
+
+- `WorkOrders`
+- `WorkOrderAssignments`
+- `WorkOrderActivities`
+- `WorkOrderActivityQuestions`
+- `ActivityAnswers`
+- `MaintenancePlans`
+- `Activities`
+- `Questions`
+- `__EFMigrationsHistory`
+
+La lista exacta dependerá de las entidades y configuraciones que hayas incluido en el modelo.
+
+**Mi recomendación:** ejecuta primero el Paso 2 y compárteme el resultado o el contenido del SQL generado. Revisaremos las claves foráneas, índices y relaciones antes de ejecutar `database update`. Así evitamos crear una estructura incorrecta en tu base de datos.
+
+> si quiero que `snake_case` en PostgreSQL y mantener PascalCase en C#.  Que configuracion debo cambiar
+
+Para conseguir que ACSoft utilice `snake_case`**&#x20;en PostgreSQL y mantenga&#x20;**`PascalCase`**&#x20;en C#**, te recomiendo utilizar la convención de nombres que proporciona el proveedor oficial de PostgreSQL para EF Core: Npgsql.
+
+La ventaja es que no necesitas configurar manualmente cada tabla y cada columna.
+
+## **1. Modificar AcDbContext**
+
+Abre `AcDbContext.cs` y modifica el método `OnModelCreating`:
+
+Actualmente tienes:
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    base.OnModelCreating(modelBuilder);
+
+    modelBuilder.ApplyConfigurationsFromAssembly(
+        typeof(AcDbContext).Assembly);
+}
+```
+
+Déjalo así:
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    base.OnModelCreating(modelBuilder);
+
+    modelBuilder.ApplyConfigurationsFromAssembly(
+        typeof(AcDbContext).Assembly);
+
+    modelBuilder.UseSnakeCaseNamingConvention();
+}
+```
+
+**Importante:** `UseSnakeCaseNamingConvention()` es una extensión proporcionada por el paquete `EFCore.NamingConventions`, no por `Npgsql.EntityFrameworkCore.PostgreSQL` directamente.
+
+## **2. Instalar el paquete necesario**
+
+En el proyecto `AcSoft.Infrastructure`, ejecuta:
+
+```bash
+dotnet add .\AcSoft.Infrastructure\AcSoft.Infrastructure.csproj package EFCore.NamingConventions
+```
+
+Verifica que la versión instalada sea compatible con EF Core 10.
+
+## **3. ¿Cómo quedarán los nombres?**
+
+Por ejemplo, mantendrás tus propiedades C# así:
+
+```csharp
+public Guid Id { get; private set; }
+
+public Guid CustomerId { get; private set; }
+
+public Guid EquipmentId { get; private set; }
+
+public DateTimeOffset AssignedAt { get; private set; }
+```
+
+Pero PostgreSQL tendrá:
+
+| C#                     | PostgreSQL               |
+| ---------------------- | ------------------------ |
+| `WorkOrders`           | `work_orders`            |
+| `WorkOrderAssignments` | `work_order_assignments` |
+| `CustomerId`           | `customer_id`            |
+| `EquipmentId`          | `equipment_id`           |
+| `AssignedAt`           | `assigned_at`            |
+| `UnassignedAt`         | `unassigned_at`          |
+
+Esto también aplica a claves foráneas, índices y otras convenciones de nombres.
+
+## **4. Atención con los índices filtrados**
+
+Recuerda que anteriormente configuramos este índice en `WorkOrderAssignmentConfiguration`:
+
+```
+builder.HasIndex(x => x.WorkOrderId)
+    .IsUnique()
+    .HasFilter("\"UnassignedAt\" IS NULL");
+```
+
+Al aplicar `snake_case`, debes cambiarlo a:
+
+```
+builder.HasIndex(x => x.WorkOrderId)
+    .IsUnique()
+    .HasFilter("\"unassigned_at\" IS NULL");
+```
+
+De lo contrario, PostgreSQL buscará una columna con un nombre que ya no corresponde.
+
+## **5. ¿Qué hacemos con la migración InitialCreate?**
+
+Como todavía estamos preparando la primera migración y no hemos aplicado las tablas a PostgreSQL, lo recomendable es:
+
+1. Agregar la convención `UseSnakeCaseNamingConvention()`.
+2. Corregir los filtros SQL escritos manualmente, como el índice anterior.
+3. Generar nuevamente `InitialCreate`.
+4. Revisar el SQL generado antes de aplicarlo.
+
+Si `InitialCreate` ya existe y todavía no se ha aplicado, puedes eliminarla con:
+
+```
+dotnet ef migrations remove `
+    --project .\AcSoft.Infrastructure `
+    --startup-project .\AcSoft.Api `
+    --context AcDbContext
+```
+
+Después la generamos nuevamente.
+
+**Mi recomendación para ACSoft:** adoptar `snake_case` desde la primera migración. Es una convención muy habitual en PostgreSQL y evita tener que mantener nombres PascalCase entre comillas dobles en todas las consultas SQL.
+
+Cuando termines esta configuración, podemos revisar juntos el `WorkOrderAssignmentConfiguration` y los demás filtros SQL antes de regenerar `InitialCreate`.
+
+> me muestra la siguiente imagen de error
+
+¡Ya identifiqué el problema! La imagen muestra que estás llamando a `UseSnakeCaseNamingConvention()` sobre el objeto equivocado.
+
+El error CS1929 indica que este método es una extensión de `DbContextOptionsBuilder`, no de `ModelBuilder`.
+
+Por tanto, debemos cambiar su ubicación.
+
+## **1. Corrige AcDbContext.cs**
+
+En `OnModelCreating`, elimina esta línea:
+
+```
+modelBuilder.UseSnakeCaseNamingConvention();
+```
+
+Tu método debe quedar así:
+
+```
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    base.OnModelCreating(modelBuilder);
+
+    modelBuilder.ApplyConfigurationsFromAssembly(
+        typeof(AcDbContext).Assembly);
+}
+```
+
+## **2. Modifica AddInfrastructure()**
+
+Ahora debemos configurar `UseSnakeCaseNamingConvention()` donde registras el contexto.
+
+Busca tu método `AddInfrastructure()` en `AcSoft.Infrastructure`.
+
+Probablemente tienes algo parecido a esto:
+
+```
+services.AddDbContext<AcDbContext>(options =>
+    options.UseNpgsql(
+        configuration.GetConnectionString("AcSoftConnection")));
+```
+
+Cámbialo por:
+
+```
+services.AddDbContext<AcDbContext>(options =>
+    options
+        .UseNpgsql(
+            configuration.GetConnectionString("AcSoftConnection"))
+        .UseSnakeCaseNamingConvention());
+```
+
+Asegúrate de tener instalado el paquete `EFCore.NamingConventions` en `AcSoft.Infrastructure` y el `using Microsoft.EntityFrameworkCore;`.
+
+## **3. ¿Por qué funciona ahora?**
+
+La diferencia es:
+
+| Objeto                    | Responsabilidad                                                      |
+| ------------------------- | -------------------------------------------------------------------- |
+| `ModelBuilder`            | Configurar entidades, propiedades, relaciones e índices.             |
+| `DbContextOptionsBuilder` | Configurar el proveedor de base de datos y convenciones adicionales. |
+
+Por eso `UseSnakeCaseNamingConvention()` debe estar en `AddDbContext()`.
+
+## **4. Resultado esperado**
+
+Tu código C# seguirá utilizando PascalCase:
+
+```
+public Guid CustomerId { get; private set; }
+
+public DateTimeOffset AssignedAt { get; private set; }
+```
+
+Y PostgreSQL utilizará:
+
+```
+customer_id
+assigned_at
+```
+
+**Siguiente paso:** compárteme tu método `AddInfrastructure()` para revisar la configuración completa antes de volver a generar `InitialCreate`. Así evitamos introducir cambios innecesarios en tu arquitectura.
+

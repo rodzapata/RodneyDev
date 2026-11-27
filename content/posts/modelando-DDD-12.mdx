@@ -1,0 +1,219 @@
+---
+title: "Modelando DDD Parte 12 Pruebas automaticas de dominio"
+date: "2026-11-27"
+description: "Pruebas automaticas de dominio"
+slug: "modelando-DDD-12"
+category: "clean Arquitecture"
+tags: ["DDD","netcore", "csharp", "backend"]
+published: true
+featured: true
+---
+
+Perfecto. El siguiente paso en ACSoft será **implementar pruebas automatizadas del dominio y de persistencia con PostgreSQL**, antes de continuar con los endpoints de la API.
+
+Esto nos permitirá comprobar que las reglas de DDD funcionan y que EF Core 10 conserva correctamente el agregado después de guardarlo y recuperarlo.
+
+Vamos a trabajar con dos tipos de pruebas:
+
+1. **Pruebas unitarias:** verifican las reglas de `WorkOrder` y `ActividadRealizada` sin conectarse a PostgreSQL.
+2. **Pruebas de integración:** verifican que EF Core guarde y recupere correctamente todo el agregado.
+
+# **1. Crear el proyecto de pruebas**
+
+En la solución de Visual Studio agrega un proyecto:
+
+```
+AcSoft.Domain.Tests
+```
+
+Selecciona xUnit.
+
+La estructura quedaría así:
+
+```
+AcSoft
+├── AcSoft.Api
+├── AcSoft.Application
+├── AcSoft.Domain
+├── AcSoft.Infrastructure
+│
+├── AcSoft.Domain.Tests
+└── AcSoft.Infrastructure.Tests
+```
+
+Agrega la referencia:
+
+```
+AcSoft.Domain.Tests → AcSoft.Domain
+```
+
+Instala los paquetes de pruebas, usando versiones compatibles con tu solución:
+
+```
+dotnet add AcSoft.Domain.Tests package Microsoft.NET.Test.Sdk
+dotnet add AcSoft.Domain.Tests package xunit
+dotnet add AcSoft.Domain.Tests package xunit.runner.visualstudio
+```
+
+# **2. Primera prueba: crear una orden de trabajo**
+
+Crea:
+
+```
+AcSoft.Domain.Tests
+└── WorkOrders
+    └── WorkOrderTests.cs
+```
+
+```
+using AcSoft.Domain.Entities;
+using AcSoft.Domain.Enums;
+
+namespace AcSoft.Domain.Tests.WorkOrders;
+
+public class WorkOrderTests
+{
+    [Fact]
+    public void Create_ShouldCreatePendingWorkOrder()
+    {
+        // Arrange
+        var customerId = Guid.NewGuid();
+        var equipmentId = Guid.NewGuid();
+
+        // Act
+        var workOrder = new WorkOrder(
+            "OT-000001",
+            customerId,
+            equipmentId);
+
+        // Assert
+        Assert.NotEqual(Guid.Empty, workOrder.Id);
+        Assert.Equal("OT-000001", workOrder.Number);
+        Assert.Equal(customerId, workOrder.CustomerId);
+        Assert.Equal(equipmentId, workOrder.EquipmentId);
+        Assert.Equal(WorkOrderStatus.Pending, workOrder.Status);
+    }
+}
+```
+
+¿Qué estamos comprobando?
+
+Que una orden nueva:
+
+- Tiene un identificador válido.
+- Conserva el número asignado.
+- Tiene cliente y equipo.
+- Comienza en estado `Pending`.
+
+# **3. Segunda prueba: impedir iniciar una orden sin actividades**
+
+Agrega a `WorkOrderTests`:
+
+```
+[Fact]
+public void Iniciar_ShouldFail_WhenWorkOrderHasNoActivities()
+{
+    // Arrange
+    var workOrder = new WorkOrder(
+        "OT-000002",
+        Guid.NewGuid(),
+        Guid.NewGuid());
+
+    // Act
+    var exception = Assert.Throws<DomainException>(
+        () => workOrder.Iniciar());
+
+    // Assert
+    Assert.Equal(
+        "La orden debe tener actividades antes de iniciarse.",
+        exception.Message);
+}
+```
+
+Agrega el namespace:
+
+```
+using AcSoft.Domain.Exceptions;
+```
+
+Esta prueba comprueba que la regla está protegida por el dominio, no solamente por el controlador o el frontend.
+
+# **4. Tercera prueba: impedir completar una orden incompleta**
+
+```
+[Fact]
+public void Completar_ShouldFail_WhenWorkOrderIsPending()
+{
+    // Arrange
+    var workOrder = new WorkOrder(
+        "OT-000003",
+        Guid.NewGuid(),
+        Guid.NewGuid());
+
+    // Act
+    var exception = Assert.Throws<DomainException>(
+        () => workOrder.Completar());
+
+    // Assert
+    Assert.Equal(
+        "Solo se puede completar una orden en progreso.",
+        exception.Message);
+}
+```
+
+Aquí verificamos que una orden pendiente no puede completarse.
+
+# **5. Ejecutar las pruebas**
+
+Desde la carpeta raíz:
+
+```
+dotnet test
+```
+
+El resultado esperado es:
+
+**WorkOrderTests**
+
+3 pruebas esperadas
+
+Crear orden pendiente
+
+No iniciar sin actividades
+
+No completar una orden pendiente
+
+*El resultado es esperado; todavía debes ejecutar las pruebas en tu solución.*
+
+# **6. ¿Qué pruebas debemos agregar después?**
+
+Para ACSoft, propongo esta secuencia:
+
+| Prueba              | Regla que verifica                      |
+| ------------------- | --------------------------------------- |
+| Agregar actividad   | No duplicar actividades                 |
+| Registrar respuesta | No aceptar parámetros ajenos            |
+| Registrar respuesta | No aceptar opciones inexistentes        |
+| Registrar medición  | No duplicar respuestas                  |
+| Completar actividad | Exigir parámetros obligatorios          |
+| Completar orden     | Exigir todas las actividades completas  |
+| Persistencia        | Recuperar instantáneas desde PostgreSQL |
+| Persistencia        | Conservar respuestas y mediciones       |
+
+Hay una regla que quiero que probemos especialmente: **si modificas el catálogo de mantenimiento después de crear una orden, las instantáneas de esa orden no deben cambiar**.
+
+## **Continuación recomendada**
+
+Antes de avanzar, quiero que implementemos las pruebas de `ActividadRealizada`, porque allí están las reglas más importantes del mantenimiento HVAC.
+
+Una pregunta para adaptar correctamente los siguientes ejemplos: ¿tu proyecto ya compila con las clases `ParametroActividadSnapshot`, `OpcionActividadSnapshot` y `Medicion` que construimos?
+
+**Estado actual de tu código**
+
+Sí, compila correctamente.
+
+Tengo errores de compilación.
+
+Todavía no he implementado esos cambios.
+
+Continuar
